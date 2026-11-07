@@ -1,0 +1,182 @@
+*acp.nvim*  与 Agent 对话，界面参照 Zed 的 Agent Panel
+
+==============================================================================
+1. 简介                                                        *acp-intro*
+
+acp.nvim 是一个 Neovim 原生的 Agent Client Protocol 客户端。
+它不是把 Agent 的 TUI 嵌进终端窗口，而是用 buffer、split 和 extmark
+自己渲染对话记录、工具调用和输入框。
+
+默认连接 OpenCode：
+
+    :!opencode auth login
+    :Acp
+
+==============================================================================
+2. 命令                                                      *acp-commands*
+
+:Acp [子命令]                                               *:Acp*
+    toggle       打开或隐藏面板（默认）
+    open         打开面板，必要时启动 Agent
+    hide         隐藏面板，不中断会话
+    new          新建会话
+    stop         中止当前回合
+    sessions     选择并恢复历史会话
+    model        切换模型
+    mode         切换模式
+    reconnect    重连并恢复当前会话
+    disconnect   停止 Agent 进程
+    permission   重新打开待确认的权限请求
+    file         把当前文件附加到输入区
+    diagnostics  把当前 buffer 的诊断附加到输入区
+
+:AcpLog                                                      *:AcpLog*
+    打开日志文件。
+
+:AcpDebug                                                  *:AcpDebug*
+    在命令行打印控制器状态。
+
+==============================================================================
+3. 输入区                                                    *acp-composer*
+
+<C-s>          发送；回合进行中且输入为空时改为中止
+q              隐藏面板
+<C-x><C-u>     补全 /命令 与 @文件
+@path/to/file  发送时自动展开为附件
+<M-m>          切换模型（输入模式）
+<M-b>          切换模式（输入模式）
+M / m          切换模型 / 模式（普通模式）
+
+模型和模式也可以直接点击 winbar 上带 ▾ 的名称。选择器支持输入关键字
+模糊过滤，适用于模型数量很多的 Agent。
+
+每个会话有独立的草稿和附件。面板隐藏后草稿仍保留。
+
+==============================================================================
+4. 转录区                                                  *acp-transcript*
+
+i / <C-s>      聚焦输入区
+<CR>           打开光标所在位置的文件
+<Tab>          展开或折叠工具调用
+[b / ]b        上一个 / 下一个消息块
+G / gg         最新 / 最早
+S              附加当前选区
+F              附加当前文件
+R              附加诊断
+M / m          选择模型 / 模式
+<C-n>          新建会话
+L              历史会话
+g?             帮助
+q              隐藏面板
+
+所有按键都是 buffer-local。
+
+==============================================================================
+5. 配置                                                      *acp-config*
+
+    require("acp").setup({
+      agent = "opencode",
+      agents = {
+        opencode = { command = "opencode", args = { "acp" } },
+      },
+      layout = {
+        backend = "native",   -- "native" | "external"
+        position = "right",
+        width = 0.38,
+        min_width = 42,
+        max_width = 120,
+        input_height = 8,
+      },
+      ui = {
+        icons = true,
+        show_thoughts = false,
+        language = "zh",
+        zed_style = true,
+        title = { placement = "auto" },
+        toolbar = { placement = "auto", show_usage = false },
+      },
+      keymaps = {
+        send = "<C-s>",
+        cancel = "<C-c>",
+        close_panel = "q",
+        focus_input = "i",
+        open_location = "<CR>",
+        prev_block = "[b",
+        next_block = "]b",
+        toggle_block = "<Tab>",
+      },
+      permissions = { prompt = "select" },
+      log = { level = "warn", protocol = false },
+    })
+
+可用字段与完整说明见 README。
+
+==============================================================================
+6. 与 edgy.nvim 集成                                          *acp-edgy*
+
+    require("acp").setup({ layout = { backend = "external" } })
+
+    -- edgy 配置
+    opts = function(_, opts)
+      require("acp.integrations.edgy").extend(opts)
+    end
+
+acp 创建两个普通视图：
+
+    acp_chat    对话记录（只读）
+    acp_input   输入区（可编辑）
+
+由 edgy 决定它们的位置和尺寸。acp 不会持续调整窗口大小，也不会在窗口
+被关闭后强行重开。
+
+默认 acp 拥有两个 winbar。若想让 edgy 显示标题栏：
+
+    require("acp.integrations.edgy").views({ title_winbar = true })
+
+==============================================================================
+7. 状态栏                                                  *acp-statusline*
+
+acp.nvim 不修改 'statusline' 和 'laststatus'。交互信息全部放在输入窗口的
+winbar 中，因此 laststatus=3（全局状态栏）下也能正常显示。
+
+需要集成到自己的状态栏时：
+
+    require("acp").statusline()   -- "◆" / "◆ ◌" / "◆ !"
+    require("acp").status()       -- 结构化表
+
+==============================================================================
+8. 行为细节                                                  *acp-behavior*
+
+同一会话同时只运行一个 prompt；生成中提交的消息本地排队。
+
+Agent 崩溃后使用 :Acp reconnect。重连会通过 session/load 重放 Agent 侧
+历史，但不会自动重发上一条 prompt。
+
+未发送的草稿保存在 stdpath("state")/acp/drafts.json，重启后自动恢复。
+
+权限选择器按 Esc 或 q 关闭视为拒绝；若 Agent 没有提供 reject 选项，则返回
+cancelled。
+
+==============================================================================
+9. 高亮                                                      *acp-highlights*
+
+所有样式通过语义化高亮组暴露，例如：
+
+    AcpUser  AcpAssistant  AcpToolTitle  AcpToolRunning
+    AcpToolSuccess  AcpToolError  AcpPlan  AcpSeparator
+    AcpTitle  AcpToolbar  AcpPermission  AcpStreaming
+
+直接覆盖即可：
+
+    vim.api.nvim_set_hl(0, "AcpUser", { link = "Function" })
+
+ui.icons = false 会改用 ASCII 图标。
+
+==============================================================================
+10. 健康检查                                                   *acp-health*
+
+    :checkhealth acp
+
+检查 Neovim 版本、Agent 可执行文件、edgy 与日志路径。
+
+vim:tw=78:ts=8:noet:ft=help:norl:
