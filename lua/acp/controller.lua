@@ -28,6 +28,9 @@ local S = {
   -- session_id -> title, learned from session/list. Session objects are often
   -- recreated (load/reconnect), so titles live here rather than on the object.
   titles = {},
+  -- session_id -> cwd, learned from session/list. Agents require the session's
+  -- own directory when it is loaded again.
+  session_cwds = {},
   chat = nil,
   input = nil,
   panel_requested = false,
@@ -53,23 +56,33 @@ end
 
 ---Resolve the session working directory.
 ---@return string
+---The working directory used for sessions.
+---
+---This is Neovim's current working directory, so the panel, the agent and the
+---user always agree on which directory they are working in. It can be pinned
+---explicitly with `cwd` in the configuration.
+---@return string
 local function resolve_cwd()
-  if S.config.cwd then
+  if S.config and S.config.cwd and S.config.cwd ~= "" then
     return vim.fn.fnamemodify(S.config.cwd, ":p")
   end
-  -- Prefer the project root when available, otherwise the current file's directory.
-  local ok, root = pcall(function()
-    local util = require("lazy.core.util")
-    return util.get_root()
-  end)
-  if ok and type(root) == "string" and root ~= "" then
-    return root
-  end
-  local bufname = vim.api.nvim_buf_get_name(0)
-  if bufname ~= "" and vim.bo.buftype == "" then
-    return vim.fn.fnamemodify(bufname, ":p:h")
-  end
   return vim.fn.getcwd()
+end
+
+---The directory a stored session belongs to.
+---
+---ACP requires `session/load` to use the session's own directory: agents
+---reject the request when the cwd does not match. The cwd recorded in
+---`session/list` is authoritative, so it is preferred over the editor cwd.
+---@param session_id string
+---@param known table<string, string> session id -> cwd
+---@return string
+local function session_cwd(session_id, known)
+  local cwd = known and known[session_id]
+  if cwd and cwd ~= "" then
+    return cwd
+  end
+  return resolve_cwd()
 end
 
 ---Current session or nil.
@@ -819,7 +832,7 @@ function M.reload_session(session_id)
     return
   end
   local previous = S.sessions[session_id]
-  local cwd = previous and previous.cwd or resolve_cwd()
+  local cwd = session_cwd(session_id, S.session_cwds)
   -- Start from a clean transcript: the agent replays its authoritative history.
   local fresh = session_mod.new(session_id, cwd)
   S.sessions[session_id] = fresh
@@ -875,6 +888,7 @@ function M.new_session()
       session.current_mode = result.currentModeId
     end
     S.sessions[session.id] = session
+    S.session_cwds[session.id] = cwd
     activate_session(session)
     S.chat:render(true)
     notify("Session started", vim.log.levels.INFO)
@@ -889,7 +903,8 @@ function M.load_session(session_id)
     notify("No agent process is running", vim.log.levels.WARN)
     return
   end
-  local cwd = resolve_cwd()
+  -- Agents reject session/load when the cwd does not match the session.
+  local cwd = session_cwd(session_id, S.session_cwds)
   async.run(function()
     local entry = S.sessions[session_id]
     if entry then
@@ -973,7 +988,8 @@ local function fetch_sessions(cb)
     return
   end
   async.run(function()
-    local scoped_cwd = (S.session and S.session.cwd) or resolve_cwd()
+    -- Scope the listing to the editor's working directory.
+    local scoped_cwd = resolve_cwd()
 
     local function to_error(result)
       if type(result) == "table" and (result.code == -32601 or result.code == -32602) then
@@ -1000,9 +1016,13 @@ local function fetch_sessions(cb)
       end
     end
 
-    -- Keep the title cache warm so switching sessions updates the winbar at once.
+    -- Keep the title cache warm so switching sessions updates the winbar at once,
+    -- and remember each session's directory: loading it needs that exact cwd.
     for _, info in ipairs(sessions) do
       cache_title(info.sessionId, info.title)
+      if has_text(info.cwd) then
+        S.session_cwds[info.sessionId] = info.cwd
+      end
     end
     cb(true, sessions)
   end)
@@ -1047,76 +1067,6 @@ end
 ---Open the session browser ready to delete (same dialog, <C-d> is the action).
 function M.delete_session_flow()
   M.pick_session()
-end
-
----Create a new session with the current agent.
-function M.new_session()
-  if S.connection ~= "ready" or not S.client then
-    M.connect()
-    return
-  end
-  local cwd = resolve_cwd()
-  async.run(function()
-    local ok, result = S.client:new_session(cwd)
-    if not ok then
-      local message = type(result) == "table" and (result.message or vim.inspect(result)) or tostring(result)
-      notify("unable to create a session: " .. message, vim.log.levels.ERROR)
-      return
-    end
-    local session = session_mod.new(result.sessionId, cwd)
-    if result.configOptions then
-      session.config_options = result.configOptions
-    end
-    if result.modes then
-      session.modes = result.modes
-      session.current_mode = result.currentModeId
-    end
-    S.sessions[session.id] = session
-    activate_session(session)
-    S.chat:render(true)
-    notify("Session started", vim.log.levels.INFO)
-    refresh_session_title(session)
-  end)
-end
-
----Load a previous session, replaying its history.
----@param session_id string
-function M.load_session(session_id)
-  if S.connection ~= "ready" or not S.client then
-    notify("No agent process is running", vim.log.levels.WARN)
-    return
-  end
-  local cwd = resolve_cwd()
-  async.run(function()
-    local entry = S.sessions[session_id]
-    if entry then
-      activate_session(entry)
-    else
-      entry = session_mod.new(session_id, cwd)
-      S.sessions[session_id] = entry
-      activate_session(entry)
-    end
-    S.replaying = true
-    local ok, result = S.client:load_session(session_id, cwd)
-    S.replaying = false
-    if not ok then
-      local message = type(result) == "table" and (result.message or vim.inspect(result)) or tostring(result)
-      notify("unable to load session: " .. message, vim.log.levels.ERROR)
-      return
-    end
-    if result.configOptions then
-      entry.config_options = result.configOptions
-    end
-    entry:finish_turn("end_turn")
-    -- A freshly built session object carries no title; take it from the cache
-    -- so the winbar updates the moment the switch completes.
-    if apply_cached_title(entry) then
-      refresh_chrome()
-    end
-    S.chat:render(true)
-    refresh_chrome()
-    refresh_session_title(entry)
-  end)
 end
 
 ---------------------------------------------------------------------------
@@ -1750,6 +1700,7 @@ function M.setup(opts)
   S.session = nil
   S.sessions = {}
   S.titles = {}
+  S.session_cwds = {}
   S.pending_permissions = {}
   S.connection = "stopped"
   S.pending_reload = nil

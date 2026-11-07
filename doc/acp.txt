@@ -167,7 +167,16 @@ ACP 的两个窗口默认锁定到自己的 buffer（'winfixbuf'），:edit、:b
     require("acp").setup({ ui = { picker = "internal" } })
 
 ==============================================================================
-9. 会话标题与删除                                       *acp-session-titles*
+9. 工作目录                                                  *acp-cwd*
+
+会话的工作目录默认与 Neovim 的 cwd 一致（vim.fn.getcwd()），可用 cwd 配置项
+显式固定。:Acp sessions 的列表按该目录过滤；若为空，会自动退回展示 Agent 知道
+的所有会话。
+
+切换历史会话时使用该会话自己的目录发起 session/load，因为 ACP 规范要求 cwd 与
+会话一致，不匹配时 Agent 会拒绝。
+
+10. 会话标题与删除                                      *acp-session-titles*
 
 标题显示在对话记录窗口的 winbar 中。OpenCode 不会主动推送 session_info_update，
 标题只出现在 session/list 结果里。acp.nvim 在会话创建后、切换会话后、以及每回合
@@ -193,7 +202,7 @@ ACP 的两个窗口默认锁定到自己的 buffer（'winfixbuf'），:edit、:b
 删除非当前会话不影响当前对话；删除当前会话会自动新建一个。Agent 未声明
 sessionCapabilities.delete 时给出提示，不弹出无法兑现的确认框。
 
-10. 行为细节                                                 *acp-behavior*
+11. 行为细节                                                *acp-behavior*
 
 同一会话同时只运行一个 prompt；生成中提交的消息本地排队。
 
@@ -206,7 +215,7 @@ Agent 崩溃后使用 :Acp reconnect。重连会通过 session/load 重放 Agent
 cancelled。
 
 ==============================================================================
-11. 高亮                                                     *acp-highlights*
+12. 高亮                                                    *acp-highlights*
 
 所有样式通过语义化高亮组暴露，例如：
 
@@ -221,7 +230,7 @@ cancelled。
 ui.icons = false 会改用 ASCII 图标。
 
 ==============================================================================
-12. 健康检查                                                   *acp-health*
+13. 健康检查                                                  *acp-health*
 
     :checkhealth acp
 

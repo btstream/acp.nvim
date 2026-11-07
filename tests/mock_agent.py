@@ -242,6 +242,13 @@ def handle(msg):
             ],
         })
     elif method == "session/load":
+        # Like OpenCode, refuse to load a session under a different directory.
+        session_id = params.get("sessionId")
+        load_cwd = params.get("cwd")
+        entry = SESSIONS.get(session_id)
+        if entry is not None and entry.get("cwd") and load_cwd and entry["cwd"] != load_cwd:
+            error(msg_id, -32602, "session cwd mismatch")
+            return
         update({"sessionUpdate": "user_message_chunk", "messageId": "u0", "content": {"type": "text", "text": "old question"}})
         update({"sessionUpdate": "agent_message_chunk", "messageId": "m0", "content": {"type": "text", "text": "old answer"}})
         result(msg_id, {})

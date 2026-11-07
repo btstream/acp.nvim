@@ -43,7 +43,7 @@ return function(t)
   end
 
   t.describe("session listing scope", function()
-    t.it("uses the active session's cwd for the query", function()
+    t.it("uses the editor cwd for the query", function()
       local S = setup()
       local captured, restore = capture_pickers()
 
@@ -61,6 +61,12 @@ return function(t)
         ids[session.sessionId] = true
       end
       t.truthy(ids[S.session.id], "the active session is missing from the list")
+      controller.hide()
+    end)
+
+    t.it("creates sessions in the editor cwd", function()
+      local S = setup()
+      t.eq(vim.fn.getcwd(), S.session.cwd, "the session cwd must match Neovim's cwd")
       controller.hide()
     end)
 
@@ -106,6 +112,25 @@ return function(t)
       S.client.list_sessions = original
 
       t.eq(0, #captured, "a picker should not open for an empty list")
+      controller.hide()
+    end)
+
+    t.it("loads a session with the session's own cwd", function()
+      local S = setup()
+      local used
+      local original = S.client.load_session
+      S.client.load_session = function(_, session_id, cwd)
+        used = cwd
+        return original(S.client, session_id, cwd)
+      end
+      -- A session stored under another directory, as reported by session/list.
+      S.session_cwds["sess_other"] = "/some/other/project"
+      controller.load_session("sess_other")
+      vim.wait(6000, function()
+        return used ~= nil
+      end, 20)
+      S.client.load_session = original
+      t.eq("/some/other/project", used, "loading must use the session's own directory")
       controller.hide()
     end)
 

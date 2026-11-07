@@ -132,7 +132,7 @@ require("acp").setup({
     other = { command = "my-agent", args = { "--acp" } },
   },
 
-  -- 默认为项目根目录（lazy.nvim 可用时）或当前文件所在目录
+  -- 会话的工作目录。默认与 Neovim 的 cwd 一致（vim.fn.getcwd()）。
   cwd = nil,
 
   layout = {
@@ -320,6 +320,21 @@ vim.api.nvim_set_hl(0, "AcpSeparator", { fg = "#3b4261" })
 - 日志默认不记录密钥与完整提示词；开启 `log.protocol` 时会先脱敏再截断。
 
 ## 行为细节
+
+### 工作目录
+
+会话的工作目录默认就是 **Neovim 的当前目录**（`vim.fn.getcwd()`），面板、Agent
+和你看到的是同一个目录。可以用 `cwd` 显式固定：
+
+```lua
+require("acp").setup({ cwd = "/home/user/projects/my-app" })
+```
+
+`:Acp sessions` 的列表也按这个目录过滤。若该目录下没有会话，acp.nvim 会自动
+退回展示 Agent 知道的所有会话，而不是提示「没有会话」。
+
+> 切换到历史会话时，acp.nvim 会使用**该会话自己的目录**发起 `session/load`。
+> ACP 规范要求 cwd 与会话一致，Agent 会在不匹配时拒绝该请求。
 
 ### 会话标题
 
