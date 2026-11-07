@@ -251,6 +251,18 @@ def handle(msg):
             return
         update({"sessionUpdate": "user_message_chunk", "messageId": "u0", "content": {"type": "text", "text": "old question"}})
         update({"sessionUpdate": "agent_message_chunk", "messageId": "m0", "content": {"type": "text", "text": "old answer"}})
+        # Titles and plan entries may contain newlines.
+        update({
+            "sessionUpdate": "tool_call",
+            "toolCallId": "call_nl",
+            "title": "Read\nconfig.json",
+            "kind": "read",
+            "status": "completed",
+        })
+        update({
+            "sessionUpdate": "plan",
+            "entries": [{"content": "step one\nstep two", "priority": "high", "status": "pending"}],
+        })
         result(msg_id, {})
     elif method == "session/list":
         # Like OpenCode, filter strictly by cwd when one is supplied, and treat

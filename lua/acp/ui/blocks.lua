@@ -15,6 +15,25 @@ function M.icon_set(use_icons)
   return Icons.get(use_icons)
 end
 
+---Collapse text into a single line.
+---
+---Agent supplied strings (titles, plan entries, notices) may contain newlines.
+---A buffer line cannot contain a newline, so such text is folded into one
+---line before it reaches the buffer.
+---@param text any
+---@return string
+local function one_line(text)
+  if type(text) ~= "string" then
+    return text == nil and "" or tostring(text)
+  end
+  if not text:find("[\r\n]") then
+    return text
+  end
+  return (text:gsub("\r\n", " "):gsub("[\r\n]", " "))
+end
+
+M.one_line = one_line
+
 local function tool_status_label(status)
   if status == "completed" then
     return "done"
@@ -92,7 +111,7 @@ local function render_user(block, ctx)
   local chips = {}
   if block.attachments then
     for _, att in ipairs(block.attachments) do
-      chips[#chips + 1] = "[" .. (att.label or att.path or "?") .. "]"
+      chips[#chips + 1] = "[" .. one_line(att.label or att.path or "?") .. "]"
     end
   end
   local header = ic.user .. " " .. "You"
@@ -175,7 +194,7 @@ local function render_tool(block, ctx)
   local ic = ctx.icons
   local glyph, glyph_hl = tool_icon(block, ic)
   local caret = block.expanded and ic.chevron_down or ic.chevron_right
-  local title = block.title ~= nil and block.title ~= "" and block.title or (block.name or "tool")
+  local title = one_line(block.title ~= nil and block.title ~= "" and block.title or (block.name or "tool"))
   local status = tool_status_label(block.status)
   local label = string.format("%s %s %s", caret, glyph, title)
   local caret_end = #caret
@@ -189,7 +208,7 @@ local function render_tool(block, ctx)
   }
   local meta = {}
   if block.child and block.child.title then
-    meta[#meta + 1] = "subagent" .. ": " .. block.child.title
+    meta[#meta + 1] = "subagent" .. ": " .. one_line(block.child.title)
   end
   if status ~= "" then
     meta[#meta + 1] = status
@@ -221,7 +240,7 @@ local function render_tool(block, ctx)
     end
     if block.locations and #block.locations > 0 then
       for _, loc in ipairs(block.locations) do
-        local rel = loc.path or ""
+        local rel = one_line(loc.path or "")
         if ctx.cwd and vim.startswith(rel, ctx.cwd .. "/") then
           rel = rel:sub(#ctx.cwd + 2)
         end
@@ -273,7 +292,7 @@ local function render_plan(block, ctx)
       mark, hl = ic.tool_pending, "AcpPlanPending"
     end
     out[#out + 1] = {
-      text = "  " .. mark .. " " .. (entry.content or ""),
+      text = "  " .. mark .. " " .. one_line(entry.content or ""),
       segments = { { s = 2, e = 2 + #mark, group = hl } },
     }
   end
@@ -288,7 +307,12 @@ local function render_notice(block, ctx)
   elseif block.severity == "error" then
     hl = "AcpNoticeError"
   end
-  local text = string.format("%s %s%s", ctx.icons.notice, block.title and (block.title .. ": ") or "", block.text or "")
+  local text = string.format(
+    "%s %s%s",
+    ctx.icons.notice,
+    block.title and (one_line(block.title) .. ": ") or "",
+    one_line(block.text or "")
+  )
   return { { text = text, segments = { { s = 0, e = -1, group = hl } } }, { text = "", segments = nil } }
 end
 
@@ -355,10 +379,17 @@ function M.render_block(block, ctx)
   elseif kind == "error" then
     return render_error(block, ctx)
   elseif kind == "system" then
-    return {
-      { text = block.text or "", segments = { { s = 0, e = -1, group = "AcpMuted" } } },
-      { text = "", segments = nil },
-    }
+    -- System notices may span several lines; render them as such.
+    local lines = M.render_text(block.text or "", "AcpMuted", ctx.width)
+    local out = {}
+    for i, line in ipairs(lines) do
+      out[#out + 1] = {
+        text = line.text,
+        segments = { { s = 0, e = -1, group = "AcpMuted" } },
+      }
+    end
+    out[#out + 1] = { text = "", segments = nil }
+    return out
   end
   return {}
 end

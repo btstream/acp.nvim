@@ -159,7 +159,8 @@ local function internal_select(opts)
   local function render()
     local lines = {}
     for _, item in ipairs(visible) do
-      lines[#lines + 1] = format(item)
+      -- A buffer line cannot contain a newline; agent supplied labels may.
+      lines[#lines + 1] = (format(item) or ""):gsub("[\r\n]", " ")
     end
     if #lines == 0 then
       lines[1] = "  no match"

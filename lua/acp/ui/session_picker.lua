@@ -119,7 +119,8 @@ function M.open(opts)
     for _, item in ipairs(visible) do
       local is_current = item.sessionId == opts.current_id
       local marker = is_current and (icon_set.arrow_right .. " ") or "  "
-      local title = label_of(item)
+      -- A buffer line cannot contain a newline; agent supplied titles may.
+      local title = label_of(item):gsub("[\r\n]", " ")
       lines[#lines + 1] = marker .. title
       marks[#marks + 1] = { item = item, current = is_current, title = title }
     end

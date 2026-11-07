@@ -219,9 +219,16 @@ return function(t)
       wait_for(function()
         return loaded
       end, 8000)
-      t.eq(2, #session.blocks)
+      t.eq(4, #session.blocks)
       t.eq("old question", session.blocks[1].text)
       t.eq("old answer", session.blocks[2].text)
+      -- The replay also contains a tool with a multi-line title and a plan
+      -- entry with a newline. The data keeps them intact; the renderer is
+      -- responsible for folding them (see spec_newlines).
+      t.eq("tool", session.blocks[3].kind)
+      t.truthy(session.blocks[3].title:find("\n"), "the raw title should keep its newline")
+      t.eq("plan", session.blocks[4].kind)
+      t.truthy(session.blocks[4].entries[1].content:find("\n"), "the raw entry should keep its newline")
       client:shutdown(true)
     end)
   end)

@@ -185,6 +185,14 @@ function Chat:render(force)
     meta = { { kind = "empty" } }
   end
 
+  -- A buffer line cannot contain a newline. Agent supplied text may, so make
+  -- sure every line is a single line before writing it.
+  for i, line in ipairs(lines) do
+    if type(line) ~= "string" or line:find("[\r\n]") then
+      lines[i] = (type(line) == "string" and line or tostring(line or "")):gsub("[\r\n]", " ")
+    end
+  end
+
   vim.bo[self.buf].modifiable = true
   vim.api.nvim_buf_set_lines(self.buf, 0, -1, false, lines)
   vim.bo[self.buf].modifiable = false
