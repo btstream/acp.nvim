@@ -9,7 +9,7 @@ return function(t)
     acp.setup(vim.tbl_deep_extend("force", {
       agent = "opencode",
       agents = { opencode = { command = "python3", args = { root .. "tests/mock_agent.py" } } },
-      ui = { language = "en" },
+      ui = {},
       permissions = { prompt = "native" },
       layout = { input_height = 5 },
     }, over or {}))

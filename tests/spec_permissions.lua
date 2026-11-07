@@ -16,7 +16,7 @@ return function(t)
 
   t.describe("permissions", function()
     t.it("resolves with an explicit reject option when dismissed", function()
-      controller.setup({ ui = { language = "en" }, permissions = { prompt = "native" } })
+      controller.setup({ ui = {}, permissions = { prompt = "native" } })
       local S = controller.state()
       local resolved
       S.client = {
@@ -40,7 +40,7 @@ return function(t)
     end)
 
     t.it("resolves with the cancelled outcome when no reject exists", function()
-      controller.setup({ ui = { language = "en" }, permissions = { prompt = "native" } })
+      controller.setup({ ui = {}, permissions = { prompt = "native" } })
       local S = controller.state()
       local resolved
       S.client = {
@@ -59,7 +59,7 @@ return function(t)
     end)
 
     t.it("reports waiting_permission in the status payload", function()
-      controller.setup({ ui = { language = "en" }, permissions = { prompt = "native" } })
+      controller.setup({ ui = {}, permissions = { prompt = "native" } })
       local S = controller.state()
       local session = state.new("s1", "/tmp")
       S.session = session
@@ -71,21 +71,22 @@ return function(t)
     end)
 
     t.it("renders a compact statusline component", function()
-      controller.setup({ ui = { language = "en" }, permissions = { prompt = "native" } })
+      controller.setup({ ui = {}, permissions = { prompt = "native" } })
       local S = controller.state()
       S.connection = "ready"
       S.session = nil
-      t.eq("◆", controller.statusline())
+      local ic = require("acp.ui.icons").get(true)
+      t.eq(ic.assistant, controller.statusline())
       local session = state.new("s1", "/tmp")
       session.status = "running"
       S.session = session
-      t.eq("◆ ◌", controller.statusline())
+      t.eq(ic.assistant .. " " .. ic.tool_run, controller.statusline())
     end)
   end)
 
   t.describe("picker", function()
     t.it("uses vim.ui.select by default", function()
-      controller.setup({ ui = { language = "en" } })
+      controller.setup({ ui = {} })
       local called = nil
       with_ui_select(function(items, opts, cb)
         called = { count = #items, prompt = opts.prompt, kind = opts.kind }
@@ -108,7 +109,7 @@ return function(t)
     end)
 
     t.it("treats a nil choice as cancellation", function()
-      controller.setup({ ui = { language = "en" } })
+      controller.setup({ ui = {} })
       local cancelled = false
       with_ui_select(function(items, _, cb)
         cb(items[1])
@@ -128,7 +129,7 @@ return function(t)
     end)
 
     t.it("calls on_cancel when the prompt is dismissed", function()
-      controller.setup({ ui = { language = "en" } })
+      controller.setup({ ui = {} })
       local cancelled = false
       with_ui_select(function(_, _, cb)
         cb(nil)
@@ -160,7 +161,7 @@ return function(t)
     end)
 
     t.it("still supports the built-in picker when opted in", function()
-      controller.setup({ ui = { language = "en", picker = "internal" } })
+      controller.setup({ ui = { picker = "internal" } })
       local chosen
       local invoked = false
       with_ui_select(function()

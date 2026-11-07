@@ -71,7 +71,7 @@ local controller = require("acp.controller")
 acp.setup({
   agent = "opencode",
   agents = { opencode = { command = "python3", args = { root .. "tests/mock_agent.py" } } },
-  ui = { language = "en" },
+  ui = {},
   layout = { backend = "external", input_height = 6 },
 })
 

@@ -1,6 +1,5 @@
 -- The transcript window: renders session blocks into a read-only buffer.
 local blocks = require("acp.ui.blocks")
-local i18n = require("acp.i18n")
 
 local M = {}
 
@@ -182,7 +181,7 @@ function Chat:render(force)
   self.cache = new_cache
 
   if #lines == 0 then
-    lines = { i18n.t("empty_chat") }
+    lines = { "Start a conversation with the agent." }
     meta = { { kind = "empty" } }
   end
 

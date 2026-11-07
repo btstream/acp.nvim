@@ -15,7 +15,7 @@ acp.setup({
   agents = {
     opencode = { command = "python3", args = { root .. "tests/mock_agent.py" } },
   },
-  ui = { language = "en" },
+  ui = {},
   layout = { input_height = 6 },
 })
 
@@ -37,7 +37,7 @@ for _, laststatus in ipairs({ 0, 2, 3 }) do
   acp.setup({
     agent = "opencode",
     agents = { opencode = { command = "python3", args = { root .. "tests/mock_agent.py" } } },
-    ui = { language = "en" },
+    ui = {},
     layout = { input_height = 6 },
   })
   acp.open()
@@ -78,7 +78,7 @@ vim.o.laststatus = 3
 acp.setup({
   agent = "opencode",
   agents = { opencode = { command = "python3", args = { root .. "tests/mock_agent.py" } } },
-  ui = { language = "en" },
+  ui = {},
   layout = { input_height = 6 },
 })
 acp.open()

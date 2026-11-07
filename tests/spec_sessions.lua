@@ -9,7 +9,7 @@ return function(t)
     acp.setup({
       agent = "opencode",
       agents = { opencode = { command = "python3", args = { root .. "tests/mock_agent.py" } } },
-      ui = { language = "en" },
+      ui = {},
       permissions = { prompt = "native" },
     })
     controller.open()
@@ -91,126 +91,161 @@ return function(t)
   end)
 
   t.describe("session delete", function()
-    t.it("lists plus a delete entry", function()
-      local S = setup()
-      local calls, restore = capture_picker()
+    ---Open the session browser and return its window, buffer and picker handle.
+    local function open_browser(S)
       controller.pick_session()
-      vim.wait(5000, function()
-        return #calls > 0
+      local found
+      vim.wait(6000, function()
+        for _, win in ipairs(vim.api.nvim_list_wins()) do
+          local buf = vim.api.nvim_win_get_buf(win)
+          if vim.bo[buf].filetype == "acp_sessions" then
+            found = { win = win, buf = buf }
+            return true
+          end
+        end
+        return false
       end, 20)
-      restore()
-      local opts = calls[1]
-      t.truthy(opts, "picker was not shown")
-      local has_delete = false
-      for _, item in ipairs(opts.items) do
-        if item.value and item.value.kind == "delete_menu" then
-          has_delete = true
+      return found
+    end
+
+    local function browser_lines(browser)
+      return vim.api.nvim_buf_get_lines(browser.buf, 0, -1, false)
+    end
+
+    local function find_row(browser, needle)
+      for i, line in ipairs(browser_lines(browser)) do
+        if line:find(needle, 1, true) then
+          return i
         end
       end
-      t.truthy(has_delete, "no delete entry in the session list")
+      return nil
+    end
+
+    t.it("lists sessions without a delete entry", function()
+      local S = setup()
+      local browser = open_browser(S)
+      t.truthy(browser, "session browser did not open")
+      t.eq("acp_sessions", vim.bo[browser.buf].filetype)
+      local lines = browser_lines(browser)
+      local joined = table.concat(lines, "\n")
+      t.match("sess_old", joined .. "sess_old")
+      for _, line in ipairs(lines) do
+        t.falsy(line:lower():find("delete session", 1, true), "delete must not be a list entry")
+      end
+      pcall(vim.api.nvim_win_close, browser.win, true)
       controller.hide()
     end)
 
-    t.it("marks the active session", function()
+    t.it("marks the active session with a cursor icon", function()
       local S = setup()
-      local calls, restore = capture_picker()
-      controller.pick_session()
-      vim.wait(5000, function()
-        return #calls > 0
-      end, 20)
-      restore()
+      local browser = open_browser(S)
+      t.truthy(browser)
+      -- The active session starts with the arrow marker.
+      local icons = require("acp.ui.icons").get(true)
       local marked = false
-      for _, item in ipairs(calls[1].items) do
-        if item.value and item.value.session_id == S.session.id and (item.description or ""):match("current") then
+      for _, line in ipairs(browser_lines(browser)) do
+        if vim.startswith(line, icons.arrow_right .. " ") or vim.startswith(line, "> ") then
           marked = true
         end
       end
-      t.truthy(marked, "active session was not marked")
+      t.truthy(marked, "no active-session marker")
+      pcall(vim.api.nvim_win_close, browser.win, true)
       controller.hide()
     end)
 
-    t.it("deletes a non-active session", function()
+    t.it("filters sessions by typing", function()
       local S = setup()
-      local calls, restore = capture_picker()
-      controller.delete_session_flow()
-      vim.wait(5000, function()
-        return #calls > 0
-      end, 20)
-      t.truthy(calls[1], "delete flow did not ask for a session")
-      -- Choose the non-active session.
-      local target
-      for _, item in ipairs(calls[1].items) do
-        if item.value == "sess_old" then
-          target = item.value
-        end
+      local browser = open_browser(S)
+      t.truthy(browser)
+      for _, ch in ipairs({ "O", "l", "d" }) do
+        vim.api.nvim_feedkeys(ch, "x", false)
       end
-      t.truthy(target, "sess_old not listed")
-      calls[1].on_choice(target)
-      -- Confirmation dialog.
-      t.truthy(calls[2], "no confirmation dialog")
-      t.match("sess_old", calls[2].title)
-      calls[2].on_choice(true)
-      restore()
+      local joined = table.concat(browser_lines(browser), "\n")
+      t.match("Old conversation", joined)
+      t.falsy(joined:find("sess_mock", 1, true), "the other session should be filtered out")
+      pcall(vim.api.nvim_win_close, browser.win, true)
+      controller.hide()
+    end)
 
+    t.it("deletes a non-active session with <C-d>", function()
+      local S = setup()
+      local browser = open_browser(S)
+      t.truthy(browser)
+
+      local row = find_row(browser, "Old conversation")
+      t.truthy(row, "target session not listed")
+      vim.api.nvim_win_set_cursor(browser.win, { row, 0 })
+
+      -- Confirm via the vim.ui.select dialog.
+      local asked = false
+      local original = vim.ui.select
+      vim.ui.select = function(_, opts, cb)
+        asked = true
+        t.match("Old conversation", opts.prompt)
+        cb("Delete")
+      end
+      vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<C-d>", true, false, true), "x", false)
       vim.wait(6000, function()
-        local ok, result = pcall(function()
-          return S.sessions["sess_old"] == nil
-        end)
-        return ok and result
+        return S.sessions["sess_old"] == nil
       end, 20)
+      vim.ui.select = original
+
+      t.truthy(asked, "no confirmation was shown")
       t.eq(nil, S.sessions["sess_old"])
-      -- The active session must survive.
-      t.truthy(S.session and S.session.id == "sess_mock")
-      controller.hide()
-    end)
+      t.truthy(S.session and S.session.id == "sess_mock", "active session must survive")
 
-    t.it("starts a fresh session when the active one is deleted", function()
-      local S = setup()
-      local calls, restore = capture_picker()
-      controller.delete_session_flow()
-      vim.wait(5000, function()
-        return #calls > 0
-      end, 20)
-      local active_id = S.session.id
-      calls[1].on_choice(active_id)
-      t.truthy(calls[2], "no confirmation dialog")
-      t.match("active", calls[2].title)
-      calls[2].on_choice(true)
-      restore()
-
-      -- A replacement session is created.
-      vim.wait(8000, function()
-        return S.session ~= nil
-      end, 20)
-      t.truthy(S.session, "no session after deleting the active one")
-      controller.hide()
-    end)
-
-    t.it("does nothing when the confirmation is declined", function()
-      local S = setup()
-      local calls, restore = capture_picker()
-      controller.delete_session_flow()
-      vim.wait(5000, function()
-        return #calls > 0
-      end, 20)
-      calls[1].on_choice("sess_old")
-      calls[2].on_choice(false)
-      restore()
-      vim.wait(300)
-      -- The session is still there as far as acp.nvim is concerned.
-      local still_listed = false
-      local calls2, restore2 = capture_picker()
-      controller.pick_session()
+      -- And the row disappears from the dialog once the callback lands.
       vim.wait(4000, function()
-        return #calls2 > 0
+        return find_row(browser, "Old conversation") == nil
       end, 20)
-      restore2()
-      for _, item in ipairs(calls2[1].items) do
-        if item.value and item.value.session_id == "sess_old" then
-          still_listed = true
-        end
+      t.eq(nil, find_row(browser, "Old conversation"))
+      pcall(vim.api.nvim_win_close, browser.win, true)
+      controller.hide()
+    end)
+
+    t.it("does not delete when the confirmation is declined", function()
+      local S = setup()
+      local browser = open_browser(S)
+      t.truthy(browser)
+      local row = find_row(browser, "Old conversation")
+      vim.api.nvim_win_set_cursor(browser.win, { row, 0 })
+
+      local original = vim.ui.select
+      vim.ui.select = function(_, _, cb)
+        cb("Cancel")
       end
-      t.truthy(still_listed, "session was deleted without confirmation")
+      vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<C-d>", true, false, true), "x", false)
+      vim.wait(800)
+      vim.ui.select = original
+
+      t.truthy(find_row(browser, "Old conversation"), "session was deleted despite declining")
+      pcall(vim.api.nvim_win_close, browser.win, true)
+      controller.hide()
+    end)
+
+    t.it("reports when the agent cannot delete", function()
+      local S = setup()
+      -- Pretend the agent has no delete capability.
+      S.client.has_session_capability = function(_, name)
+        return name ~= "delete"
+      end
+      local browser = open_browser(S)
+      t.truthy(browser)
+      vim.api.nvim_win_set_cursor(browser.win, { 1, 0 })
+
+      local prompted = false
+      local original = vim.ui.select
+      vim.ui.select = function()
+        prompted = true
+      end
+      vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<C-d>", true, false, true), "x", false)
+      vim.wait(500)
+      vim.ui.select = original
+
+      t.falsy(prompted, "should not offer a confirmation it cannot honour")
+      local joined = table.concat(browser_lines(browser), "\n")
+      t.match("cannot delete", joined)
+      pcall(vim.api.nvim_win_close, browser.win, true)
       controller.hide()
     end)
   end)

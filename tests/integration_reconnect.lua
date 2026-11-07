@@ -17,7 +17,7 @@ end
 acp.setup({
   agent = "opencode",
   agents = { opencode = { command = "python3", args = { root .. "tests/mock_agent.py" } } },
-  ui = { language = "en" },
+  ui = {},
 })
 acp.open()
 local st = controller.state()

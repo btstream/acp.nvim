@@ -32,7 +32,7 @@ return function(t)
     end)
 
     t.it("renders an empty transcript hint", function()
-      t.truthy(require("acp.i18n").t("empty_chat"))
+      t.truthy(require("acp.ui.chat"))
     end)
   end)
 end

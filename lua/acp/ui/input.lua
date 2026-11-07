@@ -1,5 +1,4 @@
 -- The composer window: editable buffer, winbar toolbar, per-session drafts.
-local i18n = require("acp.i18n")
 local log = require("acp.log")
 
 local M = {}

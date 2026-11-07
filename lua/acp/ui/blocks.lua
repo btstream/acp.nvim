@@ -1,5 +1,4 @@
 -- Turning session blocks into display lines.
-local i18n = require("acp.i18n")
 
 local M = {}
 
@@ -7,59 +6,26 @@ local M = {}
 ---@field text string
 ---@field segments {s: integer, e: integer, group: string}[]|nil
 
-local function icons()
-  return {
-    tool = "⚙",
-    tool_ok = "✓",
-    tool_fail = "✗",
-    tool_run = "◌",
-    tool_pending = "○",
-    user = "❯",
-    assistant = "⏺",
-    thought = "✻",
-    plan = "▤",
-    notice = "!",
-    compaction = "▣",
-    child = "↳",
-    more = "…",
-  }
-end
+local Icons = require("acp.ui.icons")
 
-local function ascii()
-  return {
-    tool = "*",
-    tool_ok = "v",
-    tool_fail = "x",
-    tool_run = "o",
-    tool_pending = ".",
-    user = ">",
-    assistant = "#",
-    thought = "+",
-    plan = "#",
-    notice = "!",
-    compaction = "=",
-    child = ">",
-    more = "...",
-  }
-end
-
+---Resolve the icon set used for rendering.
 ---@param use_icons boolean
 ---@return table<string,string>
 function M.icon_set(use_icons)
-  return use_icons and icons() or ascii()
+  return Icons.get(use_icons)
 end
 
 local function tool_status_label(status)
   if status == "completed" then
-    return i18n.t("tool_completed")
+    return "done"
   elseif status == "failed" then
-    return i18n.t("tool_failed")
+    return "failed"
   elseif status == "cancelled" then
-    return i18n.t("tool_cancelled")
+    return "cancelled"
   elseif status == "in_progress" then
-    return i18n.t("tool_running")
+    return "running"
   elseif status == "pending" then
-    return i18n.t("tool_pending")
+    return "pending"
   end
   return ""
 end
@@ -129,7 +95,7 @@ local function render_user(block, ctx)
       chips[#chips + 1] = "[" .. (att.label or att.path or "?") .. "]"
     end
   end
-  local header = ic.user .. " " .. i18n.t("you")
+  local header = ic.user .. " " .. "You"
   if #chips > 0 then
     header = header .. "  " .. table.concat(chips, " ")
   end
@@ -208,7 +174,7 @@ end
 local function render_tool(block, ctx)
   local ic = ctx.icons
   local glyph, glyph_hl = tool_icon(block, ic)
-  local caret = block.expanded and "▾" or "▸"
+  local caret = block.expanded and ic.chevron_down or ic.chevron_right
   local title = block.title ~= nil and block.title ~= "" and block.title or (block.name or "tool")
   local status = tool_status_label(block.status)
   local label = string.format("%s %s %s", caret, glyph, title)
@@ -223,7 +189,7 @@ local function render_tool(block, ctx)
   }
   local meta = {}
   if block.child and block.child.title then
-    meta[#meta + 1] = i18n.t("child") .. ": " .. block.child.title
+    meta[#meta + 1] = "subagent" .. ": " .. block.child.title
   end
   if status ~= "" then
     meta[#meta + 1] = status
@@ -295,16 +261,16 @@ end
 local function render_plan(block, ctx)
   local ic = ctx.icons
   local out = {
-    { text = ic.plan .. " " .. i18n.t("plan"), segments = { { s = 0, e = -1, group = "AcpPlan" } } },
+    { text = ic.plan .. " " .. "Plan", segments = { { s = 0, e = -1, group = "AcpPlan" } } },
   }
   for _, entry in ipairs(block.entries or {}) do
     local mark, hl
     if entry.status == "completed" then
-      mark, hl = "✓", "AcpPlanDone"
+      mark, hl = ic.tool_ok, "AcpPlanDone"
     elseif entry.status == "in_progress" then
-      mark, hl = "◌", "AcpPlan"
+      mark, hl = ic.tool_run, "AcpPlan"
     else
-      mark, hl = "○", "AcpPlanPending"
+      mark, hl = ic.tool_pending, "AcpPlanPending"
     end
     out[#out + 1] = {
       text = "  " .. mark .. " " .. (entry.content or ""),
@@ -329,13 +295,13 @@ end
 local function render_compaction(block, ctx)
   local label
   if block.status == "in_progress" then
-    label = i18n.t("compaction") .. " …"
+    label = "Context compacted" .. " …"
   elseif block.status == "failed" then
-    label = i18n.t("compaction") .. " (" .. i18n.t("tool_failed") .. ")"
+    label = "Context compacted" .. " (" .. "failed" .. ")"
   elseif block.status == "cancelled" then
-    label = i18n.t("compaction") .. " (" .. i18n.t("tool_cancelled") .. ")"
+    label = "Context compacted" .. " (" .. "cancelled" .. ")"
   else
-    label = i18n.t("compaction")
+    label = "Context compacted"
   end
   local out = {
     { text = "── " .. label .. " ──", segments = { { s = 0, e = -1, group = "AcpSeparator" } } },
@@ -355,7 +321,7 @@ local function render_error(block, ctx)
   local out = {}
   for i, line in ipairs(lines) do
     out[#out + 1] = {
-      text = i == 1 and ("✗ " .. line.text) or ("  " .. line.text),
+      text = i == 1 and (ctx.icons.tool_fail .. " " .. line.text) or ("  " .. line.text),
       segments = { { s = 0, e = -1, group = "AcpToolError" } },
     }
   end

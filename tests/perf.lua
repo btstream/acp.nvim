@@ -4,7 +4,7 @@ local state = require("acp.session.state")
 local Chat = require("acp.ui.chat")
 local blocks = require("acp.ui.blocks")
 
-local cfg = config.validate(config.merge(config.defaults, { ui = { language = "en" } }))
+local cfg = config.validate(config.merge(config.defaults, { ui = {} }))
 local chat = Chat.new({ config = cfg })
 chat.width = 80
 

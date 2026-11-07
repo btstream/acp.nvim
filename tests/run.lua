@@ -4,8 +4,6 @@ vim.opt.runtimepath:append(root)
 vim.opt.swapfile = false
 vim.opt.shadafile = "NONE"
 
-require("acp.i18n").setup("en")
-
 local t = require("tests.harness")
 
 require("tests.spec_framing")(t)

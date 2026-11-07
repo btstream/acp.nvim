@@ -5,7 +5,7 @@ local acp = require("acp")
 acp.setup({
   agent = "opencode",
   agents = { opencode = { command = "opencode", args = { "acp" } } },
-  ui = { language = "en" },
+  ui = {},
   layout = { input_height = 6 },
 })
 

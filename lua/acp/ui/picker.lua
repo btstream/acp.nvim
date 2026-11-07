@@ -166,7 +166,7 @@ local function internal_select(opts)
     end
     local prompt_line
     if filter_enabled then
-      lines[#lines + 1] = "❯ " .. query
+      lines[#lines + 1] = "> " .. query
       prompt_line = #lines
     end
     vim.bo[buf].modifiable = true

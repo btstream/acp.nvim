@@ -6,7 +6,8 @@
 --    width can never make the string wider than the window.
 --  * Text is truncated to the measured budget before markers are added, so
 --    escape sequences never get cut in half.
-local i18n = require("acp.i18n")
+
+local Icons = require("acp.ui.icons")
 
 local M = {}
 
@@ -80,6 +81,7 @@ end
 ---@param width integer available cells (the whole window width)
 ---@return string
 function M.render(info, width)
+  local ic = Icons.get(info.icons)
   local width_ok = math.max(1, width - 1)
 
   local left_plain = {}
@@ -94,14 +96,14 @@ function M.render(info, width)
   end
 
   if info.mode and info.mode ~= "" then
-    push_left(info.mode .. " ▾", nil, "AcpPickMode")
+    push_left(info.mode .. " " .. ic.chevron_down, nil, "AcpPickMode")
   end
   if info.model and info.model ~= "" then
-    push_left(info.model .. " ▾", "AcpToolbarAccent", "AcpPickModel")
+    push_left(info.model .. " " .. ic.chevron_down, "AcpToolbarAccent", "AcpPickModel")
   end
   if info.show_usage and info.usage and info.usage.size and info.usage.size > 0 then
     local pct = math.floor((info.usage.used or 0) / info.usage.size * 100 + 0.5)
-    push_left(i18n.t("usage") .. " " .. pct .. "%", "AcpMuted")
+    push_left("Context" .. " " .. pct .. "%", "AcpMuted")
   end
 
   local right_plain = {}
@@ -116,17 +118,17 @@ function M.render(info, width)
   end
 
   if info.waiting then
-    push_right("! " .. i18n.t("waiting"), "AcpPermission")
+    push_right("! " .. "Waiting", "AcpPermission")
   elseif info.status == "running" then
     local spinner = info.spinner and (info.spinner .. " ") or ""
-    push_right(spinner .. i18n.t("running"), "AcpStreaming")
+    push_right(spinner .. "Running", "AcpStreaming")
   elseif info.status == "cancelling" then
-    push_right("… " .. i18n.t("stopped"), "AcpMuted")
+    push_right("… " .. "Session stopped", "AcpMuted")
   else
-    push_right(i18n.t("idle"), "AcpMuted")
+    push_right("Idle", "AcpMuted")
   end
   if info.queued and info.queued > 0 then
-    push_right(string.format("+%d %s", info.queued, i18n.t("queued")), "AcpMuted")
+    push_right(string.format("+%d %s", info.queued, "queued"), "AcpMuted")
   end
 
   local left_text = table.concat(left_plain)
@@ -166,9 +168,9 @@ end
 function M.chat_title(opts, width)
   local title = opts.title
   if not title or title == "" then
-    title = i18n.t("no_session")
+    title = "No session"
   end
-  local suffix = opts.pending_new and "  ↓ new" or ""
+  local suffix = opts.pending_new and ("  " .. Icons.get(opts.icons).arrow_down .. " new") or ""
   local available = math.max(10, width - dw(opts.agent) - dw(suffix) - 6)
   return "%#AcpTitle# "
     .. M.escape(opts.agent)

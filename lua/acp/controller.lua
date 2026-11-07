@@ -1,7 +1,6 @@
 -- Application controller: wires protocol, session state, layout and UI.
 local config_mod = require("acp.config")
 local log = require("acp.log")
-local i18n = require("acp.i18n")
 local async = require("acp.async")
 local client_mod = require("acp.protocol.client")
 local session_mod = require("acp.session.state")
@@ -10,6 +9,8 @@ local Chat = require("acp.ui.chat")
 local Input = require("acp.ui.input")
 local toolbar = require("acp.ui.toolbar")
 local picker = require("acp.ui.picker")
+local session_picker = require("acp.ui.session_picker")
+local Icons = require("acp.ui.icons")
 local highlights = require("acp.ui.highlights")
 local complete = require("acp.ui.complete")
 local drafts = require("acp.storage.drafts")
@@ -23,6 +24,9 @@ local S = {
   client = nil,
   session = nil,
   sessions = {},
+  -- session_id -> title, learned from session/list. Session objects are often
+  -- recreated (load/reconnect), so titles live here rather than on the object.
+  titles = {},
   chat = nil,
   input = nil,
   panel_requested = false,
@@ -86,6 +90,11 @@ local function session_label(session)
   if has_text(session.title) then
     return session.title
   end
+  -- Titles are cached per session id; prefer that over the raw identifier.
+  local cached = S.titles and S.titles[session.id]
+  if has_text(cached) then
+    return cached
+  end
   -- Fall back to a short, stable identifier instead of pretending there is no session.
   return "#" .. tostring(session.id):sub(-6)
 end
@@ -137,8 +146,8 @@ end
 ---@return string
 function M.statusline()
   local st = M.status()
-  local icons = S.config and S.config.ui.icons
-  local glyph = icons and "◆" or "*"
+  local use_icons = S.config and S.config.ui.icons
+  local glyph = use_icons and Icons.get(true).assistant or "*"
   if not st.connected then
     return glyph .. " off"
   end
@@ -146,7 +155,7 @@ function M.statusline()
     return glyph .. " !"
   end
   if st.running then
-    return glyph .. " ◌"
+    return glyph .. " " .. Icons.get(icons).tool_run
   end
   if st.queued > 0 then
     return glyph .. " +" .. st.queued
@@ -214,6 +223,7 @@ function M.composer_bar(win)
   end
 
   local base = toolbar.render({
+    icons = cfg().ui.icons,
     mode = mode,
     model = model,
     status = session and session.status or "idle",
@@ -237,6 +247,7 @@ function M.chat_bar(win)
   win = win or vim.api.nvim_get_current_win()
   local session = current()
   return toolbar.chat_title({
+    icons = cfg().ui.icons,
     agent = cfg().agent,
     title = session_label(session),
     pending_new = S.chat and S.chat.pending_new or false,
@@ -260,21 +271,66 @@ local function refresh_chrome()
   update_input_toolbar()
 end
 
+---Remember an agent-provided title, ignoring JSON null and empty strings.
+---@param session_id string
+---@param title any
+---@return boolean changed
+local function cache_title(session_id, title)
+  if not session_id then
+    return false
+  end
+  -- JSON null decodes to vim.NIL; that means "no title yet", not "clear it".
+  if type(title) ~= "string" or title == "" then
+    return false
+  end
+  if S.titles[session_id] == title then
+    return false
+  end
+  S.titles[session_id] = title
+  return true
+end
+
+---Apply the cached title to a session object and refresh the chrome.
+---@param session AcpSessionState|nil
+---@return boolean applied
+local function apply_cached_title(session)
+  if not session then
+    return false
+  end
+  local title = S.titles[session.id]
+  if not title or title == session.title then
+    return false
+  end
+  session.title = title
+  return true
+end
+
 ---Fetch the authoritative title for a session.
 ---
 ---OpenCode does not push `session_info_update`, so a title only appears in
----`session/list`. Query it once when a session is created and once at the end of
----each turn (that is when agents auto-generate a title from the first prompt).
+---`session/list`. Query it when a session is created, when one is switched to,
+---and at the end of each turn (that is when agents auto-generate a title from
+---the first prompt).
 ---@param session AcpSessionState|nil
-local function refresh_session_title(session)
+---@param cb fun()|nil invoked after the lookup settles
+local function refresh_session_title(session, cb)
   if not session or not S.client or S.connection ~= "ready" then
+    if cb then
+      cb()
+    end
     return
   end
   if not S.client:has_session_capability("list") then
+    if cb then
+      cb()
+    end
     return
   end
   if S.title_refreshing then
     S.title_pending = true
+    if cb then
+      cb()
+    end
     return
   end
   S.title_refreshing = true
@@ -283,18 +339,14 @@ local function refresh_session_title(session)
     S.title_refreshing = false
     if ok and type(result) == "table" then
       for _, info in ipairs(result.sessions or {}) do
-        if info.sessionId == session.id then
-          local title = info.title
-          -- JSON null decodes to vim.NIL; treat it as "no title yet".
-          if title ~= nil and title ~= vim.NIL and title ~= "" then
-            if title ~= session.title then
-              session.title = title
-              refresh_chrome()
-            end
-          end
-          break
-        end
+        cache_title(info.sessionId, info.title)
       end
+      if apply_cached_title(session) then
+        refresh_chrome()
+      end
+    end
+    if cb then
+      cb()
     end
     if S.title_pending then
       S.title_pending = false
@@ -711,7 +763,10 @@ function M.connect()
           refresh_chrome()
           local message = type(err) == "table" and (err.message or vim.inspect(err)) or tostring(err)
           if message:match("auth") then
-            notify(i18n.t("auth_hint"), vim.log.levels.WARN)
+            notify(
+              "OpenCode requires authentication. Run `opencode auth login` in a terminal, then reconnect.",
+              vim.log.levels.WARN
+            )
           else
             notify("failed to start agent: " .. message, vim.log.levels.ERROR)
           end
@@ -784,11 +839,15 @@ function M.reload_session(session_id)
       fresh.config_options = result.configOptions
     end
     fresh:finish_turn("end_turn")
+    if apply_cached_title(fresh) then
+      refresh_chrome()
+    end
     if S.chat then
       S.chat:set_session(fresh)
       S.chat:render(true)
     end
     refresh_chrome()
+    refresh_session_title(fresh)
   end)
 end
 
@@ -817,7 +876,7 @@ function M.new_session()
     S.sessions[session.id] = session
     activate_session(session)
     S.chat:render(true)
-    notify(i18n.t("started"), vim.log.levels.INFO)
+    notify("Session started", vim.log.levels.INFO)
     refresh_session_title(session)
   end)
 end
@@ -826,7 +885,7 @@ end
 ---@param session_id string
 function M.load_session(session_id)
   if S.connection ~= "ready" or not S.client then
-    notify(i18n.t("errors.not_running"), vim.log.levels.WARN)
+    notify("No agent process is running", vim.log.levels.WARN)
     return
   end
   local cwd = resolve_cwd()
@@ -851,202 +910,206 @@ function M.load_session(session_id)
       entry.config_options = result.configOptions
     end
     entry:finish_turn("end_turn")
+    -- A freshly built session object carries no title; take it from the cache
+    -- so the winbar updates the moment the switch completes.
+    if apply_cached_title(entry) then
+      refresh_chrome()
+    end
     S.chat:render(true)
     refresh_chrome()
+    refresh_session_title(entry)
   end)
 end
 
----Build the picker items for stored sessions.
----@param sessions table[]
----@param with_delete boolean
----@return table[] items
-local function session_items(sessions, with_delete)
-  local items = {}
-  for _, item in ipairs(sessions or {}) do
-    local label = has_text(item.title) and item.title or item.sessionId
-    local when = has_text(item.updatedAt) and item.updatedAt or (has_text(item.createdAt) and item.createdAt or "")
-    local desc = when ~= "" and tostring(when):sub(1, 19) or nil
-    if item.sessionId == (S.session and S.session.id) then
-      desc = (desc and (desc .. "  ") or "") .. i18n.t("current_session")
+---Delete a session through the agent and drop it from local state.
+---@param session_id string
+---@param done fun(ok: boolean)
+local function delete_session(session_id, done)
+  if not S.client then
+    done(false)
+    return
+  end
+  async.run(function()
+    local ok, result = S.client:delete_session(session_id)
+    if not ok then
+      local message = type(result) == "table" and (result.message or vim.inspect(result)) or tostring(result)
+      notify(string.format("Unable to delete the session: %s", message), vim.log.levels.ERROR)
+      done(false)
+      return
     end
-    items[#items + 1] = {
-      label = label,
-      description = desc,
-      value = { kind = "open", session_id = item.sessionId },
-    }
-  end
-  if with_delete then
-    items[#items + 1] = {
-      label = "✕ " .. i18n.t("delete_session"),
-      description = nil,
-      value = { kind = "delete_menu" },
-    }
-  end
-  return items
+    S.sessions[session_id] = nil
+    S.titles[session_id] = nil
+    if S.session and S.session.id == session_id then
+      -- The active conversation is gone; start a fresh one.
+      S.session = nil
+      if S.chat then
+        S.chat:set_session(nil)
+        S.chat:render(true)
+      end
+      if S.input then
+        S.input:switch_session(nil)
+      end
+      M.new_session()
+    else
+      refresh_chrome()
+    end
+    notify("Session deleted", vim.log.levels.INFO)
+    done(true)
+  end)
 end
 
 ---Fetch the session list, calling `cb(ok, sessions)`.
 ---@param cb fun(ok: boolean, sessions: table[])
 local function fetch_sessions(cb)
   if not S.client or S.connection ~= "ready" then
-    notify(i18n.t("errors.not_running"), vim.log.levels.WARN)
+    notify("No agent process is running", vim.log.levels.WARN)
     return
   end
   async.run(function()
     local ok, result = S.client:list_sessions(resolve_cwd())
     if not ok then
       if type(result) == "table" and (result.code == -32601 or result.code == -32602) then
-        notify(i18n.t("no_session_list"), vim.log.levels.WARN)
+        notify("This agent does not support listing sessions", vim.log.levels.WARN)
       else
         local message = type(result) == "table" and (result.message or vim.inspect(result)) or tostring(result)
-        notify(i18n.t("errors.list_failed", message), vim.log.levels.ERROR)
+        notify(string.format("Unable to list sessions: %s", message), vim.log.levels.ERROR)
       end
       cb(false, {})
       return
     end
-    cb(true, result.sessions or {})
+    local sessions = result.sessions or {}
+    -- Keep the title cache warm so switching sessions updates the winbar at once.
+    for _, info in ipairs(sessions) do
+      cache_title(info.sessionId, info.title)
+    end
+    cb(true, sessions)
   end)
 end
 
----Show the delete flow: pick a session, confirm, delete.
----@param sessions table[]|nil pre-fetched sessions
-function M.delete_session_flow(sessions)
-  if not S.client then
-    notify(i18n.t("errors.not_running"), vim.log.levels.WARN)
-    return
-  end
-  if not S.client:has_session_capability("delete") then
-    notify(i18n.t("delete_unsupported"), vim.log.levels.WARN)
-    return
-  end
-
-  local function proceed(list)
-    local deletable = {}
-    for _, item in ipairs(list) do
-      deletable[#deletable + 1] = item
-    end
-    if #deletable == 0 then
-      notify(i18n.t("no_sessions_found"), vim.log.levels.INFO)
-      return
-    end
-    local items = {}
-    for _, item in ipairs(deletable) do
-      local label = has_text(item.title) and item.title or item.sessionId
-      local when = has_text(item.updatedAt) and item.updatedAt or (has_text(item.createdAt) and item.createdAt or "")
-      items[#items + 1] = {
-        label = label,
-        description = when ~= "" and tostring(when):sub(1, 19) or nil,
-        value = item.sessionId,
-      }
-    end
-    picker.select({
-      title = i18n.t("delete_session") .. " · " .. i18n.t("select_session"),
-      items = items,
-      on_choice = function(session_id)
-        M.confirm_delete(session_id)
-      end,
-    })
-  end
-
-  if sessions then
-    proceed(sessions)
-  else
-    fetch_sessions(function(ok, list)
-      if ok then
-        proceed(list)
-      end
-    end)
-  end
-end
-
----Ask for confirmation and delete one session.
----@param session_id string
-function M.confirm_delete(session_id)
-  if not S.client then
-    return
-  end
-  local label = session_id
-  local active = S.session and S.session.id == session_id
-  for _, session in pairs(S.sessions) do
-    if session.id == session_id and session.title and session.title ~= "" then
-      label = session.title
-    end
-  end
-
-  local prompt = i18n.t("confirm_delete"):gsub("%%s", label)
-  if active then
-    prompt = prompt .. "\n" .. i18n.t("confirm_delete_active")
-  end
-
-  picker.select({
-    title = prompt,
-    items = {
-      { label = "✕ " .. i18n.t("delete"), value = true },
-      { label = i18n.t("cancel"), value = false },
-    },
-    filter = false,
-    on_choice = function(confirmed)
-      if not confirmed then
-        return
-      end
-      async.run(function()
-        local ok, result = S.client:delete_session(session_id)
-        if not ok then
-          local message = type(result) == "table" and (result.message or vim.inspect(result)) or tostring(result)
-          notify(i18n.t("errors.delete_failed", message), vim.log.levels.ERROR)
-          return
-        end
-        S.sessions[session_id] = nil
-        if S.session and S.session.id == session_id then
-          -- The active conversation is gone; start a fresh one.
-          S.session = nil
-          if S.chat then
-            S.chat:set_session(nil)
-            S.chat:render(true)
-          end
-          if S.input then
-            S.input:switch_session(nil)
-          end
-          notify(i18n.t("session_deleted"), vim.log.levels.INFO)
-          M.new_session()
-        else
-          notify(i18n.t("session_deleted"), vim.log.levels.INFO)
-          refresh_chrome()
-        end
-      end)
-    end,
-    on_cancel = function()
-      -- Closing the confirmation is a no-op, not a deletion.
-    end,
-  })
-end
-
----List and pick a stored session.
+---Browse stored sessions. <CR> opens, <C-d> deletes, typing filters.
 function M.pick_session()
   if not S.client or S.connection ~= "ready" then
-    notify(i18n.t("errors.not_running"), vim.log.levels.WARN)
+    notify("No agent process is running", vim.log.levels.WARN)
     return
   end
-  local can_delete = S.client:has_session_capability("delete")
   fetch_sessions(function(ok, sessions)
     if not ok then
       return
     end
     if #sessions == 0 then
-      notify(i18n.t("no_sessions_found"), vim.log.levels.INFO)
+      notify("No stored sessions found", vim.log.levels.INFO)
       return
     end
-    picker.select({
-      title = i18n.t("select_session"),
-      items = session_items(sessions, can_delete),
-      on_choice = function(value)
-        if value.kind == "delete_menu" then
-          M.delete_session_flow(sessions)
-        else
-          M.load_session(value.session_id)
-        end
+    session_picker.open({
+      sessions = sessions,
+      current_id = S.session and S.session.id or nil,
+      can_delete = S.client:has_session_capability("delete"),
+      use_icons = cfg().ui.icons,
+      on_open = function(session_id)
+        M.load_session(session_id)
+      end,
+      on_delete = function(session_id, done)
+        delete_session(session_id, done)
       end,
     })
+  end)
+end
+
+---Open the session browser ready to delete (same dialog, <C-d> is the action).
+function M.delete_session_flow()
+  M.pick_session()
+end
+
+---Create a new session with the current agent.
+function M.new_session()
+  if S.connection ~= "ready" or not S.client then
+    M.connect()
+    return
+  end
+  local cwd = resolve_cwd()
+  async.run(function()
+    local ok, result = S.client:new_session(cwd)
+    if not ok then
+      local message = type(result) == "table" and (result.message or vim.inspect(result)) or tostring(result)
+      notify("unable to create a session: " .. message, vim.log.levels.ERROR)
+      return
+    end
+    local session = session_mod.new(result.sessionId, cwd)
+    if result.configOptions then
+      session.config_options = result.configOptions
+    end
+    if result.modes then
+      session.modes = result.modes
+      session.current_mode = result.currentModeId
+    end
+    S.sessions[session.id] = session
+    activate_session(session)
+    S.chat:render(true)
+    notify("Session started", vim.log.levels.INFO)
+    refresh_session_title(session)
+  end)
+end
+
+---Load a previous session, replaying its history.
+---@param session_id string
+function M.load_session(session_id)
+  if S.connection ~= "ready" or not S.client then
+    notify("No agent process is running", vim.log.levels.WARN)
+    return
+  end
+  local cwd = resolve_cwd()
+  async.run(function()
+    local entry = S.sessions[session_id]
+    if entry then
+      activate_session(entry)
+    else
+      entry = session_mod.new(session_id, cwd)
+      S.sessions[session_id] = entry
+      activate_session(entry)
+    end
+    S.replaying = true
+    local ok, result = S.client:load_session(session_id, cwd)
+    S.replaying = false
+    if not ok then
+      local message = type(result) == "table" and (result.message or vim.inspect(result)) or tostring(result)
+      notify("unable to load session: " .. message, vim.log.levels.ERROR)
+      return
+    end
+    if result.configOptions then
+      entry.config_options = result.configOptions
+    end
+    entry:finish_turn("end_turn")
+    -- A freshly built session object carries no title; take it from the cache
+    -- so the winbar updates the moment the switch completes.
+    if apply_cached_title(entry) then
+      refresh_chrome()
+    end
+    S.chat:render(true)
+    refresh_chrome()
+    refresh_session_title(entry)
+  end)
+end
+
+---Fetch the session list, calling `cb(ok, sessions)`.
+---@param cb fun(ok: boolean, sessions: table[])
+local function fetch_sessions(cb)
+  if not S.client or S.connection ~= "ready" then
+    notify("No agent process is running", vim.log.levels.WARN)
+    return
+  end
+  async.run(function()
+    local ok, result = S.client:list_sessions(resolve_cwd())
+    if not ok then
+      if type(result) == "table" and (result.code == -32601 or result.code == -32602) then
+        notify("This agent does not support listing sessions", vim.log.levels.WARN)
+      else
+        local message = type(result) == "table" and (result.message or vim.inspect(result)) or tostring(result)
+        notify(string.format("Unable to list sessions: %s", message), vim.log.levels.ERROR)
+      end
+      cb(false, {})
+      return
+    end
+    cb(true, result.sessions or {})
   end)
 end
 
@@ -1065,11 +1128,11 @@ end
 ---Send the composer contents.
 function M.send_now(text, attachments)
   if not S.session then
-    notify(i18n.t("errors.no_session"), vim.log.levels.WARN)
+    notify("No active session", vim.log.levels.WARN)
     return
   end
   if S.connection ~= "ready" or not S.client then
-    notify(i18n.t("errors.not_running"), vim.log.levels.WARN)
+    notify("No agent process is running", vim.log.levels.WARN)
     return
   end
 
@@ -1122,11 +1185,15 @@ function M.send_now(text, attachments)
       local raw = type(result) == "table" and (result.message or vim.inspect(result)) or tostring(result)
       local lowered = tostring(raw):lower()
       if lowered:match("auth") then
-        add_system_block(i18n.t("auth_hint"))
+        add_system_block("OpenCode requires authentication. Run `opencode auth login` in a terminal, then reconnect.")
       elseif lowered:match("limit") or lowered:match("quota") or lowered:match("rate") then
         -- Provider-side quota problems are not plugin errors; give the user
         -- the one action that actually helps.
-        add_system_block(raw .. "\n\n" .. i18n.t("quota_hint"))
+        add_system_block(
+          raw
+            .. "\n\n"
+            .. "This is a provider-side limit, not an acp.nvim error. Click the model name in the toolbar, press <M-m> while typing, or run :Acp model."
+        )
       else
         add_system_block("prompt failed: " .. raw)
       end
@@ -1156,7 +1223,7 @@ end
 ---@param attachments table[]
 function M.submit(text, attachments)
   if not S.session then
-    notify(i18n.t("errors.no_session"), vim.log.levels.WARN)
+    notify("No active session", vim.log.levels.WARN)
     return
   end
   M.send_now(text, attachments)
@@ -1252,7 +1319,7 @@ function M.on_client_event(name, payload)
       M.show_permission(payload)
     else
       notify(
-        i18n.t("permissions_title") .. ": " .. (payload.tool_call and payload.tool_call.title or ""),
+        "Permission required" .. ": " .. (payload.tool_call and payload.tool_call.title or ""),
         vim.log.levels.WARN
       )
     end
@@ -1281,10 +1348,10 @@ function M.on_client_event(name, payload)
     local session = current()
     if session and session.status == "running" then
       session:finish_turn("error")
-      add_system_block(i18n.t("disconnected") .. "  :Acp reconnect", "error")
+      add_system_block("Agent disconnected" .. "  :Acp reconnect", "error")
     end
     local detail = payload and payload.stderr or ""
-    local message = i18n.t("disconnected")
+    local message = "Agent disconnected"
     if detail and detail ~= "" then
       log.info("agent stderr:\n%s", detail)
     end
@@ -1330,7 +1397,7 @@ function M.show_permission(payload)
   end
 
   picker.select({
-    title = i18n.t("permissions_title") .. ": " .. title,
+    title = "Permission required" .. ": " .. title,
     items = items,
     width = math.min(90, math.max(50, vim.o.columns - 20)),
     on_choice = function(value)
@@ -1391,7 +1458,7 @@ end
 
 function M.add_file(path)
   if not S.session then
-    notify(i18n.t("errors.no_session"), vim.log.levels.WARN)
+    notify("No active session", vim.log.levels.WARN)
     return
   end
   local target = path
@@ -1409,7 +1476,7 @@ function M.add_file(path)
   end
   S.input:add_attachment(attachment)
   refresh_chrome()
-  notify(i18n.t("attach_file") .. ": " .. attachment.label, vim.log.levels.INFO)
+  notify("file" .. ": " .. attachment.label, vim.log.levels.INFO)
 end
 
 function M.add_selection()
@@ -1420,7 +1487,7 @@ function M.add_selection()
   end
   S.input:add_attachment(attachment)
   refresh_chrome()
-  notify(i18n.t("attach_selection") .. ": " .. attachment.label, vim.log.levels.INFO)
+  notify("selection" .. ": " .. attachment.label, vim.log.levels.INFO)
   M.focus("input")
 end
 
@@ -1445,7 +1512,7 @@ function M.open_location()
     end
   end
   if not loc or not loc.path then
-    notify(i18n.t("no_locations"), vim.log.levels.INFO)
+    notify("No file location under cursor", vim.log.levels.INFO)
     return
   end
   local path = loc.path
@@ -1485,7 +1552,8 @@ function M.pick_option(category, title)
   end
   local items = {}
   for _, entry in ipairs(session_mod.select_values(option)) do
-    local marked = entry.value == option.currentValue and "● " or "○ "
+    local ic = Icons.get(cfg().ui.icons)
+    local marked = entry.value == option.currentValue and (ic.check_circle .. " ") or (ic.tool_pending .. " ")
     items[#items + 1] = {
       label = marked .. (entry.name or tostring(entry.value)),
       description = entry.description,
@@ -1515,11 +1583,11 @@ function M.pick_option(category, title)
 end
 
 function M.pick_model()
-  M.pick_option("model", i18n.t("select_model"))
+  M.pick_option("model", "Model")
 end
 
 function M.pick_mode()
-  M.pick_option("mode", i18n.t("select_mode"))
+  M.pick_option("mode", "Mode")
 end
 
 function M.pick_config()
@@ -1543,7 +1611,7 @@ function M.pick_config()
     return
   end
   picker.select({
-    title = i18n.t("select_config"),
+    title = "Configure",
     items = items,
     on_choice = function(id)
       local option = nil
@@ -1663,7 +1731,6 @@ function M.setup(opts)
   S.config = merged
 
   log.setup(merged.log)
-  i18n.setup(merged.ui.language)
   highlights.setup(merged.ui.zed_style)
   layout.setup(merged)
 
@@ -1676,6 +1743,7 @@ function M.setup(opts)
   end
   S.session = nil
   S.sessions = {}
+  S.titles = {}
   S.pending_permissions = {}
   S.connection = "stopped"
   S.pending_reload = nil

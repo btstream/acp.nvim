@@ -64,8 +64,6 @@ M.defaults = {
     show_thoughts = false,
     follow_output = true,
     wrap = true,
-    -- "zh" or "en"
-    language = "zh",
 
     -- Selector implementation: "vim" uses vim.ui.select (so telescope,
     -- fzf-lua, snacks.nvim and friends apply), "internal" always uses the
@@ -118,8 +116,23 @@ M.defaults = {
   notices = true,
 }
 
-local function is_map(t)
-  return type(t) == "table" and not vim.islist(t)
+---Whether `t` is a plain table that should be merged rather than replaced.
+---
+---`vim.islist({})` is true, so an *empty* table must be treated as a map when
+---the default at the same key is a map: otherwise `ui = {}` would wipe every
+---default instead of leaving them intact.
+---@param t any
+---@param default any
+---@return boolean
+local function is_map(t, default)
+  if type(t) ~= "table" then
+    return false
+  end
+  if next(t) == nil then
+    -- Empty table: follow the default's shape.
+    return type(default) == "table" and not vim.islist(default)
+  end
+  return not vim.islist(t)
 end
 
 ---Deep merge `over` into `base` without mutating either.
@@ -132,7 +145,7 @@ function M.merge(base, over)
     out[k] = v
   end
   for k, v in pairs(over or {}) do
-    if is_map(v) and is_map(out[k]) then
+    if is_map(v, out[k]) and is_map(out[k], out[k]) then
       out[k] = M.merge(out[k], v)
     else
       out[k] = v
@@ -172,7 +185,6 @@ function M.validate(cfg)
   check_enum(cfg.layout.position, { "right", "left" }, "layout.position")
   check_number(cfg.layout.width, 0.05, 1000, "layout.width")
   check_number(cfg.layout.input_height, 1, 200, "layout.input_height")
-  check_enum(cfg.ui.language, { "zh", "en" }, "ui.language")
   check_enum(cfg.ui.picker, { "vim", "internal" }, "ui.picker")
   check_enum(cfg.ui.title.placement, { "auto", "winbar", "off" }, "ui.title.placement")
   check_enum(cfg.ui.toolbar.placement, { "auto", "winbar", "off" }, "ui.toolbar.placement")
