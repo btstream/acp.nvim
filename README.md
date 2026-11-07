@@ -221,7 +221,28 @@ require("acp").setup({
 })
 ```
 
-`extend()` 只是把下面两个 view 定义插入你的 `opts.right`，不会覆盖已有配置：
+`extend()` 只是把下面两个 view 定义插入你的 `opts.right`，不会覆盖已有配置。
+
+> **注意**：两个视图必须作为**数组元素**写进列表，不能写成具名字段。
+> edgy 只遍历 `ipairs(views)`，`right = { { ft = "acp_chat" }, input = { ft = "acp_input" } }`
+> 里的 `input` 是具名字段，edgy 会完全忽略它，导致输入框脱离 edgebar、
+> 布局错位。
+
+```lua
+-- 正确
+right = {
+  { ft = "acp_chat",  title = "Agent" },
+  { ft = "acp_input", title = "Message", size = { height = 0.2 } },
+}
+
+-- 错误：acp_input 是具名字段，edgy 不会管理它
+right = {
+  { ft = "acp_chat", title = "Agent" },
+  input = { ft = "acp_input", title = "Message" },
+}
+```
+
+acp.nvim 在无法接管时会给出警告，而不是静默错位。
 
 ```lua
 right = {

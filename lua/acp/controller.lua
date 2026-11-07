@@ -632,6 +632,12 @@ local function ensure_windows()
   set_chat_keymaps()
   refresh_chrome()
   S.chat:render(true)
+
+  -- In external mode a layout manager owns the windows; warn when it has no
+  -- view registered for them, which would leave the panel out of place.
+  if cfg().layout.backend == "external" then
+    require("acp.integrations.edgy").check_registered()
+  end
 end
 
 ---Show the panel, starting the agent when needed.

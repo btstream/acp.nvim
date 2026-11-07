@@ -125,6 +125,23 @@ q              隐藏面板
       require("acp.integrations.edgy").extend(opts)
     end
 
+两个视图必须作为数组元素写进列表，不能写成具名字段。edgy 只遍历
+ipairs(views)，具名字段会被完全忽略，导致输入框脱离 edgebar、布局错位：
+
+    -- 正确
+    right = {
+      { ft = "acp_chat",  title = "Agent" },
+      { ft = "acp_input", title = "Message", size = { height = 0.2 } },
+    }
+
+    -- 错误
+    right = {
+      { ft = "acp_chat", title = "Agent" },
+      input = { ft = "acp_input", title = "Message" },
+    }
+
+无法接管时 acp.nvim 会给出警告。
+
 acp 创建两个普通视图：
 
     acp_chat    对话记录（只读）

@@ -2,6 +2,18 @@ vim.opt.runtimepath:append(vim.fn.fnamemodify(vim.fn.getcwd(), ":p"))
 
 -- Optional test dependency: use a locally installed snacks.nvim when present so
 -- the snacks-backed session browser is exercised instead of only the fallback.
+-- Optional test dependency: edgy.nvim, for the layout integration tests.
+local edgy_candidates = {
+  vim.fn.expand("~/.local/share/nvim/lazy/edgy.nvim"),
+  vim.fn.expand("~/.local/share/nvim/site/pack/deps/start/edgy.nvim"),
+}
+for _, dir in ipairs(edgy_candidates) do
+  if dir ~= "" and vim.fn.isdirectory(dir .. "/lua/edgy") == 1 then
+    vim.opt.runtimepath:append(dir)
+    break
+  end
+end
+
 local candidates = {
   vim.fn.expand("~/.local/share/nvim/lazy/snacks.nvim"),
   vim.fn.expand("~/.local/share/nvim/site/pack/deps/start/snacks.nvim"),

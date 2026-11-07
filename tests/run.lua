@@ -24,5 +24,6 @@ require("tests.spec_sessions")(t)
 require("tests.spec_sessions_snacks")(t)
 require("tests.spec_session_scope")(t)
 require("tests.spec_newlines")(t)
+require("tests.spec_edgy_views")(t)
 
 t.run()
