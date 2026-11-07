@@ -71,6 +71,13 @@ M.defaults = {
     ---@type "vim"|"internal"
     picker = "vim",
 
+    -- Backend for the :Acp sessions browser.
+    -- "snacks" uses snacks.nvim when it is installed, and falls back to the
+    -- built-in window automatically when it is not. "internal" always uses the
+    -- built-in window.
+    ---@type "snacks"|"internal"
+    session_picker = "snacks",
+
     title = {
       ---@type "auto"|"winbar"|"off"
       placement = "auto",
@@ -186,6 +193,7 @@ function M.validate(cfg)
   check_number(cfg.layout.width, 0.05, 1000, "layout.width")
   check_number(cfg.layout.input_height, 1, 200, "layout.input_height")
   check_enum(cfg.ui.picker, { "vim", "internal" }, "ui.picker")
+  check_enum(cfg.ui.session_picker, { "snacks", "internal" }, "ui.session_picker")
   check_enum(cfg.ui.title.placement, { "auto", "winbar", "off" }, "ui.title.placement")
   check_enum(cfg.ui.toolbar.placement, { "auto", "winbar", "off" }, "ui.toolbar.placement")
   check_enum(cfg.permissions.prompt, { "select", "native" }, "permissions.prompt")

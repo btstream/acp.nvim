@@ -10,6 +10,7 @@ local Input = require("acp.ui.input")
 local toolbar = require("acp.ui.toolbar")
 local picker = require("acp.ui.picker")
 local session_picker = require("acp.ui.session_picker")
+local session_snacks = require("acp.ui.session_snacks")
 local Icons = require("acp.ui.icons")
 local highlights = require("acp.ui.highlights")
 local complete = require("acp.ui.complete")
@@ -1000,7 +1001,7 @@ function M.pick_session()
       notify("No stored sessions found", vim.log.levels.INFO)
       return
     end
-    session_picker.open({
+    local picker_opts = {
       sessions = sessions,
       current_id = S.session and S.session.id or nil,
       can_delete = S.client:has_session_capability("delete"),
@@ -1011,7 +1012,14 @@ function M.pick_session()
       on_delete = function(session_id, done)
         delete_session(session_id, done)
       end,
-    })
+    }
+
+    -- snacks is the default when it is installed; otherwise fall back to the
+    -- built-in window instead of failing.
+    if cfg().ui.session_picker == "snacks" and session_snacks.open(picker_opts) then
+      return
+    end
+    session_picker.open(picker_opts)
   end)
 end
 

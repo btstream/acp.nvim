@@ -9,7 +9,7 @@ return function(t)
     acp.setup({
       agent = "opencode",
       agents = { opencode = { command = "python3", args = { root .. "tests/mock_agent.py" } } },
-      ui = {},
+      ui = { session_picker = "internal" },
       permissions = { prompt = "native" },
     })
     controller.open()
