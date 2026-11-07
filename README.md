@@ -316,7 +316,10 @@ heirline 同理，只需调用 `statusline()` 或读取 `status()`。
 
 ## 外观
 
-所有样式都通过语义化高亮组暴露，直接覆盖即可：
+所有样式都通过语义化高亮组暴露。切换 colorscheme 后会自动重新应用，
+不会因为换主题而丢失配色。
+
+直接覆盖即可：
 
 ```lua
 vim.api.nvim_set_hl(0, "AcpUser", { link = "Function" })
