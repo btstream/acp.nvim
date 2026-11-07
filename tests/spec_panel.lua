@@ -53,6 +53,21 @@ return function(t)
       controller.hide()
     end)
 
+    t.it("hides signs and numbers with a single-space statuscolumn", function()
+      local S = setup()
+      controller.open()
+      for _, pair in ipairs({ { "chat", S.chat.win }, { "composer", S.input.win } }) do
+        local win = pair[2]
+        t.eq(
+          " ",
+          vim.api.nvim_get_option_value("statuscolumn", { win = win }),
+          pair[1] .. " should use a single-space statuscolumn"
+        )
+        t.eq("no", vim.api.nvim_get_option_value("signcolumn", { win = win }))
+      end
+      controller.hide()
+    end)
+
     t.it("keeps every chrome element local to its window", function()
       local S = setup()
       controller.open()

@@ -440,7 +440,9 @@ Agent 崩溃或退出时，正在运行的工具会被标记为失败，并提�
 
 有三种方式，任选其一：
 
-1. **直接点击** winbar 上的 `模型名 ▾` 或 `模式名 ▾`。
+1. **直接点击** winbar 上的 `模型名 ▾` 或 `模式名 ▾`。工具栏只显示模型名，
+   例如 `DeepSeek V4.1 Flash` 而不是 `commandcode/DeepSeek V4.1 Flash`；
+   选择器里仍保留完整名称，便于区分不同 provider 的同名模型。
 
    > 点击区域需要鼠标启用：Neovim 默认 `mouse = "nvi"`，不含 `a`，
    > 此时点击不会响应。设置 `vim.opt.mouse = "a"`（或至少包含 `a`）。

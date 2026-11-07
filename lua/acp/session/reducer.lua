@@ -306,7 +306,30 @@ function M.apply(session, update)
   return false
 end
 
----Extract the model select option name for the toolbar.
+---Strip the provider prefix from a model name.
+---
+---Agents prefix model names with their provider ("commandcode/DeepSeek V4.1
+---Flash", "anthropic/claude-sonnet-5-5"). The toolbar has little room and the
+---provider adds little once a model is selected, so only the model part is
+---shown. Picker entries keep the full name so two providers offering the same
+---model stay distinguishable.
+---@param name string|nil
+---@return string|nil
+function M.short_model_name(name)
+  if type(name) ~= "string" or name == "" then
+    return name
+  end
+  -- Only the display name matters. If it has no provider prefix there is
+  -- nothing to strip, even when the value happens to carry one: the name is
+  -- what the user already sees elsewhere.
+  local _, rest = name:match("^([^/]+)/(.+)$")
+  if rest and rest ~= "" then
+    return rest
+  end
+  return name
+end
+
+---Extract the model and mode labels used by the composer toolbar.
 ---@param session AcpSessionState
 ---@return string|nil model_label
 ---@return string|nil mode_label
@@ -314,6 +337,7 @@ function M.toolbar_labels(session)
   local model = session:option_by_category("model")
   local mode = session:option_by_category("mode")
   local model_label = model and state.option_label(model, model.currentValue) or nil
+  model_label = M.short_model_name(model_label)
   local mode_label = mode and state.option_label(mode, mode.currentValue) or nil
   return model_label, mode_label
 end

@@ -128,5 +128,45 @@ return function(t)
       t.eq("Two", model)
       t.eq("Code", mode)
     end)
+
+    t.it("drops the provider prefix from the toolbar model", function()
+      local s = state.new("s", "/tmp")
+      s.config_options = {
+        {
+          id = "model",
+          category = "model",
+          type = "select",
+          currentValue = "commandcode/deepseek-v4.1-flash",
+          options = {
+            { value = "commandcode/deepseek-v4.1-flash", name = "commandcode/DeepSeek V4.1 Flash" },
+          },
+        },
+      }
+      local model = reducer.toolbar_labels(s)
+      t.eq("DeepSeek V4.1 Flash", model)
+    end)
+
+    t.it("keeps a name that has no provider prefix", function()
+      local s = state.new("s", "/tmp")
+      s.config_options = {
+        {
+          id = "model",
+          category = "model",
+          type = "select",
+          currentValue = "openai/gpt-5",
+          options = { { value = "openai/gpt-5", name = "GPT-5" } },
+        },
+      }
+      local model = reducer.toolbar_labels(s)
+      t.eq("GPT-5", model)
+    end)
+
+    t.it("shortens only the first provider segment", function()
+      t.eq("b/c", reducer.short_model_name("a/b/c"))
+      t.eq("DeepSeek V4.1 Flash", reducer.short_model_name("commandcode/DeepSeek V4.1 Flash"))
+      t.eq("GPT-5", reducer.short_model_name("GPT-5"))
+      t.eq(nil, reducer.short_model_name(nil))
+      t.eq("", reducer.short_model_name(""))
+    end)
   end)
 end

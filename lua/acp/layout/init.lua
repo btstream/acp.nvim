@@ -94,6 +94,9 @@ function M.apply_window_options(win, kind)
     vim.wo[win].number = false
     vim.wo[win].relativenumber = false
     vim.wo[win].signcolumn = "no"
+    -- A single space keeps the text column aligned with a normal buffer while
+    -- hiding signs, numbers and folds entirely.
+    vim.wo[win].statuscolumn = " "
     vim.wo[win].foldcolumn = "0"
     vim.wo[win].spell = false
     vim.wo[win].list = false
