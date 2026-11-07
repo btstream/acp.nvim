@@ -610,16 +610,26 @@ local function ensure_windows()
 
   layout.remember_focus()
 
-  if not S.chat:is_visible() then
+  local chat_visible = S.chat:is_visible()
+  local input_visible = S.input and S.input:is_visible()
+
+  if not chat_visible and not input_visible then
+    -- Neither view exists: build them together so the panel keeps its width.
+    local chat, input = layout.create_panel(S.chat.buf, S.input.buf)
+    if not chat or not input then
+      notify("unable to create the panel windows", vim.log.levels.ERROR)
+      return
+    end
+    S.chat.win = chat
+    S.input.win = input
+  elseif not chat_visible then
     local win = layout.create_chat_win(S.chat.buf)
     if not win then
       notify("unable to create the chat window", vim.log.levels.ERROR)
       return
     end
     S.chat.win = win
-  end
-
-  if not S.input:is_visible() then
+  elseif not input_visible then
     local win = layout.create_input_win(S.input.buf, S.chat.win)
     if not win then
       notify("unable to create the composer window", vim.log.levels.ERROR)
@@ -1699,6 +1709,36 @@ function M.setup(opts)
   -- Reconfiguring means a different agent, cwd or UI: drop the old runtime
   -- state instead of mixing sessions from two configurations.
   stop_spinner()
+
+  -- Close the old panel windows. They belong to the previous Chat/Input
+  -- objects, which are replaced below; leaving them open would strand windows
+  -- that nothing tracks.
+  local had_panel = false
+  for _, view in ipairs({ S.input, S.chat }) do
+    if view and view.win and vim.api.nvim_win_is_valid(view.win) then
+      had_panel = true
+    end
+  end
+  if had_panel then
+    local windows = {}
+    for _, view in ipairs({ S.input, S.chat }) do
+      if view and view.win and vim.api.nvim_win_is_valid(view.win) then
+        windows[#windows + 1] = view.win
+      end
+    end
+    -- Never leave the editor without a window.
+    if #windows >= #vim.api.nvim_list_wins() then
+      local keep = table.remove(windows, 1)
+      if keep then
+        layout.set_window_buffer(keep, vim.api.nvim_create_buf(true, false))
+      end
+    end
+    for _, win in ipairs(windows) do
+      pcall(vim.api.nvim_win_close, win, true)
+    end
+    layout.clear_saved_focus()
+  end
+
   if S.client then
     pcall(S.client.shutdown, S.client, true)
     S.client = nil
@@ -1743,6 +1783,25 @@ function M.setup(opts)
   end
 
   setup_window_events()
+
+  -- Click regions in the winbar only respond when the mouse is enabled. Say so
+  -- once instead of leaving the user with a toolbar that looks clickable but
+  -- is not.
+  if merged.ui.toolbar.placement ~= "off" and not S.click_hint_shown then
+    S.click_hint_shown = true
+    vim.schedule(function()
+      if vim.o.mouse == "" or not vim.o.mouse:find("a") then
+        vim.notify(
+          string.format(
+            "acp.nvim: 'mouse' is %q, so the model/mode toolbar is not clickable. "
+              .. "Add 'a' to 'mouse' (e.g. set mouse=a) or use <M-m> / <M-b>.",
+            vim.o.mouse
+          ),
+          vim.log.levels.INFO
+        )
+      end
+    end)
+  end
 end
 
 ---Access the shared controller state (read-only, for integrations).

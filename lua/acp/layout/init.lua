@@ -172,30 +172,76 @@ function M.set_window_buffer(win, buf)
   return ok
 end
 
----Create the chat window.
+---Create both panel windows and apply the configured sizes.
+---
+---The two windows have to be created before either is resized. Splitting while
+---'equalalways' is on rebalances every window, so the panel width requested at
+---creation time is discarded as soon as the second split appears. 'equalalways'
+---is therefore turned off for the duration of the setup and restored right
+---after, and the final sizes are applied once both windows exist.
+---@param chat_buf integer
+---@param input_buf integer
+---@return integer|nil chat_win
+---@return integer|nil input_win
+function M.create_panel(chat_buf, input_buf)
+  local total = vim.o.columns
+  local width = require("acp.config").panel_width(state.config, total)
+  local horizontal = state.position == "left" and "topleft " or "botright "
+  local cmd
+  if state.backend == "native" then
+    cmd = horizontal .. width .. "vsplit"
+  else
+    cmd = horizontal .. "vsplit"
+  end
+
+  -- Keep the split sizes stable while the panel is built.
+  local equalalways = vim.o.equalalways
+  vim.o.equalalways = false
+
+  local ok_chat = pcall(vim.cmd, cmd)
+  if not ok_chat then
+    vim.o.equalalways = equalalways
+    return nil, nil
+  end
+  local chat = vim.api.nvim_get_current_win()
+
+  local ok_input = pcall(vim.cmd, "belowright split")
+  if not ok_input then
+    vim.o.equalalways = equalalways
+    return nil, nil
+  end
+  local input = vim.api.nvim_get_current_win()
+
+  -- Buffers and window options first, sizes last, and 'equalalways' restored
+  -- only after the sizes are in place: turning it back on rebalances every
+  -- window, which would discard the width we just set.
+  M.set_window_buffer(chat, chat_buf)
+  M.set_window_buffer(input, input_buf)
+  state.views.chat = chat
+  state.views.input = input
+  M.apply_window_options(chat, "chat")
+  M.apply_window_options(input, "input")
+  M.lock_window(chat)
+  M.lock_window(input)
+
+  if state.backend == "native" then
+    pcall(vim.api.nvim_win_set_width, chat, width)
+    local height = math.max(state.config.layout.min_input_height, state.config.layout.input_height)
+    height = math.min(height, state.config.layout.max_input_height)
+    pcall(vim.api.nvim_win_set_height, input, height)
+  end
+
+  vim.o.equalalways = equalalways
+
+  return chat, input
+end
+
+---Create the chat window on its own.
 ---@param buf integer
 ---@return integer|nil win
 function M.create_chat_win(buf)
-  local total = vim.o.columns
-  local width = require("acp.config").panel_width(state.config, total)
-  local cmd
-  if state.backend == "native" then
-    cmd = (state.position == "left" and "topleft " or "botright ") .. width .. "vsplit"
-  else
-    cmd = (state.position == "left" and "topleft vsplit" or "botright vsplit")
-  end
-  local ok = pcall(vim.cmd, cmd)
-  if not ok then
-    return nil
-  end
-  local win = vim.api.nvim_get_current_win()
-  -- A split of a locked window inherits 'winfixbuf'; clear it so we can set
-  -- our own buffer before locking the window again.
-  M.set_window_buffer(win, buf)
-  state.views.chat = win
-  M.apply_window_options(win, "chat")
-  M.lock_window(win)
-  return win
+  local chat = M.create_panel(buf, vim.api.nvim_create_buf(false, true))
+  return chat
 end
 
 ---Create the composer window below the chat window.
@@ -203,6 +249,7 @@ end
 ---@param chat_win integer|nil
 ---@return integer|nil win
 function M.create_input_win(buf, chat_win)
+  -- Used when only the composer needs restoring; reuse the existing chat window.
   if chat_win and vim.api.nvim_win_is_valid(chat_win) then
     vim.api.nvim_set_current_win(chat_win)
   end

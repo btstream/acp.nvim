@@ -193,7 +193,18 @@ ACP 的两个窗口默认锁定到自己的 buffer（'winfixbuf'），:edit、:b
 切换历史会话时使用该会话自己的目录发起 session/load，因为 ACP 规范要求 cwd 与
 会话一致，不匹配时 Agent 会拒绝。
 
-10. 会话标题与删除                                      *acp-session-titles*
+10. 面板尺寸                                                    *acp-sizing*
+
+layout.width 为 0~1 时按编辑器宽度取比例，>1 时为绝对列数，受 min_width /
+max_width 约束，且不超过编辑器宽度 60%。
+
+构建面板时临时关闭 'equalalways'，两个窗口创建完并设置好尺寸后再恢复；否则
+第二次 split 会立即重排，覆盖配置的宽度。
+
+winbar 上的模型/模式点击区域需要 'mouse' 含 a（Neovim 默认 "nvi" 不含 a）。
+无法点击时使用 <M-m> / <M-b>，acp.nvim 会在启动时提示一次。
+
+11. 会话标题与删除                                      *acp-session-titles*
 
 标题显示在对话记录窗口的 winbar 中。OpenCode 不会主动推送 session_info_update，
 标题只出现在 session/list 结果里。acp.nvim 在会话创建后、切换会话后、以及每回合
@@ -219,7 +230,7 @@ ACP 的两个窗口默认锁定到自己的 buffer（'winfixbuf'），:edit、:b
 删除非当前会话不影响当前对话；删除当前会话会自动新建一个。Agent 未声明
 sessionCapabilities.delete 时给出提示，不弹出无法兑现的确认框。
 
-11. 行为细节                                                *acp-behavior*
+12. 行为细节                                                *acp-behavior*
 
 同一会话同时只运行一个 prompt；生成中提交的消息本地排队。
 
@@ -232,7 +243,7 @@ Agent 崩溃后使用 :Acp reconnect。重连会通过 session/load 重放 Agent
 cancelled。
 
 ==============================================================================
-12. 高亮                                                    *acp-highlights*
+13. 高亮                                                    *acp-highlights*
 
 所有样式通过语义化高亮组暴露，例如：
 
@@ -247,7 +258,7 @@ cancelled。
 ui.icons = false 会改用 ASCII 图标。
 
 ==============================================================================
-13. 健康检查                                                  *acp-health*
+14. 健康检查                                                 *acp-health*
 
     :checkhealth acp
 

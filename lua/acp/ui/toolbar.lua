@@ -84,15 +84,14 @@ function M.render(info, width)
   local ic = Icons.get(info.icons)
   local width_ok = math.max(1, width - 1)
 
-  local left_plain = {}
-  local left_parts = {}
+  -- The left side is kept as structured segments so truncation can shrink the
+  -- text while keeping every clickable region intact.
+  local left = {}
   local function push_left(text, hl_group, action)
-    if #left_parts > 0 then
-      left_plain[#left_plain + 1] = " · "
-      left_parts[#left_parts + 1] = " · "
+    if #left > 0 then
+      left[#left + 1] = { text = " · " }
     end
-    left_plain[#left_plain + 1] = text
-    left_parts[#left_parts + 1] = clickable(text, hl_group, action)
+    left[#left + 1] = { text = text, hl = hl_group, action = action }
   end
 
   if info.mode and info.mode ~= "" then
@@ -131,7 +130,10 @@ function M.render(info, width)
     push_right(string.format("+%d %s", info.queued, "queued"), "AcpMuted")
   end
 
-  local left_text = table.concat(left_plain)
+  local left_text = ""
+  for _, seg in ipairs(left) do
+    left_text = left_text .. seg.text
+  end
   local right_text = table.concat(right_plain)
   local right_w = dw(right_text)
 
@@ -141,21 +143,29 @@ function M.render(info, width)
   end
 
   local budget = width_ok - right_w - 2
-  local trimmed = M.truncate(left_text, budget)
-
   local body
-  if trimmed == "" then
+  if budget <= 0 or left_text == "" then
     body = table.concat(right_parts)
   else
-    -- Rebuild the clickable segments against the truncated text only when the
-    -- text actually had to be shortened; otherwise keep the click targets.
-    local left_rendered
-    if trimmed == left_text then
-      left_rendered = table.concat(left_parts)
-    else
-      left_rendered = hl(trimmed, nil)
+    -- Truncate segment by segment so every region stays clickable even when
+    -- the text has to be shortened.
+    local rendered = {}
+    local used = 0
+    for _, seg in ipairs(left) do
+      if used >= budget then
+        break
+      end
+      local piece = M.truncate(seg.text, budget - used)
+      if piece ~= "" then
+        rendered[#rendered + 1] = clickable(piece, seg.hl, seg.action)
+        used = used + dw(piece)
+      end
+      if dw(piece) < dw(seg.text) then
+        break
+      end
     end
-    body = left_rendered .. "%=" .. table.concat(right_parts)
+    local left_rendered = table.concat(rendered)
+    body = left_rendered ~= "" and (left_rendered .. "%=" .. table.concat(right_parts)) or table.concat(right_parts)
   end
 
   return "%#AcpToolbar# " .. body .. " "
