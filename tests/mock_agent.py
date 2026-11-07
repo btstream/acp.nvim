@@ -16,6 +16,10 @@ import threading
 import time
 
 SESSION_ID = "sess_mock"
+SESSIONS = {
+    SESSION_ID: {"sessionId": SESSION_ID, "title": None, "updatedAt": "2026-01-01T00:00:00Z"},
+    "sess_old": {"sessionId": "sess_old", "title": "Old conversation", "updatedAt": "2026-01-01T00:00:00Z"},
+}
 write_lock = threading.Lock()
 cancel_event = threading.Event()
 # Active prompt requests: msg_id -> True
@@ -150,6 +154,10 @@ def run_prompt(msg_id, text):
         "size": 200000,
         "cost": {"amount": 0.01, "currency": "USD"},
     })
+    # Mimic auto-titling: the title only shows up in session/list.
+    entry = SESSIONS.get(SESSION_ID)
+    if entry is not None and not entry["title"]:
+        entry["title"] = "Mock titled session"
     finish(msg_id)
 
 
@@ -176,7 +184,7 @@ def handle(msg):
             "agentCapabilities": {
                 "loadSession": True,
                 "promptCapabilities": {"embeddedContext": True, "image": False},
-                "sessionCapabilities": {"list": {}, "resume": {}},
+                "sessionCapabilities": {"list": {}, "resume": {}, "delete": {}, "close": {}},
             },
             "agentInfo": {"name": "mock", "title": "Mock Agent", "version": "0.1.0"},
             "authMethods": [],
@@ -216,12 +224,16 @@ def handle(msg):
         update({"sessionUpdate": "agent_message_chunk", "messageId": "m0", "content": {"type": "text", "text": "old answer"}})
         result(msg_id, {})
     elif method == "session/list":
-        result(msg_id, {"sessions": [{
-            "sessionId": SESSION_ID,
-            "cwd": params.get("cwd"),
-            "title": "Mock session",
-            "updatedAt": "2026-01-01T00:00:00Z",
-        }]})
+        cwd = params.get("cwd")
+        listed = []
+        for info in SESSIONS.values():
+            item = dict(info)
+            item["cwd"] = cwd
+            listed.append(item)
+        result(msg_id, {"sessions": listed})
+    elif method == "session/delete":
+        SESSIONS.pop(params.get("sessionId"), None)
+        result(msg_id, {})
     elif method == "session/prompt":
         text = "".join(b.get("text", "") for b in params.get("prompt") or [] if b.get("type") == "text")
         with permissions_lock:

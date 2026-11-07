@@ -30,6 +30,8 @@ local function setup()
       acp.cancel()
     elseif sub == "sessions" then
       acp.pick_session()
+    elseif sub == "delete" then
+      require("acp.controller").delete_session_flow()
     elseif sub == "reconnect" then
       require("acp.controller").reconnect()
     elseif sub == "disconnect" then
@@ -47,7 +49,7 @@ local function setup()
     else
       vim.notify("acp.nvim: unknown subcommand " .. sub, vim.log.levels.WARN)
     end
-  end, "open|hide|toggle|new|stop|reconnect|disconnect|permission|sessions|model|mode|file|diagnostics")
+  end, "open|hide|toggle|new|stop|reconnect|disconnect|permission|sessions|delete|model|mode|file|diagnostics")
 
   define("AcpLog", function()
     local m = api()

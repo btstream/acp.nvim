@@ -69,6 +69,11 @@ function M.pick_session()
   ensure().pick_session()
 end
 
+---Delete a stored session (asks for confirmation first).
+function M.delete_session()
+  ensure().delete_session_flow()
+end
+
 ---Reconnect to the agent after a crash or an explicit disconnect.
 function M.reconnect()
   ensure().reconnect()

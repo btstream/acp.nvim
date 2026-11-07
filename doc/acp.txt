@@ -21,7 +21,8 @@ acp.nvim 是一个 Neovim 原生的 Agent Client Protocol 客户端。
     hide         隐藏面板，不中断会话
     new          新建会话
     stop         中止当前回合
-    sessions     选择并恢复历史会话
+    sessions     选择并恢复历史会话（末尾含删除入口）
+    delete       删除历史会话（二次确认）
     model        切换模型
     mode         切换模式
     reconnect    重连并恢复当前会话
@@ -165,7 +166,17 @@ ACP 的两个窗口默认锁定到自己的 buffer（'winfixbuf'），:edit、:b
     require("acp").setup({ ui = { picker = "internal" } })
 
 ==============================================================================
-9. 行为细节                                                  *acp-behavior*
+9. 会话标题与删除                                       *acp-session-titles*
+
+标题显示在对话记录窗口的 winbar 中。OpenCode 不会主动推送 session_info_update，
+标题只出现在 session/list 结果里，因此 acp.nvim 会在会话创建后和每回合结束后
+各查询一次列表来同步。
+
+:Acp sessions 列表末尾有「删除会话」入口，也可用 :Acp delete。删除前会二次确认；
+删除当前会话时会自动新建一个。Agent 未声明 sessionCapabilities.delete 时给出提示。
+
+==============================================================================
+10. 行为细节                                                 *acp-behavior*
 
 同一会话同时只运行一个 prompt；生成中提交的消息本地排队。
 
@@ -178,7 +189,7 @@ Agent 崩溃后使用 :Acp reconnect。重连会通过 session/load 重放 Agent
 cancelled。
 
 ==============================================================================
-10. 高亮                                                     *acp-highlights*
+11. 高亮                                                     *acp-highlights*
 
 所有样式通过语义化高亮组暴露，例如：
 
@@ -193,7 +204,7 @@ cancelled。
 ui.icons = false 会改用 ASCII 图标。
 
 ==============================================================================
-11. 健康检查                                                   *acp-health*
+12. 健康检查                                                   *acp-health*
 
     :checkhealth acp
 

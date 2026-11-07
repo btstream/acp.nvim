@@ -78,7 +78,8 @@ require("acp").setup({})
 | `:Acp open` / `:Acp hide` | 显式打开 / 隐藏 |
 | `:Acp new` | 新建会话 |
 | `:Acp stop` | 中止当前回合 |
-| `:Acp sessions` | 选择并恢复历史会话 |
+| `:Acp sessions` | 选择并恢复历史会话（列表末尾含删除入口） |
+| `:Acp delete` | 删除历史会话（含二次确认） |
 | `:Acp model` / `:Acp mode` | 切换模型 / 模式 |
 | `:Acp reconnect` | Agent 崩溃后重连并恢复当前会话 |
 | `:Acp disconnect` | 停止 Agent 进程（保留面板） |
@@ -318,6 +319,27 @@ vim.api.nvim_set_hl(0, "AcpSeparator", { fg = "#3b4261" })
 - 日志默认不记录密钥与完整提示词；开启 `log.protocol` 时会先脱敏再截断。
 
 ## 行为细节
+
+### 会话标题
+
+标题显示在对话记录窗口的标题栏（winbar）里，未生成时回退为会话 ID 短码。
+
+OpenCode 不会主动推送 `session_info_update`，标题只出现在 `session/list` 的结果中。
+因此 acp.nvim 会在两个时机各查询一次列表来同步标题：
+
+1. 会话创建后；
+2. 每个回合结束后（Agent 通常在首轮对话完成后才自动生成标题）。
+
+若 Agent 主动推送 `session_info_update`，该路径同样生效，两边不冲突。
+
+### 删除会话
+
+`:Acp sessions` 的列表末尾有一条 `✕ 删除会话`，选中后进入删除流程；也可以
+直接执行 `:Acp delete`。删除前会二次确认，并显示会话标题。
+
+- 删除非当前会话：从其列表中移除，当前对话不受影响。
+- 删除当前会话：会额外提示，确认后自动新建一个会话继续使用。
+- Agent 未声明 `sessionCapabilities.delete` 时给出明确提示，不会静默失败。
 
 ### 窗口保护
 

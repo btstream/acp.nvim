@@ -293,10 +293,41 @@ end
 
 ---List sessions known to the agent.
 ---@param cwd string|nil
+---@param cursor string|nil opaque pagination cursor
 ---@return boolean ok, any value
-function Client:list_sessions(cwd)
-  local params = { cwd = cwd }
+function Client:list_sessions(cwd, cursor)
+  local params = {}
+  if cwd then
+    params.cwd = cwd
+  end
+  if cursor then
+    params.cursor = cursor
+  end
   return self:request("session/list", params, REQUEST_TIMEOUT)
+end
+
+---Delete a session from the agent's history.
+---Only call this after checking `sessionCapabilities.delete`.
+---@param session_id string
+---@return boolean ok, any value
+function Client:delete_session(session_id)
+  local ok, result = self:request("session/delete", { sessionId = session_id }, REQUEST_TIMEOUT)
+  if not ok and type(result) == "table" and result.code == -32002 then
+    -- The spec says an unknown session counts as a successful delete.
+    return true, {}
+  end
+  return ok, result
+end
+
+---Whether the agent supports a session capability such as "delete" or "list".
+---@param name string
+---@return boolean
+function Client:has_session_capability(name)
+  local caps = self:agent_capabilities().sessionCapabilities
+  if type(caps) ~= "table" then
+    return false
+  end
+  return caps[name] ~= nil
 end
 
 ---@param session_id string

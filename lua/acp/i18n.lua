@@ -42,9 +42,21 @@ local strings = {
     notice = "Notice",
     empty_chat = "Start a conversation with the agent.",
     confirm_new = "Start a new session?",
+    current_session = "current",
+    delete_session = "Delete session",
+    delete = "Delete",
+    cancel = "Cancel",
+    confirm_delete = 'Delete session "%s"? This cannot be undone.',
+    confirm_delete_active = "This is the active session; a new one will be started.",
+    delete_unsupported = "This agent does not support deleting sessions",
+    no_session_list = "This agent does not support listing sessions",
+    no_sessions_found = "No stored sessions found",
+    session_deleted = "Session deleted",
     errors = {
       not_running = "No agent process is running",
       no_session = "No active session",
+      list_failed = "Unable to list sessions: %s",
+      delete_failed = "Unable to delete the session: %s",
     },
   },
   zh = {
@@ -87,9 +99,21 @@ local strings = {
     notice = "提示",
     empty_chat = "开始与 Agent 对话。",
     confirm_new = "要开始新的会话吗？",
+    current_session = "当前",
+    delete_session = "删除会话",
+    delete = "删除",
+    cancel = "取消",
+    confirm_delete = "确定删除会话「%s」？此操作无法撤销。",
+    confirm_delete_active = "这是当前会话，删除后会为你新建一个会话。",
+    delete_unsupported = "该 Agent 不支持删除会话",
+    no_session_list = "该 Agent 不支持列出会话",
+    no_sessions_found = "没有找到已保存的会话",
+    session_deleted = "会话已删除",
     errors = {
       not_running = "Agent 进程未运行",
       no_session = "没有活动会话",
+      list_failed = "列出会话失败：%s",
+      delete_failed = "删除会话失败：%s",
     },
   },
 }
@@ -105,11 +129,33 @@ end
 ---@param key string
 ---@param ... any
 ---@return string
+---Look up a possibly dotted key, e.g. "errors.not_running".
+---@param pack table
+---@param key string
+---@return any
+local function lookup(pack, key)
+  local value = pack[key]
+  if value ~= nil then
+    return value
+  end
+  local node = pack
+  for part in key:gmatch("[^%.]+") do
+    if type(node) ~= "table" then
+      return nil
+    end
+    node = node[part]
+    if node == nil then
+      return nil
+    end
+  end
+  return node
+end
+
 function M.t(key, ...)
   local pack = strings[current] or strings.en
-  local value = pack[key]
+  local value = lookup(pack, key)
   if value == nil then
-    value = strings.en[key] or key
+    value = lookup(strings.en, key) or key
   end
   if type(value) == "string" and select("#", ...) > 0 then
     local ok, formatted = pcall(string.format, value, ...)

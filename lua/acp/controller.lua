@@ -72,11 +72,18 @@ local function current()
   return S.session
 end
 
+---Whether a decoded JSON value is a real, non-empty string.
+---@param value any
+---@return boolean
+local function has_text(value)
+  return type(value) == "string" and value ~= ""
+end
+
 local function session_label(session)
   if not session then
     return nil
   end
-  if session.title and session.title ~= "" then
+  if has_text(session.title) then
     return session.title
   end
   -- Fall back to a short, stable identifier instead of pretending there is no session.
@@ -251,6 +258,49 @@ end
 local function refresh_chrome()
   update_chat_title()
   update_input_toolbar()
+end
+
+---Fetch the authoritative title for a session.
+---
+---OpenCode does not push `session_info_update`, so a title only appears in
+---`session/list`. Query it once when a session is created and once at the end of
+---each turn (that is when agents auto-generate a title from the first prompt).
+---@param session AcpSessionState|nil
+local function refresh_session_title(session)
+  if not session or not S.client or S.connection ~= "ready" then
+    return
+  end
+  if not S.client:has_session_capability("list") then
+    return
+  end
+  if S.title_refreshing then
+    S.title_pending = true
+    return
+  end
+  S.title_refreshing = true
+  async.run(function()
+    local ok, result = S.client:list_sessions(session.cwd)
+    S.title_refreshing = false
+    if ok and type(result) == "table" then
+      for _, info in ipairs(result.sessions or {}) do
+        if info.sessionId == session.id then
+          local title = info.title
+          -- JSON null decodes to vim.NIL; treat it as "no title yet".
+          if title ~= nil and title ~= vim.NIL and title ~= "" then
+            if title ~= session.title then
+              session.title = title
+              refresh_chrome()
+            end
+          end
+          break
+        end
+      end
+    end
+    if S.title_pending then
+      S.title_pending = false
+      refresh_session_title(S.session)
+    end
+  end)
 end
 
 ---------------------------------------------------------------------------
@@ -768,6 +818,7 @@ function M.new_session()
     activate_session(session)
     S.chat:render(true)
     notify(i18n.t("started"), vim.log.levels.INFO)
+    refresh_session_title(session)
   end)
 end
 
@@ -805,8 +856,38 @@ function M.load_session(session_id)
   end)
 end
 
----List and pick a stored session.
-function M.pick_session()
+---Build the picker items for stored sessions.
+---@param sessions table[]
+---@param with_delete boolean
+---@return table[] items
+local function session_items(sessions, with_delete)
+  local items = {}
+  for _, item in ipairs(sessions or {}) do
+    local label = has_text(item.title) and item.title or item.sessionId
+    local when = has_text(item.updatedAt) and item.updatedAt or (has_text(item.createdAt) and item.createdAt or "")
+    local desc = when ~= "" and tostring(when):sub(1, 19) or nil
+    if item.sessionId == (S.session and S.session.id) then
+      desc = (desc and (desc .. "  ") or "") .. i18n.t("current_session")
+    end
+    items[#items + 1] = {
+      label = label,
+      description = desc,
+      value = { kind = "open", session_id = item.sessionId },
+    }
+  end
+  if with_delete then
+    items[#items + 1] = {
+      label = "✕ " .. i18n.t("delete_session"),
+      description = nil,
+      value = { kind = "delete_menu" },
+    }
+  end
+  return items
+end
+
+---Fetch the session list, calling `cb(ok, sessions)`.
+---@param cb fun(ok: boolean, sessions: table[])
+local function fetch_sessions(cb)
   if not S.client or S.connection ~= "ready" then
     notify(i18n.t("errors.not_running"), vim.log.levels.WARN)
     return
@@ -814,33 +895,156 @@ function M.pick_session()
   async.run(function()
     local ok, result = S.client:list_sessions(resolve_cwd())
     if not ok then
-      if type(result) == "table" and result.code == -32601 then
-        notify("this agent does not support session listing", vim.log.levels.WARN)
+      if type(result) == "table" and (result.code == -32601 or result.code == -32602) then
+        notify(i18n.t("no_session_list"), vim.log.levels.WARN)
       else
         local message = type(result) == "table" and (result.message or vim.inspect(result)) or tostring(result)
-        notify("unable to list sessions: " .. message, vim.log.levels.ERROR)
+        notify(i18n.t("errors.list_failed", message), vim.log.levels.ERROR)
       end
+      cb(false, {})
+      return
+    end
+    cb(true, result.sessions or {})
+  end)
+end
+
+---Show the delete flow: pick a session, confirm, delete.
+---@param sessions table[]|nil pre-fetched sessions
+function M.delete_session_flow(sessions)
+  if not S.client then
+    notify(i18n.t("errors.not_running"), vim.log.levels.WARN)
+    return
+  end
+  if not S.client:has_session_capability("delete") then
+    notify(i18n.t("delete_unsupported"), vim.log.levels.WARN)
+    return
+  end
+
+  local function proceed(list)
+    local deletable = {}
+    for _, item in ipairs(list) do
+      deletable[#deletable + 1] = item
+    end
+    if #deletable == 0 then
+      notify(i18n.t("no_sessions_found"), vim.log.levels.INFO)
       return
     end
     local items = {}
-    for _, item in ipairs(result.sessions or {}) do
-      local label = item.title and item.title ~= "" and item.title or item.sessionId
-      local when = item.updatedAt or item.createdAt or ""
+    for _, item in ipairs(deletable) do
+      local label = has_text(item.title) and item.title or item.sessionId
+      local when = has_text(item.updatedAt) and item.updatedAt or (has_text(item.createdAt) and item.createdAt or "")
       items[#items + 1] = {
         label = label,
         description = when ~= "" and tostring(when):sub(1, 19) or nil,
         value = item.sessionId,
       }
     end
-    if #items == 0 then
-      notify("no stored sessions found", vim.log.levels.INFO)
+    picker.select({
+      title = i18n.t("delete_session") .. " · " .. i18n.t("select_session"),
+      items = items,
+      on_choice = function(session_id)
+        M.confirm_delete(session_id)
+      end,
+    })
+  end
+
+  if sessions then
+    proceed(sessions)
+  else
+    fetch_sessions(function(ok, list)
+      if ok then
+        proceed(list)
+      end
+    end)
+  end
+end
+
+---Ask for confirmation and delete one session.
+---@param session_id string
+function M.confirm_delete(session_id)
+  if not S.client then
+    return
+  end
+  local label = session_id
+  local active = S.session and S.session.id == session_id
+  for _, session in pairs(S.sessions) do
+    if session.id == session_id and session.title and session.title ~= "" then
+      label = session.title
+    end
+  end
+
+  local prompt = i18n.t("confirm_delete"):gsub("%%s", label)
+  if active then
+    prompt = prompt .. "\n" .. i18n.t("confirm_delete_active")
+  end
+
+  picker.select({
+    title = prompt,
+    items = {
+      { label = "✕ " .. i18n.t("delete"), value = true },
+      { label = i18n.t("cancel"), value = false },
+    },
+    filter = false,
+    on_choice = function(confirmed)
+      if not confirmed then
+        return
+      end
+      async.run(function()
+        local ok, result = S.client:delete_session(session_id)
+        if not ok then
+          local message = type(result) == "table" and (result.message or vim.inspect(result)) or tostring(result)
+          notify(i18n.t("errors.delete_failed", message), vim.log.levels.ERROR)
+          return
+        end
+        S.sessions[session_id] = nil
+        if S.session and S.session.id == session_id then
+          -- The active conversation is gone; start a fresh one.
+          S.session = nil
+          if S.chat then
+            S.chat:set_session(nil)
+            S.chat:render(true)
+          end
+          if S.input then
+            S.input:switch_session(nil)
+          end
+          notify(i18n.t("session_deleted"), vim.log.levels.INFO)
+          M.new_session()
+        else
+          notify(i18n.t("session_deleted"), vim.log.levels.INFO)
+          refresh_chrome()
+        end
+      end)
+    end,
+    on_cancel = function()
+      -- Closing the confirmation is a no-op, not a deletion.
+    end,
+  })
+end
+
+---List and pick a stored session.
+function M.pick_session()
+  if not S.client or S.connection ~= "ready" then
+    notify(i18n.t("errors.not_running"), vim.log.levels.WARN)
+    return
+  end
+  local can_delete = S.client:has_session_capability("delete")
+  fetch_sessions(function(ok, sessions)
+    if not ok then
+      return
+    end
+    if #sessions == 0 then
+      notify(i18n.t("no_sessions_found"), vim.log.levels.INFO)
       return
     end
     picker.select({
       title = i18n.t("select_session"),
-      items = items,
+      items = session_items(sessions, can_delete),
       on_choice = function(value)
-        M.load_session(value)
+        if value.kind == "delete_menu" then
+          M.delete_session_flow(sessions)
+        else
+          M.load_session(value.session_id)
+        end
       end,
     })
   end)
@@ -935,6 +1139,9 @@ function M.send_now(text, attachments)
     if S.chat then
       S.chat:schedule_render()
     end
+    -- The agent auto-generates a title from the first exchange, and it is only
+    -- exposed through session/list, so refresh once the turn has settled.
+    refresh_session_title(session)
     if S.session == session then
       local next_item = table.remove(session.queue, 1)
       if next_item then
