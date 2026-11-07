@@ -22,5 +22,6 @@ require("tests.spec_panel")(t)
 require("tests.spec_window_lock")(t)
 require("tests.spec_sessions")(t)
 require("tests.spec_sessions_snacks")(t)
+require("tests.spec_session_scope")(t)
 
 t.run()

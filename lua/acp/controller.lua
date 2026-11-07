@@ -960,6 +960,12 @@ local function delete_session(session_id, done)
 end
 
 ---Fetch the session list, calling `cb(ok, sessions)`.
+---
+---The directory used for the query is the active session's cwd when one exists,
+---falling back to the resolved editor cwd. Those can differ (the session may
+---have been created elsewhere), and agents such as OpenCode filter strictly by
+---`cwd`, so an empty filtered result is retried without the filter rather than
+---reporting that no sessions exist.
 ---@param cb fun(ok: boolean, sessions: table[])
 local function fetch_sessions(cb)
   if not S.client or S.connection ~= "ready" then
@@ -967,8 +973,9 @@ local function fetch_sessions(cb)
     return
   end
   async.run(function()
-    local ok, result = S.client:list_sessions(resolve_cwd())
-    if not ok then
+    local scoped_cwd = (S.session and S.session.cwd) or resolve_cwd()
+
+    local function to_error(result)
       if type(result) == "table" and (result.code == -32601 or result.code == -32602) then
         notify("This agent does not support listing sessions", vim.log.levels.WARN)
       else
@@ -976,9 +983,23 @@ local function fetch_sessions(cb)
         notify(string.format("Unable to list sessions: %s", message), vim.log.levels.ERROR)
       end
       cb(false, {})
+    end
+
+    local ok, result = S.client:list_sessions(scoped_cwd)
+    if not ok then
+      to_error(result)
       return
     end
+
     local sessions = result.sessions or {}
+    if #sessions == 0 then
+      -- Nothing in this directory: show every session the agent knows about.
+      local all_ok, all_result = S.client:list_sessions(nil)
+      if all_ok and type(all_result) == "table" then
+        sessions = all_result.sessions or {}
+      end
+    end
+
     -- Keep the title cache warm so switching sessions updates the winbar at once.
     for _, info in ipairs(sessions) do
       cache_title(info.sessionId, info.title)
@@ -1095,29 +1116,6 @@ function M.load_session(session_id)
     S.chat:render(true)
     refresh_chrome()
     refresh_session_title(entry)
-  end)
-end
-
----Fetch the session list, calling `cb(ok, sessions)`.
----@param cb fun(ok: boolean, sessions: table[])
-local function fetch_sessions(cb)
-  if not S.client or S.connection ~= "ready" then
-    notify("No agent process is running", vim.log.levels.WARN)
-    return
-  end
-  async.run(function()
-    local ok, result = S.client:list_sessions(resolve_cwd())
-    if not ok then
-      if type(result) == "table" and (result.code == -32601 or result.code == -32602) then
-        notify("This agent does not support listing sessions", vim.log.levels.WARN)
-      else
-        local message = type(result) == "table" and (result.message or vim.inspect(result)) or tostring(result)
-        notify(string.format("Unable to list sessions: %s", message), vim.log.levels.ERROR)
-      end
-      cb(false, {})
-      return
-    end
-    cb(true, result.sessions or {})
   end)
 end
 

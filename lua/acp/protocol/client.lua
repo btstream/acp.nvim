@@ -296,7 +296,9 @@ end
 ---@param cursor string|nil opaque pagination cursor
 ---@return boolean ok, any value
 function Client:list_sessions(cwd, cursor)
-  local params = {}
+  -- vim.json encodes `{}` as `[]`, which agents reject as invalid params.
+  -- vim.empty_dict() keeps it an object.
+  local params = vim.empty_dict()
   if cwd then
     params.cwd = cwd
   end

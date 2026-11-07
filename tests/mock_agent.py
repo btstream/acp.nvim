@@ -11,14 +11,29 @@ the prompt text so tests can request specific flows:
   contains "toolfail"   -> tool call that completes with failed status
 """
 import json
+import os
 import sys
 import threading
 import time
 
 SESSION_ID = "sess_mock"
+SESSION_CWD = None  # set from session/new, so filtering matches the client
 SESSIONS = {
     SESSION_ID: {"sessionId": SESSION_ID, "title": None, "updatedAt": "2026-01-01T00:00:00Z"},
-    "sess_old": {"sessionId": "sess_old", "title": "Old conversation", "updatedAt": "2026-01-01T00:00:00Z"},
+    # Lives in the same directory as the active session.
+    "sess_old": {
+        "sessionId": "sess_old",
+        "title": "Old conversation",
+        "updatedAt": "2026-01-01T00:00:00Z",
+        "cwd": None,  # filled in from session/new
+    },
+    # Deliberately stored under another directory, so cwd filtering is testable.
+    "sess_elsewhere": {
+        "sessionId": "sess_elsewhere",
+        "title": "Elsewhere session",
+        "updatedAt": "2026-01-01T00:00:00Z",
+        "cwd": "/some/other/project",
+    },
 }
 write_lock = threading.Lock()
 cancel_event = threading.Event()
@@ -192,6 +207,13 @@ def handle(msg):
     elif method == "authenticate":
         result(msg_id, {})
     elif method == "session/new":
+        SESSION_CWD = params.get("cwd")
+        SESSIONS[SESSION_ID]["cwd"] = SESSION_CWD
+        # Sessions created without an explicit directory belong to the session
+        # directory, so cwd filtering behaves like a real agent.
+        for info in SESSIONS.values():
+            if info.get("cwd") is None:
+                info["cwd"] = SESSION_CWD
         result(msg_id, {
             "sessionId": SESSION_ID,
             "configOptions": [
@@ -224,12 +246,21 @@ def handle(msg):
         update({"sessionUpdate": "agent_message_chunk", "messageId": "m0", "content": {"type": "text", "text": "old answer"}})
         result(msg_id, {})
     elif method == "session/list":
+        # Like OpenCode, filter strictly by cwd when one is supplied, and treat
+        # an omitted cwd as "every session".
         cwd = params.get("cwd")
         listed = []
         for info in SESSIONS.values():
+            if cwd and info.get("cwd") and info["cwd"] != cwd:
+                continue
             item = dict(info)
-            item["cwd"] = cwd
+            item["cwd"] = cwd or item.get("cwd")
             listed.append(item)
+        # ACP_EMPTY_SCOPE_DIR switches the mock into "no sessions in this
+        # directory" mode, so the client has to fall back to an unscoped list.
+        empty_scope = os.environ.get("ACP_EMPTY_SCOPE_DIR")
+        if cwd and empty_scope and cwd == empty_scope:
+            listed = []
         result(msg_id, {"sessions": listed})
     elif method == "session/delete":
         SESSIONS.pop(params.get("sessionId"), None)
