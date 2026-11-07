@@ -21,5 +21,6 @@ require("tests.spec_complete")(t)
 require("tests.spec_permissions")(t)
 require("tests.spec_drafts")(t)
 require("tests.spec_panel")(t)
+require("tests.spec_window_lock")(t)
 
 t.run()

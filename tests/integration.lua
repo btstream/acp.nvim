@@ -130,8 +130,19 @@ wait(function()
   return st.session.status == "idle"
 end, 10000, "cancellation")
 
--- Add a selection attachment.
+-- Add a selection attachment: move to a normal window first, because the
+-- composer is locked to its own buffer.
 check("selections can be attached", function()
+  local main
+  for _, win in ipairs(vim.api.nvim_list_wins()) do
+    local ft = vim.bo[vim.api.nvim_win_get_buf(win)].filetype
+    if ft ~= "acp_chat" and ft ~= "acp_input" then
+      main = win
+      break
+    end
+  end
+  assert(main, "no main window to move to")
+  vim.api.nvim_set_current_win(main)
   vim.cmd("enew")
   vim.api.nvim_buf_set_lines(0, 0, -1, false, { "line one", "line two" })
   vim.bo.buftype = ""

@@ -143,6 +143,8 @@ require("acp").setup({
     input_height = 8,
     focus_input_on_open = true,
     restore_focus = true,
+    -- 锁定 ACP 窗口，阻止其它 buffer 占用（winfixbuf）
+    lock_buffer = true,
   },
 
   ui = {
@@ -151,6 +153,7 @@ require("acp").setup({
     follow_output = true,
     wrap = true,
     language = "zh",      -- "zh" | "en"
+    picker = "vim",       -- "vim" = vim.ui.select（推荐）| "internal" = 内置浮窗
     zed_style = true,
     title = { placement = "auto" },   -- "auto" | "winbar" | "off"
     toolbar = {
@@ -316,6 +319,21 @@ vim.api.nvim_set_hl(0, "AcpSeparator", { fg = "#3b4261" })
 
 ## 行为细节
 
+### 窗口保护
+
+ACP 的两个窗口默认锁定到自己的 buffer（`winfixbuf`），因此 `:edit`、`:bnext`、
+插件里的「在当前窗口打开」等操作都不会把对话记录或输入框替换成别的文件。
+
+- 关闭窗口、`:q`、隐藏面板都仍然正常。
+- 从面板 `:split` / `:vsplit` 会得到一个可用的普通窗口，而不是被锁死的副本。
+- 需要临时解除（例如配合某些窗口管理插件）时：
+
+```lua
+require("acp").setup({ layout = { lock_buffer = false } })
+```
+
+> `winfixbuf` 需要 Neovim 0.10+。更早的版本上插件会跳过锁定并记录一条 debug 日志。
+
 ### 消息排队
 
 同一会话同时只运行一个 prompt。生成中提交的消息会本地排队，
@@ -340,8 +358,15 @@ Agent 崩溃或退出时，正在运行的工具会被标记为失败，并提�
 2. 输入时按 `<M-m>` 切换模型、`<M-b>` 切换模式。
 3. 普通模式按 `M` / `m`，或执行 `:Acp model` / `:Acp mode`。
 
-选择器支持模糊过滤：直接输入关键字即可筛选。OpenCode 可能返回上百个模型，
-过滤器会让它保持可用。选中后立即生效，工具栏同步更新。
+所有选择器（模型、模式、会话、权限确认）默认走 **`vim.ui.select`**，因此
+telescope、fzf-lua、snacks.nvim、dressing 等插件会自动接管，无需额外配置。
+选中后立即生效，工具栏同步更新。
+
+想用插件自带的浮动选择器（带模糊过滤，适合上百个模型的场景）：
+
+```lua
+require("acp").setup({ ui = { picker = "internal" } })
+```
 
 > 不要使用 `<C-m>`：在终端里它与 `<CR>` 是同一个键。
 

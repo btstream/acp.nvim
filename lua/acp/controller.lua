@@ -319,6 +319,7 @@ local function setup_window_events()
     group = S.augroup,
     callback = function(args)
       local win = tonumber(args.match)
+      layout.forget_window(win)
       if S.chat and S.chat.win == win then
         S.chat.win = nil
       end
@@ -559,9 +560,10 @@ function M.hide()
   local remaining = #vim.api.nvim_list_wins() - #acp_windows
   if remaining <= 0 and #acp_windows > 0 then
     -- Never leave Neovim without a window; keep one and show a scratch buffer.
+    -- The window is locked, so unlock it before replacing the panel buffer.
     local keep = acp_windows[1]
     table.remove(acp_windows, 1)
-    vim.api.nvim_win_set_buf(keep, vim.api.nvim_create_buf(true, false))
+    layout.set_window_buffer(keep, vim.api.nvim_create_buf(true, false))
   end
   for _, win in ipairs(acp_windows) do
     pcall(vim.api.nvim_win_close, win, true)

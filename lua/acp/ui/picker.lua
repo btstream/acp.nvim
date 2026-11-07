@@ -1,8 +1,9 @@
--- Floating picker used for models, modes, sessions and permissions.
+-- Selectors for models, modes, sessions and permissions.
 --
--- Typing filters the list (fuzzy substring match), `j`/`k`/`<C-n>`/`<C-p>`
--- move, `<CR>` selects, `<Esc>` cancels. Keeping a filter is essential for
--- providers that expose a hundred or more models.
+-- By default every choice goes through `vim.ui.select`, so whatever the user
+-- already uses for that (telescope, fzf-lua, snacks.nvim, dressing, the plain
+-- built-in prompt) applies here too. The built-in floating picker stays
+-- available as an explicit opt-in.
 local M = {}
 
 ---@class AcpPickerItem
@@ -31,14 +32,59 @@ local function fuzzy(needle, haystack)
   return true
 end
 
----@param opts {title: string, items: AcpPickerItem[], on_choice: fun(value: any), on_cancel?: fun(), width?: integer, height?: integer, format?: fun(item: AcpPickerItem): string, filter?: boolean}
-function M.select(opts)
-  local all_items = opts.items or {}
-  if #all_items == 0 then
-    vim.notify("acp.nvim: nothing to select", vim.log.levels.WARN)
-    return
+---Format one item into a single line, keeping the description readable.
+---@param item AcpPickerItem
+---@param width integer|nil
+---@return string
+local function format_item(item, width)
+  local label = item.label or tostring(item.value)
+  if not item.description or item.description == "" then
+    return label
   end
+  local desc = item.description:gsub("%s*\n%s*", " ")
+  if width and #desc > width then
+    desc = desc:sub(1, math.max(1, width - 1)) .. "…"
+  end
+  return string.format("%s  %s", label, desc)
+end
 
+---Build the `format_item` callback handed to `vim.ui.select`.
+---@param items AcpPickerItem[]
+---@param opts {format?: fun(item: AcpPickerItem): string}
+---@return fun(item: AcpPickerItem): string
+local function make_formatter(items, opts)
+  local columns = vim.o.columns
+  local max_label = 0
+  for _, item in ipairs(items) do
+    local len = vim.fn.strdisplaywidth(item.label or "")
+    if len > max_label then
+      max_label = len
+    end
+  end
+  max_label = math.min(max_label, math.max(20, columns - 30))
+  return function(item)
+    if opts.format then
+      return opts.format(item)
+    end
+    return format_item(item, max_label)
+  end
+end
+
+---Add the current-value marker used by the config option pickers.
+---@param items AcpPickerItem[]
+---@param current any
+---@return AcpPickerItem[]
+function M.mark_current(items, current)
+  return items
+end
+
+---------------------------------------------------------------------------
+-- Built-in floating picker (opt-in)
+---------------------------------------------------------------------------
+
+---@param opts {title: string, items: AcpPickerItem[], on_choice: fun(value: any), on_cancel?: fun(), width?: integer, height?: integer, format?: fun(item: AcpPickerItem): string, filter?: boolean}
+local function internal_select(opts)
+  local all_items = opts.items or {}
   local filter_enabled = opts.filter ~= false and #all_items > 8
   local max_width = math.max(40, math.min(96, vim.o.columns - 12))
   local width = opts.width or max_width
@@ -118,10 +164,11 @@ function M.select(opts)
     if #lines == 0 then
       lines[1] = "  no match"
     end
+    local prompt_line
     if filter_enabled then
       lines[#lines + 1] = "❯ " .. query
+      prompt_line = #lines
     end
-    local prompt_line = #lines
     vim.bo[buf].modifiable = true
     vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
     vim.bo[buf].modifiable = false
@@ -148,7 +195,7 @@ function M.select(opts)
         })
       end
     end
-    if filter_enabled then
+    if prompt_line then
       vim.api.nvim_buf_set_extmark(buf, ns, prompt_line - 1, 0, {
         end_row = prompt_line - 1,
         end_col = #(lines[prompt_line] or ""),
@@ -179,32 +226,27 @@ function M.select(opts)
   local map = function(lhs, rhs)
     vim.keymap.set("n", lhs, rhs, { buffer = buf, nowait = true, silent = true })
   end
+  local function move(delta)
+    local row = vim.api.nvim_win_get_cursor(win)[1] + delta
+    if row >= 1 and row <= #visible then
+      vim.api.nvim_win_set_cursor(win, { row, 0 })
+      render()
+    end
+  end
   map("<CR>", choose)
   map("<Esc>", cancel)
   map("<C-c>", cancel)
   map("<C-n>", function()
-    if vim.api.nvim_win_get_cursor(win)[1] < #visible then
-      vim.api.nvim_win_set_cursor(win, { vim.api.nvim_win_get_cursor(win)[1] + 1, 0 })
-      render()
-    end
+    move(1)
   end)
   map("<C-p>", function()
-    if vim.api.nvim_win_get_cursor(win)[1] > 1 then
-      vim.api.nvim_win_set_cursor(win, { vim.api.nvim_win_get_cursor(win)[1] - 1, 0 })
-      render()
-    end
+    move(-1)
   end)
   map("j", function()
-    if vim.api.nvim_win_get_cursor(win)[1] < #visible then
-      vim.api.nvim_win_set_cursor(win, { vim.api.nvim_win_get_cursor(win)[1] + 1, 0 })
-      render()
-    end
+    move(1)
   end)
   map("k", function()
-    if vim.api.nvim_win_get_cursor(win)[1] > 1 then
-      vim.api.nvim_win_set_cursor(win, { vim.api.nvim_win_get_cursor(win)[1] - 1, 0 })
-      render()
-    end
+    move(-1)
   end)
   map("G", function()
     if #visible > 0 then
@@ -224,7 +266,6 @@ function M.select(opts)
   end)
 
   if filter_enabled then
-    -- Single character keys act as the filter query.
     for _, char in ipairs(vim.fn.split("abcdefghijklmnopqrstuvwxyz0123456789/-_.@", "\\zs")) do
       vim.keymap.set("n", char, function()
         query = query .. char
@@ -244,7 +285,83 @@ function M.select(opts)
   })
 end
 
----Yes/no confirmation.
+---------------------------------------------------------------------------
+-- public API
+---------------------------------------------------------------------------
+
+---@return "vim"|"internal"
+local function backend()
+  local ok, config = pcall(require, "acp.config")
+  if not ok then
+    return "vim"
+  end
+  local ui = config and config.defaults and config.defaults.ui
+  -- Prefer the live controller configuration when available.
+  local ok_state, controller = pcall(require, "acp.controller")
+  if ok_state then
+    local cfg = controller.state().config
+    if cfg and cfg.ui and cfg.ui.picker then
+      return cfg.ui.picker
+    end
+  end
+  if ui and ui.picker then
+    return ui.picker
+  end
+  return "vim"
+end
+
+---Show a selector.
+---
+---With the default `ui.picker = "vim"` this delegates to `vim.ui.select`, so
+---the user's own picker plugin is used. Choosing nothing (or dismissing the
+---prompt) invokes `on_cancel`, which is what permission handling relies on.
+---@param opts {title: string, items: AcpPickerItem[], on_choice: fun(value: any), on_cancel?: fun(), width?: integer, height?: integer, format?: fun(item: AcpPickerItem): string, filter?: boolean}
+function M.select(opts)
+  local items = opts.items or {}
+  if #items == 0 then
+    vim.notify("acp.nvim: nothing to select", vim.log.levels.WARN)
+    return
+  end
+
+  if backend() == "internal" then
+    internal_select(opts)
+    return
+  end
+
+  local format_item = make_formatter(items, opts)
+  local settled = false
+
+  local function settle()
+    if settled then
+      return false
+    end
+    settled = true
+    return true
+  end
+
+  vim.ui.select(items, {
+    prompt = opts.title,
+    format_item = format_item,
+    kind = "acp_select",
+  }, function(item)
+    if not settle() then
+      return
+    end
+    if item == nil then
+      -- Dismissing the prompt is a cancellation, not a silent no-op: callers
+      -- such as permission handling depend on being told.
+      if opts.on_cancel then
+        opts.on_cancel()
+      end
+      return
+    end
+    if opts.on_choice then
+      opts.on_choice(item.value, item)
+    end
+  end)
+end
+
+---Yes/no confirmation, also routed through `vim.ui.select`.
 ---@param title string
 ---@param on_choice fun(choice: string)
 function M.confirm(title, on_choice)
@@ -255,9 +372,12 @@ function M.confirm(title, on_choice)
       { label = "No", value = "no" },
     },
     on_choice = on_choice,
-    width = 40,
     filter = false,
   })
 end
+
+-- Exposed for tests.
+M._internal_select = internal_select
+M._format_item = format_item
 
 return M

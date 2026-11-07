@@ -52,6 +52,9 @@ M.defaults = {
     focus_input_on_open = true,
     -- Keep the previously focused window when the panel is closed.
     restore_focus = true,
+    -- Lock the ACP windows to their own buffers ('winfixbuf'), so commands and
+    -- plugins cannot replace the transcript or the composer with another file.
+    lock_buffer = true,
   },
 
   ui = {
@@ -63,6 +66,12 @@ M.defaults = {
     wrap = true,
     -- "zh" or "en"
     language = "zh",
+
+    -- Selector implementation: "vim" uses vim.ui.select (so telescope,
+    -- fzf-lua, snacks.nvim and friends apply), "internal" always uses the
+    -- built-in floating picker.
+    ---@type "vim"|"internal"
+    picker = "vim",
 
     title = {
       ---@type "auto"|"winbar"|"off"
@@ -164,6 +173,7 @@ function M.validate(cfg)
   check_number(cfg.layout.width, 0.05, 1000, "layout.width")
   check_number(cfg.layout.input_height, 1, 200, "layout.input_height")
   check_enum(cfg.ui.language, { "zh", "en" }, "ui.language")
+  check_enum(cfg.ui.picker, { "vim", "internal" }, "ui.picker")
   check_enum(cfg.ui.title.placement, { "auto", "winbar", "off" }, "ui.title.placement")
   check_enum(cfg.ui.toolbar.placement, { "auto", "winbar", "off" }, "ui.toolbar.placement")
   check_enum(cfg.permissions.prompt, { "select", "native" }, "permissions.prompt")

@@ -4,6 +4,16 @@ return function(t)
   local state = require("acp.session.state")
   local picker = require("acp.ui.picker")
 
+  local function with_ui_select(stub, fn)
+    local original = vim.ui.select
+    vim.ui.select = stub
+    local ok, err = pcall(fn)
+    vim.ui.select = original
+    if not ok then
+      error(err, 0)
+    end
+  end
+
   t.describe("permissions", function()
     t.it("resolves with an explicit reject option when dismissed", function()
       controller.setup({ ui = { language = "en" }, permissions = { prompt = "native" } })
@@ -74,36 +84,99 @@ return function(t)
   end)
 
   t.describe("picker", function()
-    t.it("invokes on_cancel when dismissed", function()
+    t.it("uses vim.ui.select by default", function()
+      controller.setup({ ui = { language = "en" } })
+      local called = nil
+      with_ui_select(function(items, opts, cb)
+        called = { count = #items, prompt = opts.prompt, kind = opts.kind }
+        cb(items[2])
+      end, function()
+        local chosen
+        picker.select({
+          title = "Pick",
+          items = { { label = "one", value = 1 }, { label = "two", value = 2 } },
+          on_choice = function(value)
+            chosen = value
+          end,
+        })
+        t.eq(2, chosen)
+      end)
+      t.truthy(called)
+      t.eq(2, called.count)
+      t.eq("Pick", called.prompt)
+      t.eq("acp_select", called.kind)
+    end)
+
+    t.it("treats a nil choice as cancellation", function()
+      controller.setup({ ui = { language = "en" } })
       local cancelled = false
-      picker.select({
-        title = "test",
-        items = { { label = "one", value = 1 } },
-        on_choice = function() end,
-        on_cancel = function()
-          cancelled = true
-        end,
-      })
-      local win = vim.api.nvim_get_current_win()
-      -- Focus moves away, which must count as a cancellation.
-      vim.api.nvim_win_close(win, true)
-      vim.wait(100, function()
-        return cancelled
-      end, 10)
+      with_ui_select(function(items, _, cb)
+        cb(items[1])
+        cb(nil) -- a second callback must be ignored
+        cb(nil)
+      end, function()
+        picker.select({
+          title = "Pick",
+          items = { { label = "one", value = 1 } },
+          on_choice = function() end,
+          on_cancel = function()
+            cancelled = true
+          end,
+        })
+      end)
+      t.falsy(cancelled, "the first choice should win")
+    end)
+
+    t.it("calls on_cancel when the prompt is dismissed", function()
+      controller.setup({ ui = { language = "en" } })
+      local cancelled = false
+      with_ui_select(function(_, _, cb)
+        cb(nil)
+      end, function()
+        picker.select({
+          title = "Pick",
+          items = { { label = "one", value = 1 } },
+          on_choice = function() end,
+          on_cancel = function()
+            cancelled = true
+          end,
+        })
+      end)
       t.truthy(cancelled)
     end)
 
-    t.it("invokes on_choice on selection", function()
+    t.it("formats items with their description", function()
+      local formatted = picker._format_item({ label = "Claude Sonnet 5", description = "balanced" }, 40)
+      t.match("Claude Sonnet 5", formatted)
+      t.match("balanced", formatted)
+    end)
+
+    t.it("truncates long descriptions", function()
+      local formatted = picker._format_item({
+        label = "m",
+        description = string.rep("x", 100),
+      }, 20)
+      t.truthy(vim.fn.strdisplaywidth(formatted) <= 40, "description was not truncated")
+    end)
+
+    t.it("still supports the built-in picker when opted in", function()
+      controller.setup({ ui = { language = "en", picker = "internal" } })
       local chosen
-      picker.select({
-        title = "test",
-        items = { { label = "one", value = 1 }, { label = "two", value = 2 } },
-        on_choice = function(value)
-          chosen = value
-        end,
-      })
+      local invoked = false
+      with_ui_select(function()
+        invoked = true
+      end, function()
+        picker.select({
+          title = "Pick",
+          items = { { label = "one", value = 1 }, { label = "two", value = 2 } },
+          on_choice = function(value)
+            chosen = value
+          end,
+        })
+      end)
+      t.falsy(invoked, "vim.ui.select must not be used in internal mode")
       vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<CR>", true, false, true), "x", false)
-      vim.wait(100, function()
+      vim.wait(200, function()
         return chosen ~= nil
       end, 10)
       t.eq(1, chosen)

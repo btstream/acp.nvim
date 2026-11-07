@@ -86,11 +86,13 @@ q              隐藏面板
         min_width = 42,
         max_width = 120,
         input_height = 8,
+        lock_buffer = true,   -- 用 'winfixbuf' 锁定 ACP 窗口
       },
       ui = {
         icons = true,
         show_thoughts = false,
         language = "zh",
+        picker = "vim",       -- "vim" | "internal"
         zed_style = true,
         title = { placement = "auto" },
         toolbar = { placement = "auto", show_usage = false },
@@ -145,7 +147,25 @@ winbar 中，因此 laststatus=3（全局状态栏）下也能正常显示。
     require("acp").status()       -- 结构化表
 
 ==============================================================================
-8. 行为细节                                                  *acp-behavior*
+8. 窗口保护与选择器                                        *acp-protection*
+
+ACP 的两个窗口默认锁定到自己的 buffer（'winfixbuf'），:edit、:bnext 等操作
+无法把对话记录或输入框替换成其它文件。关闭窗口与隐藏面板不受影响。
+
+从面板 :split 会得到一个可用的普通窗口，而不是被锁死的副本。
+
+需要关闭该行为：
+
+    require("acp").setup({ layout = { lock_buffer = false } })
+
+所有选择器（模型、模式、会话、权限确认）默认通过 vim.ui.select 实现，
+因此 telescope、fzf-lua、snacks.nvim 等插件会自动接管。需要改用内置浮动
+选择器时：
+
+    require("acp").setup({ ui = { picker = "internal" } })
+
+==============================================================================
+9. 行为细节                                                  *acp-behavior*
 
 同一会话同时只运行一个 prompt；生成中提交的消息本地排队。
 
@@ -158,7 +178,7 @@ Agent 崩溃后使用 :Acp reconnect。重连会通过 session/load 重放 Agent
 cancelled。
 
 ==============================================================================
-9. 高亮                                                      *acp-highlights*
+10. 高亮                                                     *acp-highlights*
 
 所有样式通过语义化高亮组暴露，例如：
 
@@ -173,7 +193,7 @@ cancelled。
 ui.icons = false 会改用 ASCII 图标。
 
 ==============================================================================
-10. 健康检查                                                   *acp-health*
+11. 健康检查                                                   *acp-health*
 
     :checkhealth acp
 

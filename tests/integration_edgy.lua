@@ -140,9 +140,10 @@ check("composer keymaps are buffer local", function()
     end
   end
   assert(has_send, "send keymap missing")
-  -- Check the global table from a buffer that has no acp buffer-local maps.
-  local scratch = vim.api.nvim_create_buf(false, true)
-  vim.api.nvim_set_current_buf(scratch)
+  -- Check the global table from a plain buffer that has no ACP maps. The ACP
+  -- windows are locked to their buffers, so open a separate window.
+  vim.cmd("split | enew")
+  local scratch = vim.api.nvim_get_current_buf()
   local global = vim.fn.maparg("<C-s>", "n", false, true)
   assert(vim.tbl_isempty(global), "a global <C-s> mapping was created")
 end)
