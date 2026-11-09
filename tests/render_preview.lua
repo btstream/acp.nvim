@@ -52,6 +52,7 @@ local function demo_session()
   s:append({
     id = "t1",
     kind = "tool",
+    tool_kind = "read",
     title = "Read src/auth.lua",
     status = "completed",
     detail = "120 lines read",
@@ -67,6 +68,7 @@ local function demo_session()
   s:append({
     id = "t2",
     kind = "tool",
+    tool_kind = "edit",
     title = "Edit src/auth.lua",
     status = "completed",
     detail = "+18 -11",
@@ -76,6 +78,7 @@ local function demo_session()
   s:append({
     id = "t3",
     kind = "tool",
+    tool_kind = "execute",
     title = "Run busted tests/auth_spec.lua",
     status = "failed",
     detail = "1 failure in token_spec",

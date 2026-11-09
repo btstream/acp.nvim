@@ -1,6 +1,6 @@
 # acp.nvim 对话渲染升级：Zed 卡片 + Markdown 渲染
 
-状态：待实施
+状态：阶段 0–4 已全部实施完成（见文末「实施记录」）
 创建：2026-11-09
 
 > 本文档位于仓库内，便于在任意机器上检出代码后直接按计划实施。
@@ -645,3 +645,36 @@ if ok then
   end
 end
 ```
+
+> 注：实施时发现 `hlexists` 对任何 `@` 前缀名称都返回 1（无论是否定义），
+> 因此 `acp.ui.code_hl` 实际改用 `nvim_get_hl` 检查定义是否为空。
+
+---
+
+## 12. 实施记录
+
+| 阶段 | 提交 | 说明 |
+|---|---|---|
+| 0 | `7b74392` | `feat(chat): add the line background painter` |
+| 1 | `54be79a` | `feat(render): inline Markdown, level-aware headings and code styling` |
+| 2 | `40e2524` | `feat(render): syntax-highlight fenced code blocks` |
+| 3 | `549e1db` | `feat(render): draw tool calls as cards` |
+| 4 | `141373e` | `feat(render): collapse agent reasoning behind a togglable header` |
+
+实施中与计划的偏差：
+
+1. **含 fence 的块放弃增量渲染。** 原计划让代码块也走增量，但一个流式
+   fence 会经历「未闭合 → 闭合 → 之后继续追加文本」多个状态，每种状态都要
+   与增量前缀保持一致，实测导致了高亮段重复与陈旧。改为：块内出现 ``` 时
+   整体重渲染。含代码的块是少数，且解析结果缓存在块上。
+2. **`hlexists` 不可用于选择高亮组。** 见第 11 章末尾的注。
+3. **工具头部同时显示标签与标题。** 计划只写了标签映射，实施时保留了 agent
+   自己给的 title（`Run Command · cargo fetch`），信息更多且不重复。
+4. **`ui.show_thoughts` 不再改写块状态。** 原实现顺手置 `expanded = true`，
+   在引入可切换状态后会覆盖用户选择，已改为渲染期临时生效。
+5. **卡片背景与代码块背景从主题推导**（`set_surface`），而非写死颜色，以
+   同时适配亮色/暗色配色。
+
+测试规模：287 个单元测试 + 集成 / 重连 / edgy 三套全部通过；
+性能基准 1000 块首次渲染约 33 ms（上限 1500 ms）。
+

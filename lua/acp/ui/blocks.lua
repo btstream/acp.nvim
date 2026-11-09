@@ -506,11 +506,21 @@ local function render_tool(block, ctx)
   local tag = tool_label(block)
   local title = tool_title(block)
   local status = tool_status_label(block.status)
-  -- `Run Command · grep ... · done`. The title is omitted when it would repeat
-  -- the label, and a tool with neither still shows its kind.
+  -- `Run Command · grep ... · done`. A title that merely repeats the label is
+  -- dropped, and a title that starts with it keeps only the remainder, so
+  -- `Read` + `Read src/auth.lua` reads as `Read · src/auth.lua` rather than
+  -- losing the filename.
   local parts = { tag }
-  if title ~= "" and title:lower() ~= tag:lower() then
-    parts[#parts + 1] = title
+  if title ~= "" then
+    local lower_tag = tag:lower()
+    local lower_title = title:lower()
+    if lower_title == lower_tag then
+      -- Identical: keep just the label.
+    elseif lower_title:sub(1, #lower_tag + 1) == lower_tag .. " " then
+      parts[#parts + 1] = title:sub(#tag + 2)
+    else
+      parts[#parts + 1] = title
+    end
   end
 
   local label = string.format("%s %s %s", caret, glyph, table.concat(parts, " · "))
@@ -523,10 +533,11 @@ local function render_tool(block, ctx)
     { s = glyph_start, e = glyph_end, group = glyph_hl },
     { s = tag_start, e = -1, group = "AcpToolTag" },
   }
-  if #parts > 1 and title ~= "" then
+  if #parts > 1 then
     -- The title part keeps the default body colour so it reads as content.
+    local shown_title = parts[2]
     local title_offset = #caret + 1 + #glyph + 1 + #tag + 3
-    segments[#segments + 1] = { s = title_offset, e = title_offset + #title, group = "AcpToolTitle" }
+    segments[#segments + 1] = { s = title_offset, e = title_offset + #shown_title, group = "AcpToolTitle" }
   end
 
   local meta = {}

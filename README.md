@@ -150,7 +150,12 @@ require("acp").setup({
 
   ui = {
     icons = true,         -- false 时使用纯 ASCII
+    -- 旧键，等价于 thoughts.default_expanded = true
     show_thoughts = false,
+    thoughts = {
+      default_expanded = false,      -- 默认展开思考内容
+      show_collapsed_header = true,  -- 折叠时显示 "Thinking" 头部
+    },
     follow_output = true,
     wrap = true,
     picker = "vim",       -- "vim" = vim.ui.select（推荐）| "internal" = 内置浮窗
