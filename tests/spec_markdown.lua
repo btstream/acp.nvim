@@ -216,11 +216,13 @@ return function(t)
         show_thoughts = true,
       })
       local groups, concealed = {}, 0
-      for _, seg in ipairs(lines[1].segments or {}) do
-        if seg.conceal then
-          concealed = concealed + 1
-        elseif seg.group then
-          groups[seg.group] = true
+      for _, line in ipairs(lines) do
+        for _, seg in ipairs(line.segments or {}) do
+          if seg.conceal then
+            concealed = concealed + 1
+          elseif seg.group then
+            groups[seg.group] = true
+          end
         end
       end
       t.eq(2, concealed, "backticks should be concealed inside a thought")

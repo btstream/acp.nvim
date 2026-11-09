@@ -38,13 +38,38 @@ return function(t)
       t.match("contents", lines[2].text)
     end)
 
-    t.it("hides thoughts when disabled", function()
+    t.it("collapses thoughts by default and expands on request", function()
       local s = state.new("s", "/tmp")
       s:append({ id = "th", kind = "thought", text = "secret reasoning" })
-      local lines = blocks.render_block(s.blocks[1], ctx)
-      t.eq(0, #lines)
-      local shown = blocks.render_block(s.blocks[1], vim.tbl_extend("force", ctx, { show_thoughts = true }))
-      t.truthy(#shown > 0)
+      local collapsed = blocks.render_block(s.blocks[1], ctx)
+      -- A header stays visible so the block can be expanded.
+      t.truthy(#collapsed > 0, "a collapsed thought should keep its header")
+      t.match("Thinking", collapsed[1].text)
+      t.falsy(
+        table
+          .concat(
+            vim.tbl_map(function(l)
+              return l.text
+            end, collapsed),
+            "\n"
+          )
+          :find("secret reasoning", 1, true),
+        "collapsed thought leaked its body"
+      )
+
+      local expanded = blocks.render_block(s.blocks[1], vim.tbl_extend("force", ctx, { show_thoughts = true }))
+      t.truthy(#expanded > 0)
+      t.truthy(
+        table
+          .concat(
+            vim.tbl_map(function(l)
+              return l.text
+            end, expanded),
+            "\n"
+          )
+          :find("secret reasoning", 1, true),
+        "expanded thought lost its body"
+      )
     end)
 
     t.it("renders plan entries with status marks", function()

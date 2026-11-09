@@ -395,11 +395,35 @@ local function render_assistant(block, ctx)
 end
 
 local function render_thought(block, ctx)
+  local ic = ctx.icons
+  local thoughts = ctx.thoughts or {}
+  -- A block that was never toggled follows the configured default; an explicit
+  -- toggle always wins, so a user's choice is never overridden by a re-render.
+  local expanded
+  if block.expanded ~= nil then
+    expanded = block.expanded == true
+  else
+    expanded = thoughts.default_expanded == true
+  end
+  local caret = expanded and ic.chevron_down or ic.chevron_right
+  -- The header is always drawn when thoughts are enabled: without it there is
+  -- nothing for the user to expand.
+  local header = {
+    text = caret .. " " .. ic.thought .. " Thinking",
+    segments = { { s = 0, e = #caret + 1 + #ic.thought + 1, group = "AcpThought" } },
+  }
+  if not expanded then
+    return { header, { text = "", segments = nil } }
+  end
+
   block._md_thought = block._md_thought or {}
   local lines = M.render_text(block.text or "", "AcpThought", ctx.width, block._md_thought)
   -- Keep the inline segments `render_text` produced: overwriting them here
   -- would drop inline code and other markup inside thoughts.
-  local out = M.indent_lines(lines, "  ", (ctx.icons.thought .. " "))
+  local out = { header }
+  for _, line in ipairs(M.indent_lines(lines, "  ")) do
+    out[#out + 1] = line
+  end
   out[#out + 1] = { text = "", segments = nil }
   return out
 end
@@ -681,7 +705,21 @@ function M.render_block(block, ctx)
   elseif kind == "agent" then
     return render_assistant(block, ctx)
   elseif kind == "thought" then
-    if not ctx.show_thoughts then
+    -- `show_thoughts` is the legacy switch (fully visible); the newer
+    -- `thoughts` table controls the collapsed/expanded default and whether a
+    -- header is drawn at all.
+    local thoughts = ctx.thoughts or {}
+    local show_header = thoughts.show_collapsed_header ~= false
+    if ctx.show_thoughts then
+      -- Legacy switch: show the content without touching the block's own
+      -- toggle state.
+      local previous = block.expanded
+      block.expanded = true
+      local out = render_thought(block, ctx)
+      block.expanded = previous
+      return out
+    end
+    if not show_header and block.expanded ~= true then
       return {}
     end
     return render_thought(block, ctx)

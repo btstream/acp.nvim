@@ -102,6 +102,7 @@ function M.new(opts)
     pending_new = false,
     width = 80,
     show_thoughts = opts.config.ui.show_thoughts,
+    thoughts = opts.config.ui.thoughts,
     icons = blocks.icon_set(opts.config.ui.icons),
     session = nil,
     dirty = false,
@@ -281,6 +282,7 @@ function Chat:render(force)
     width = self.width,
     cwd = self.session.cwd,
     show_thoughts = self.show_thoughts,
+    thoughts = self.thoughts,
   }
 
   if force then
@@ -503,7 +505,7 @@ function Chat:toggle_current()
   if not block then
     return false
   end
-  if block.kind == "tool" or block.kind == "compaction" then
+  if block.kind == "tool" or block.kind == "compaction" or block.kind == "thought" then
     block.expanded = not block.expanded
     self:schedule_render()
     return true

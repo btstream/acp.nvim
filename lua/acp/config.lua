@@ -66,8 +66,17 @@ M.defaults = {
   ui = {
     -- Use Nerd Font icons. Set to false for a plain ASCII interface.
     icons = true,
-    -- Show agent thoughts. Off by default, matching Zed's clean transcript.
+    -- Show agent thoughts expanded. Off by default, matching Zed's clean
+    -- transcript; a collapsed header is still drawn so they can be opened.
+    -- Kept for compatibility: `thoughts.default_expanded` supersedes it.
     show_thoughts = false,
+    thoughts = {
+      -- Expand reasoning by default instead of showing a collapsed header.
+      default_expanded = false,
+      -- Draw a "Thinking" header when collapsed. Turning this off hides
+      -- thoughts entirely, with no way to expand them from the transcript.
+      show_collapsed_header = true,
+    },
     follow_output = true,
     wrap = true,
 
@@ -222,6 +231,15 @@ function M.validate(cfg)
   check_enum(cfg.ui.title.placement, { "auto", "winbar", "off" }, "ui.title.placement")
   check_enum(cfg.ui.toolbar.placement, { "auto", "winbar", "off" }, "ui.toolbar.placement")
   check_enum(cfg.permissions.prompt, { "select", "native" }, "permissions.prompt")
+  if type(cfg.ui.thoughts) ~= "table" then
+    fail("ui.thoughts must be a table")
+  end
+  if type(cfg.ui.thoughts.default_expanded) ~= "boolean" then
+    fail("ui.thoughts.default_expanded must be a boolean")
+  end
+  if type(cfg.ui.thoughts.show_collapsed_header) ~= "boolean" then
+    fail("ui.thoughts.show_collapsed_header must be a boolean")
+  end
 
   if cfg.layout.min_width > cfg.layout.max_width then
     fail("layout.min_width must not exceed layout.max_width")
