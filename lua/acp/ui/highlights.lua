@@ -74,6 +74,70 @@ M.groups = {
 local zed_style = true
 local augroup = nil
 
+---Serialise a highlight definition into a comparable string.
+---@param hl table
+---@return string
+local function serialise(hl)
+  local keys = {}
+  for key in pairs(hl) do
+    keys[#keys + 1] = key
+  end
+  table.sort(keys)
+  local parts = {}
+  for _, key in ipairs(keys) do
+    parts[#parts + 1] = key .. "=" .. tostring(hl[key])
+  end
+  return table.concat(parts, ";")
+end
+
+---Serialise whatever the group currently resolves to ("" when undefined).
+---@param name string
+---@return string
+local function current(name)
+  local ok, hl = pcall(vim.api.nvim_get_hl, 0, { name = name })
+  if not ok or type(hl) ~= "table" then
+    return ""
+  end
+  return serialise(hl)
+end
+
+-- What this module last wrote for each group. A group whose current value does
+-- not match this is treated as user-owned and left alone.
+local written = {}
+
+---Set a highlight group unless the user has defined it themselves.
+---
+---A user override is detected by comparing the group's current value with the
+---value this module last wrote. Anything else — including a value the user set
+---before `setup` ran — wins over ours.
+---@param name string
+---@param spec table
+---@return boolean applied false when the group is user-owned
+local function set_hl(name, spec)
+  local existing = current(name)
+  -- An empty group means it was cleared (a new colorscheme, or `:hi clear`), so
+  -- any previous ownership is gone and we may define it again.
+  if existing == "" then
+    written[name] = nil
+  elseif existing ~= written[name] then
+    return false
+  end
+  vim.api.nvim_set_hl(0, name, spec)
+  written[name] = current(name)
+  return true
+end
+
+---Whether the group is currently owned by the user.
+---@param name string
+---@return boolean
+local function is_user_owned(name)
+  local existing = current(name)
+  return existing ~= "" and existing ~= written[name]
+end
+
+M._set_hl = set_hl
+M._is_user_owned = is_user_owned
+
 ---Relative luminance of a `#rrggbb` colour, 0 (black) to 1 (white).
 ---@param hex string
 ---@return number|nil
@@ -122,7 +186,7 @@ local function set_accent_fg(target, source, bg)
     chosen = fg or source_bg
   end
   if chosen and distance(chosen) > 0.15 then
-    vim.api.nvim_set_hl(0, target, { fg = chosen })
+    set_hl(target, { fg = chosen })
   end
 end
 
@@ -181,9 +245,9 @@ local function set_surface(name, amount)
   end
   local blended = mix(bg, bg, amount)
   if blended then
-    vim.api.nvim_set_hl(0, name, { fg = fg, bg = blended })
+    set_hl(name, { fg = fg, bg = blended })
   elseif spec.link then
-    vim.api.nvim_set_hl(0, name, spec)
+    set_hl(name, spec)
   end
 end
 
@@ -316,7 +380,7 @@ local function set_toolbar_mode(target, accent, amount)
   -- badge, not against the bar. Starting from the bar colour and pushing away
   -- from the badge gives a dark glyph on a bright badge (and vice versa).
   local fg = ensure_contrast(bar_bg, bg, 4.5)
-  vim.api.nvim_set_hl(0, target, { fg = fg, bg = bg })
+  set_hl(target, { fg = fg, bg = bg })
 end
 
 ---Give `target` the foreground of `source` and the toolbar's background.
@@ -345,13 +409,13 @@ local function set_toolbar_fg(target, source, min_contrast)
   if type(fg) == "string" and type(bg) == "string" then
     fg = ensure_contrast(fg, bg, min_contrast)
   end
-  vim.api.nvim_set_hl(0, target, { fg = fg, bg = bg })
+  set_hl(target, { fg = fg, bg = bg })
 end
 
 ---Define every group. Safe to call again after a colorscheme change.
 local function apply()
   for name, spec in pairs(M.groups) do
-    vim.api.nvim_set_hl(0, name, spec)
+    set_hl(name, spec)
   end
   -- Thoughts take the search highlight's accent colour as text colour. Which of
   -- its two colours that is depends on the theme: some pair a dark foreground
@@ -393,9 +457,9 @@ local function apply()
   set_toolbar_fg("AcpToolbarAccent", "Normal")
   if zed_style then
     -- Low contrast surfaces: no hard borders, muted user text, quiet chrome.
-    vim.api.nvim_set_hl(0, "AcpUser", { link = "Function" })
-    vim.api.nvim_set_hl(0, "AcpUserChip", { link = "Visual" })
-    vim.api.nvim_set_hl(0, "AcpSeparator", { fg = "grey30" })
+    set_hl("AcpUser", { link = "Function" })
+    set_hl("AcpUserChip", { link = "Visual" })
+    set_hl("AcpSeparator", { fg = "grey30" })
   end
 end
 

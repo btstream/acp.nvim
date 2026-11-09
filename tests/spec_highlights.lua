@@ -77,6 +77,49 @@ return function(t)
       highlights.setup(true)
     end)
 
+    t.it("respects a user override made before setup", function()
+      vim.cmd("hi clear")
+      vim.api.nvim_set_hl(0, "AcpUser", { fg = "#ff0000" })
+      vim.api.nvim_set_hl(0, "AcpBold", { fg = "#00ff00" })
+      highlights.setup(false)
+
+      t.eq(0xff0000, vim.api.nvim_get_hl(0, { name = "AcpUser" }).fg, "AcpUser was overwritten")
+      t.eq(0x00ff00, vim.api.nvim_get_hl(0, { name = "AcpBold" }).fg, "AcpBold was overwritten")
+    end)
+
+    t.it("respects a user override made after setup", function()
+      vim.cmd("hi clear")
+      highlights.setup(false)
+      vim.api.nvim_set_hl(0, "AcpThought", { fg = "#123456" })
+
+      -- A colorscheme load re-applies every group; the user's value must survive.
+      vim.cmd("doautocmd ColorScheme")
+      t.eq(0x123456, vim.api.nvim_get_hl(0, { name = "AcpThought" }).fg, "AcpThought was overwritten")
+    end)
+
+    t.it("respects a user override of a derived group", function()
+      vim.cmd("hi clear")
+      vim.api.nvim_set_hl(0, "AcpCardBg", { bg = "#123456" })
+      vim.api.nvim_set_hl(0, "AcpToolbarModePlan", { fg = "#abcdef", bg = "#111111" })
+      vim.api.nvim_set_hl(0, "AcpToolbarIdle", { fg = "#999999" })
+      highlights.setup(false)
+
+      t.eq(0x123456, vim.api.nvim_get_hl(0, { name = "AcpCardBg" }).bg, "derived surface was overwritten")
+      local badge = vim.api.nvim_get_hl(0, { name = "AcpToolbarModePlan" })
+      t.eq(0xabcdef, badge.fg, "badge foreground was overwritten")
+      t.eq(0x111111, badge.bg, "badge background was overwritten")
+      t.eq(0x999999, vim.api.nvim_get_hl(0, { name = "AcpToolbarIdle" }).fg, "status glyph was overwritten")
+    end)
+
+    t.it("still defines groups the user left alone", function()
+      vim.cmd("hi clear")
+      vim.api.nvim_set_hl(0, "AcpUser", { fg = "#ff0000" })
+      highlights.setup(false)
+      -- A group next to the overridden one must still get its default.
+      t.truthy(defined("AcpAssistant"), "a non-overridden group was not defined")
+      t.truthy(defined("AcpToolbarModePlan"), "a derived group was not defined")
+    end)
+
     t.it("does not give card body text a background of its own", function()
       highlights.setup(false)
       -- No `AcpToolBody` group exists on purpose; body text inherits the card.
@@ -84,6 +127,7 @@ return function(t)
     end)
 
     t.it("honours the zed palette", function()
+      vim.cmd("hi clear")
       highlights.setup(true)
       local hl = vim.api.nvim_get_hl(0, { name = "AcpUser" })
       t.eq("Function", hl.link, "zed style should link AcpUser to Function")
