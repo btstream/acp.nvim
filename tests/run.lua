@@ -32,5 +32,6 @@ require("tests.spec_optimizations")(t)
 require("tests.spec_backgrounds")(t)
 require("tests.spec_markdown")(t)
 require("tests.spec_code_hl")(t)
+require("tests.spec_cards")(t)
 
 t.run()

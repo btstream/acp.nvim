@@ -13,6 +13,10 @@ M.groups = {
   AcpAssistant = { link = "Normal" },
   AcpThought = { link = "Comment", italic = true },
   AcpToolTitle = { link = "Function" },
+  AcpToolTag = { link = "Comment" },
+  AcpToolBody = { link = "Normal" },
+  AcpCardBg = { link = "NormalFloat" },
+  AcpCodeBlockBg = { link = "NormalFloat" },
   AcpToolRunning = { link = "DiagnosticWarn" },
   AcpToolSuccess = { link = "DiagnosticOk" },
   AcpToolError = { link = "DiagnosticError" },
@@ -110,7 +114,10 @@ local function apply()
     vim.api.nvim_set_hl(0, name, spec)
   end
   -- Surfaces derived from the theme so they work on light and dark themes.
+  -- The code block is lighter than the tool card so the two read differently.
   set_surface("AcpMdCode", 0.15)
+  set_surface("AcpCodeBlockBg", 0.08)
+  set_surface("AcpCardBg", 0.16)
   if zed_style then
     -- Low contrast surfaces: no hard borders, muted user text, quiet chrome.
     vim.api.nvim_set_hl(0, "AcpUser", { link = "Function" })

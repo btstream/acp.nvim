@@ -417,22 +417,94 @@ local function tool_icon(block, ic)
   return ic.tool_pending, "AcpToolRunning"
 end
 
+-- Human-readable label for a tool call, derived from the ACP tool kind. Falls
+-- back to the tool name so unknown kinds still say something useful.
+local TOOL_LABELS = {
+  execute = "Run Command",
+  edit = "Write",
+  write = "Write",
+  read = "Read",
+  search = "Search",
+  fetch = "Fetch",
+  think = "Thinking",
+  delete = "Delete",
+  move = "Move",
+  switch_mode = "Switch Mode",
+}
+
+---@param block AcpBlock
+---@return string
+local function tool_label(block)
+  local kind = block.tool_kind
+  if type(kind) == "string" and TOOL_LABELS[kind] then
+    return TOOL_LABELS[kind]
+  end
+  if type(kind) == "string" and kind ~= "" then
+    -- Unknown kind: present it like the known ones.
+    return (kind:gsub("_", " "):gsub("^%l", string.upper))
+  end
+  -- No kind at all: the agent's own title is the best label available.
+  return "Tool"
+end
+
+---Secondary descriptor shown after the label: the agent's own summary of what
+---the call does, which is usually more specific than the kind.
+---@param block AcpBlock
+---@return string
+local function tool_title(block)
+  local title = block.title
+  if type(title) == "string" and title ~= "" then
+    return one_line(title)
+  end
+  if block.name and block.name ~= "" then
+    return one_line(block.name)
+  end
+  return ""
+end
+
+---Pad `text` with spaces to `width` display cells.
+---Padding is real text because an extmark cannot colour past the end of a line.
+---@param text string
+---@param width integer
+---@return string
+function M.pad_to(text, width)
+  local current = vim.api.nvim_strwidth(text)
+  if current >= width then
+    return text
+  end
+  return text .. string.rep(" ", width - current)
+end
+
 local function render_tool(block, ctx)
   local ic = ctx.icons
   local glyph, glyph_hl = tool_icon(block, ic)
   local caret = block.expanded and ic.chevron_down or ic.chevron_right
-  local title = one_line(block.title ~= nil and block.title ~= "" and block.title or (block.name or "tool"))
+  local tag = tool_label(block)
+  local title = tool_title(block)
   local status = tool_status_label(block.status)
-  local label = string.format("%s %s %s", caret, glyph, title)
+  -- `Run Command · grep ... · done`. The title is omitted when it would repeat
+  -- the label, and a tool with neither still shows its kind.
+  local parts = { tag }
+  if title ~= "" and title:lower() ~= tag:lower() then
+    parts[#parts + 1] = title
+  end
+
+  local label = string.format("%s %s %s", caret, glyph, table.concat(parts, " · "))
   local caret_end = #caret
   local glyph_start = caret_end + 1
   local glyph_end = glyph_start + #glyph
-  local title_start = glyph_end + 1
+  local tag_start = glyph_end + 1
   local segments = {
     { s = 0, e = caret_end, group = "AcpSeparator" },
     { s = glyph_start, e = glyph_end, group = glyph_hl },
-    { s = title_start, e = -1, group = "AcpToolTitle" },
+    { s = tag_start, e = -1, group = "AcpToolTag" },
   }
+  if #parts > 1 and title ~= "" then
+    -- The title part keeps the default body colour so it reads as content.
+    local title_offset = #caret + 1 + #glyph + 1 + #tag + 3
+    segments[#segments + 1] = { s = title_offset, e = title_offset + #title, group = "AcpToolTitle" }
+  end
+
   local meta = {}
   if block.child and block.child.title then
     meta[#meta + 1] = "subagent" .. ": " .. one_line(block.child.title)
@@ -442,48 +514,56 @@ local function render_tool(block, ctx)
   end
   local suffix = #meta > 0 and ("  " .. table.concat(meta, " · ")) or ""
   if suffix ~= "" then
-    segments[#segments + 1] = { s = string.len(label), e = -1, group = glyph_hl }
+    segments[#segments + 1] = { s = #label, e = -1, group = "AcpMuted" }
   end
   local out = {
-    {
-      text = label .. suffix,
-      segments = segments,
-    },
+    { text = label .. suffix, segments = segments },
   }
 
-  if block.expanded then
-    if block.detail and block.detail ~= "" then
-      block._md_detail = block._md_detail or {}
-      local lines = M.indent_lines(M.render_text(block.detail, "AcpMuted", ctx.width, block._md_detail), "    ")
-      for _, line in ipairs(lines) do
-        out[#out + 1] = line
-      end
+  -- Card body: only when expanded and there is something to show.
+  local body_lines = {}
+  if block.detail and block.detail ~= "" then
+    block._md_detail = block._md_detail or {}
+    for _, line in ipairs(M.render_text(block.detail, "AcpToolBody", ctx.width - 4, block._md_detail)) do
+      body_lines[#body_lines + 1] = line
     end
-    if block.locations and #block.locations > 0 then
-      for _, loc in ipairs(block.locations) do
-        local rel = one_line(loc.path or "")
-        if ctx.cwd and vim.startswith(rel, ctx.cwd .. "/") then
-          rel = rel:sub(#ctx.cwd + 2)
-        end
-        local text = string.format("    %s%s", rel, loc.line and (":" .. loc.line) or "")
-        out[#out + 1] = {
-          text = text,
-          segments = { { s = 4, e = -1, group = "AcpLink" } },
-          location = loc,
-        }
-      end
+  end
+  if block.status == "failed" and block.raw_output then
+    local dump = type(block.raw_output) == "string" and block.raw_output or vim.inspect(block.raw_output)
+    for _, line in ipairs(M.render_text(dump, "AcpToolError", ctx.width - 4)) do
+      body_lines[#body_lines + 1] = line
     end
-    if block.status == "failed" and block.raw_output then
-      local dump = type(block.raw_output) == "string" and block.raw_output or vim.inspect(block.raw_output)
-      -- raw_output is not streamed; render it without a cache to keep the
-      -- cache table keyed by block kind simple.
-      for _, line in ipairs(M.indent_lines(M.render_text(dump, "AcpToolError", ctx.width), "    ")) do
-        out[#out + 1] = line
-      end
+  end
+
+  if block.expanded and (#body_lines > 0 or (block.locations and #block.locations > 0)) then
+    -- The card is padded so the background forms a solid block rather than
+    -- hugging the text. Width is the panel width minus nothing: `hl_eol` fills
+    -- the remaining cells, so the padding only needs to exist.
+    out[#out + 1] = { text = "  ", bg = "AcpCardBg", segments = {} }
+    for _, line in ipairs(body_lines) do
+      out[#out + 1] = {
+        text = "  " .. line.text,
+        segments = vim.tbl_map(function(seg)
+          return { s = seg.s + 2, e = seg.e >= 0 and seg.e + 2 or seg.e, group = seg.group, conceal = seg.conceal }
+        end, line.segments or {}),
+        bg = "AcpCardBg",
+      }
     end
+    for _, loc in ipairs(block.locations or {}) do
+      local rel = one_line(loc.path or "")
+      if ctx.cwd and vim.startswith(rel, ctx.cwd .. "/") then
+        rel = rel:sub(#ctx.cwd + 2)
+      end
+      out[#out + 1] = {
+        text = string.format("  %s%s", rel, loc.line and (":" .. loc.line) or ""),
+        segments = { { s = 2, e = -1, group = "AcpLink" } },
+        location = loc,
+        bg = "AcpCardBg",
+      }
+    end
+    out[#out + 1] = { text = "  ", bg = "AcpCardBg", segments = {} }
   elseif block.detail and block.detail ~= "" then
-    -- Extract the first line without splitting the whole (possibly huge)
-    -- detail string into a table on every render tick.
+    -- Collapsed: one muted preview line, as before.
     local first = block.detail:match("([^\r\n]*)") or ""
     if first ~= "" then
       local maxw = math.max(10, ctx.width - 8)
