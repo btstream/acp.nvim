@@ -115,7 +115,9 @@ check("toolbar reflects an idle session after the turn", function()
     maxwidth = vim.api.nvim_win_get_width(st.input.win),
     use_winbar = true,
   })
-  assert(res.str:find("Idle", 1, true), "toolbar did not return to idle: " .. tostring(res.str))
+  -- The status is a glyph, not the word "Idle".
+  local ic = require("acp.ui.icons").get(true)
+  assert(res.str:find(ic.status_idle, 1, true), "toolbar did not return to idle: " .. tostring(res.str))
 end)
 
 -- Queuing while running.

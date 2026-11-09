@@ -39,6 +39,12 @@ function M.nerd()
     plus = "󰐕", -- plus
     history = "󰋚", -- history
     arrow_right = "󰁔", -- arrow-right
+    -- Toolbar: mode and status are shown as glyphs rather than words.
+    mode_plan = "󰉹", -- format-list-bulleted (same family as `plan`)
+    mode_build = "󰒓", -- cog
+    status_idle = "󰝦", -- circle-outline
+    status_waiting = "󰀪", -- alert
+    status_cancelling = "󰅖", -- close
   }
 end
 
@@ -77,6 +83,12 @@ function M.ascii()
     plus = "+",
     history = "H",
     arrow_right = ">",
+    -- Toolbar fallbacks: short letters, since ASCII has no glyphs for these.
+    mode_plan = "P",
+    mode_build = "B",
+    status_idle = "o",
+    status_waiting = "!",
+    status_cancelling = "x",
   }
 end
 

@@ -108,6 +108,40 @@ local function clickable(text, hl_group, action)
   return body
 end
 
+---Modes that get a dedicated glyph. Anything else falls back to its own text.
+local MODE_GLYPHS = { plan = "mode_plan", build = "mode_build" }
+
+---Text for the mode region: a glyph for known modes, the raw label otherwise.
+---
+---With `ui.icons = false` the label is kept, because a single ASCII letter would
+---not tell the user which mode is active.
+---@param mode string
+---@param ic table<string, string>
+---@return string
+function M.mode_text(mode, ic)
+  local key = MODE_GLYPHS[mode:lower()]
+  if key and ic[key] then
+    return ic[key]
+  end
+  return M.escape(mode)
+end
+
+---Text for the status region.
+---
+---`running` shows the animation frame instead of a static glyph so the toolbar
+---still reads as "busy"; every other state is a single glyph.
+---@param status "waiting"|"running"|"cancelling"|"idle"
+---@param ic table<string, string>
+---@param spinner string|nil
+---@return string
+function M.status_text(status, ic, spinner)
+  if status == "running" then
+    return spinner or ic.tool_run
+  end
+  local key = "status_" .. status
+  return ic[key] or ic.tool_pending
+end
+
 ---Build the composer toolbar.
 ---@param info {mode: string|nil, model: string|nil, status: string, waiting: boolean|nil, queued: integer|nil, usage: table|nil, spinner: string|nil, show_usage: boolean|nil}
 ---@param width integer available cells (the whole window width)
@@ -119,15 +153,19 @@ function M.render(info, width)
   -- The left side is kept as structured segments so truncation can shrink the
   -- text while keeping every clickable region intact.
   local left = {}
-  local function push_left(text, hl_group, action)
+  ---@param text string
+  ---@param hl_group string|nil
+  ---@param action string|nil
+  ---@param tip string|nil plain-text name kept for narrow layouts
+  local function push_left(text, hl_group, action, tip)
     if #left > 0 then
       left[#left + 1] = { text = " · " }
     end
-    left[#left + 1] = { text = text, hl = hl_group, action = action }
+    left[#left + 1] = { text = text, hl = hl_group, action = action, tip = tip }
   end
 
   if info.mode and info.mode ~= "" then
-    push_left(info.mode .. " " .. ic.chevron_down, nil, "AcpPickMode")
+    push_left(M.mode_text(info.mode, ic) .. " " .. ic.chevron_down, nil, "AcpPickMode")
   end
   if info.model and info.model ~= "" then
     push_left(info.model .. " " .. ic.chevron_down, "AcpToolbarAccent", "AcpPickModel")
@@ -148,15 +186,16 @@ function M.render(info, width)
     right_parts[#right_parts + 1] = hl(text, hl_group)
   end
 
+  -- Status is a glyph: a spinner while running, an alert while a permission is
+  -- pending, a cross while cancelling, an outline when idle.
   if info.waiting then
-    push_right("! " .. "Waiting", "AcpPermission")
+    push_right(M.status_text("waiting", ic, info.spinner), "AcpPermission")
   elseif info.status == "running" then
-    local spinner = info.spinner and (info.spinner .. " ") or ""
-    push_right(spinner .. "Running", "AcpStreaming")
+    push_right(M.status_text("running", ic, info.spinner), "AcpStreaming")
   elseif info.status == "cancelling" then
-    push_right("… " .. "Session stopped", "AcpMuted")
+    push_right(M.status_text("cancelling", ic, info.spinner), "AcpMuted")
   else
-    push_right("Idle", "AcpMuted")
+    push_right(M.status_text("idle", ic, info.spinner), "AcpMuted")
   end
   if info.queued and info.queued > 0 then
     push_right(string.format("+%d %s", info.queued, "queued"), "AcpMuted")
