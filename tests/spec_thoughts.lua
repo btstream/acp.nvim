@@ -126,9 +126,19 @@ return function(t)
       t.eq(nil, lines[1].bg, "the collapsed header is not part of the surface")
     end)
 
-    t.it("uses the search highlight for the header", function()
+    t.it("uses the search highlight for the icon and label only", function()
       local highlights = require("acp.ui.highlights")
       t.eq("IncSearch", highlights.groups.AcpThought.link)
+
+      local ic = blocks.icon_set(true)
+      local lines = blocks.render_block(thought("x"), ctx())
+      local header = lines[1]
+      local caret_end = #ic.chevron_right
+      t.eq("AcpSeparator", header.segments[1].group, "the caret must keep its own colour")
+      t.eq(0, header.segments[1].s)
+      t.eq(caret_end, header.segments[1].e)
+      t.eq("AcpThought", header.segments[2].group, "icon and label take the search highlight")
+      t.eq(caret_end + 1, header.segments[2].s)
     end)
 
     t.it("renders inline markup inside an expanded thought", function()

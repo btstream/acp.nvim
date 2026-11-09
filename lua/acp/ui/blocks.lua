@@ -411,9 +411,16 @@ local function render_thought(block, ctx)
   local caret = expanded and ic.chevron_down or ic.chevron_right
   -- The header is always drawn when thoughts are enabled: without it there is
   -- nothing for the user to expand.
+  --
+  -- Only the icon and the label are highlighted; the disclosure caret keeps its
+  -- own colour, so the header does not read as a solid block of search colour.
+  local icon_start = #caret + 1
   local header = {
     text = caret .. " " .. ic.thought .. " Thinking",
-    segments = { { s = 0, e = #caret + 1 + #ic.thought + 1, group = "AcpThought" } },
+    segments = {
+      { s = 0, e = #caret, group = "AcpSeparator" },
+      { s = icon_start, e = -1, group = "AcpThought" },
+    },
   }
   if not expanded then
     return { header, { text = "", segments = nil } }
