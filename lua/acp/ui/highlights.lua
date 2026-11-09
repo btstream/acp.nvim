@@ -27,7 +27,9 @@ M.groups = {
   AcpCodeBlockBg = { link = "NormalFloat" },
   AcpCodeLang = { link = "Comment" },
   AcpTableHead = { link = "Function", bold = true },
-  AcpTableRule = { link = "NonText" },
+  -- Every table border character shares one group so the frame reads as a
+  -- single line rather than a mix of tones.
+  AcpTableBorder = { link = "NonText" },
   AcpToolRunning = { link = "DiagnosticWarn" },
   AcpToolSuccess = { link = "DiagnosticOk" },
   AcpToolError = { link = "DiagnosticError" },

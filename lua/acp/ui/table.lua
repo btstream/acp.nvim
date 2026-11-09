@@ -127,12 +127,117 @@ function M.is_table(rows)
   return #rows >= 2 and M.is_separator(rows[2])
 end
 
+---Byte length of the UTF-8 codepoint starting at `i`.
+---@param text string
+---@param i integer
+---@return integer
+local function char_size(text, i)
+  local byte = text:byte(i)
+  if byte >= 0xF0 then
+    return 4
+  elseif byte >= 0xE0 then
+    return 3
+  elseif byte >= 0xC0 then
+    return 2
+  end
+  return 1
+end
+
+---Wrap `text` into lines of at most `width` display cells.
+---
+---Agent output is often CJK, which has no spaces to break on, so the wrap works
+---on display width. A Latin word that would be split is moved to the next line
+---instead of being cut mid-word, which is what makes long identifiers readable.
+---@param text string
+---@param width integer
+---@return string[]
+local function wrap_cell(text, width)
+  if width <= 0 then
+    return { "" }
+  end
+  if vim.api.nvim_strwidth(text) <= width then
+    return { vim.trim(text) }
+  end
+
+  -- Split into break opportunities: every space, and every CJK character.
+  local chunks = {}
+  local i = 1
+  while i <= #text do
+    local size = char_size(text, i)
+    local ch = text:sub(i, i + size - 1)
+    local cells = vim.api.nvim_strwidth(ch)
+    if ch == " " then
+      chunks[#chunks + 1] = { text = " ", cells = 1, space = true }
+    elseif cells > 1 then
+      -- Wide glyph: its own break opportunity.
+      chunks[#chunks + 1] = { text = ch, cells = cells }
+    elseif #chunks > 0 and not chunks[#chunks].space and chunks[#chunks].cells < width then
+      -- Accumulate ASCII runs into words.
+      local last = chunks[#chunks]
+      last.text = last.text .. ch
+      last.cells = last.cells + cells
+    else
+      chunks[#chunks + 1] = { text = ch, cells = cells }
+    end
+    i = i + size
+  end
+
+  local lines = {}
+  local current = {}
+  local used = 0
+  for _, chunk in ipairs(chunks) do
+    local skip = false
+    if used + chunk.cells > width and used > 0 then
+      lines[#lines + 1] = table.concat(current)
+      current = {}
+      used = 0
+      -- Do not start a line with the space that caused the break.
+      skip = chunk.space
+    end
+    if not skip then
+      if chunk.cells > width then
+        -- A single chunk wider than the column has to be split regardless.
+        local piece = {}
+        local piece_cells = 0
+        local j = 1
+        while j <= #chunk.text do
+          local size = char_size(chunk.text, j)
+          local ch = chunk.text:sub(j, j + size - 1)
+          local cells = vim.api.nvim_strwidth(ch)
+          if piece_cells + cells > width and piece_cells > 0 then
+            lines[#lines + 1] = table.concat(piece)
+            piece = {}
+            piece_cells = 0
+          end
+          piece[#piece + 1] = ch
+          piece_cells = piece_cells + cells
+          j = j + size
+        end
+        current[#current + 1] = table.concat(piece)
+        used = used + piece_cells
+      else
+        current[#current + 1] = chunk.text
+        used = used + chunk.cells
+      end
+    end
+  end
+  if #current > 0 then
+    lines[#lines + 1] = table.concat(current)
+  end
+  if #lines == 0 then
+    lines[1] = ""
+  end
+  for index, line in ipairs(lines) do
+    lines[index] = vim.trim(line)
+  end
+  return lines
+end
+
 ---Render a parsed table into display lines.
 ---
----Columns are padded to their widest cell and joined with a vertical bar; the
----separator row under the header is drawn with box characters so it reads as a
----rule. Every row shares the code-block surface so a table reads as content
----rather than chrome.
+---No background is painted: a table is text, not a surface, so it reads like the
+---prose around it. Cells wrap instead of being truncated, and every border
+---character uses `AcpTableBorder` so the frame is one consistent colour.
 ---@param table_spec {header: string[], rows: string[][], align: string[], columns: integer}
 ---@param base_hl string|nil
 ---@param width integer
@@ -159,7 +264,8 @@ function M.render(table_spec, base_hl, width)
     total = total + widths[c]
   end
   if total > available then
-    -- Shrink the widest columns first until the table fits.
+    -- Shrink the widest columns first until the table fits. Cells wrap rather
+    -- than truncate, so this only decides where the line breaks fall.
     while total > available do
       local widest, index = -1, 1
       for c = 1, columns do
@@ -167,7 +273,7 @@ function M.render(table_spec, base_hl, width)
           widest, index = widths[c], c
         end
       end
-      if widest <= 1 then
+      if widest <= 4 then
         break
       end
       widths[index] = widest - 1
@@ -177,7 +283,7 @@ function M.render(table_spec, base_hl, width)
 
   local out = {}
 
-  ---Place one cell's text inside its column, honouring alignment.
+  ---Pad `text` to `column`'s width, honouring its alignment.
   ---@param text string
   ---@param column integer
   ---@return string
@@ -198,45 +304,58 @@ function M.render(table_spec, base_hl, width)
     return shown .. string.rep(" ", pad)
   end
 
-  ---Build a row line and its cell segments.
+  ---Draw one logical row, wrapping each cell and emitting as many display lines
+  ---as the tallest cell needs.
   ---@param cells string[]
   ---@param hl string|nil
-  ---@return AcpRenderedLine
   local function draw_row(cells, hl)
-    local parts = { "│" }
-    local segments = {}
-    local column_start = 2 -- byte offset just past the leading bar
+    local wrapped = {}
+    local height = 1
     for c = 1, columns do
-      local cell_text = fit(cells[c] or "", c)
-      local cell_start = column_start + 1 -- past the single space
-      parts[#parts + 1] = " " .. cell_text .. " "
-      if hl then
-        segments[#segments + 1] = { s = cell_start, e = cell_start + #cell_text, group = hl }
-      end
-      parts[#parts + 1] = "│"
-      column_start = column_start + #cell_text + 3
+      wrapped[c] = wrap_cell(cells[c] or "", widths[c])
+      height = math.max(height, #wrapped[c])
     end
-    return { text = table.concat(parts), segments = segments, bg = "AcpCodeBlockBg", table = true }
+    for line_index = 1, height do
+      local pieces = {}
+      local segments = {}
+      local offset = 0
+      for c = 1, columns do
+        local cell_text = fit(wrapped[c][line_index] or "", c)
+        -- "│" is three bytes in UTF-8 plus the one-byte space before the cell.
+        pieces[#pieces + 1] = "│ " .. cell_text .. " "
+        if hl and cell_text ~= "" then
+          segments[#segments + 1] = { s = offset + 4, e = offset + 4 + #cell_text, group = hl }
+        end
+        offset = offset + 4 + #cell_text + 1
+      end
+      pieces[#pieces + 1] = "│"
+      local line_text = table.concat(pieces)
+      -- Borders first so a cell group drawn later wins where they meet.
+      local line_segments = { { s = 0, e = #line_text, group = "AcpTableBorder" } }
+      for _, seg in ipairs(segments) do
+        line_segments[#line_segments + 1] = seg
+      end
+      out[#out + 1] = { text = line_text, segments = line_segments, table = true }
+    end
   end
 
-  out[#out + 1] = draw_row(header, "AcpTableHead")
+  draw_row(header, "AcpTableHead")
 
-  -- Header rule.
-  local rule = {}
-  rule[#rule + 1] = "├"
+  -- Header rule, in the same colour as every other border character.
+  local rule = { "├" }
   for c = 1, columns do
     rule[#rule + 1] = string.rep("─", widths[c] + 2)
     rule[#rule + 1] = c < columns and "┼" or "┤"
   end
+  local rule_text = table.concat(rule)
   out[#out + 1] = {
-    text = table.concat(rule),
-    segments = { { s = 0, e = -1, group = "AcpTableRule" } },
-    bg = "AcpCodeBlockBg",
+    text = rule_text,
+    segments = { { s = 0, e = #rule_text, group = "AcpTableBorder" } },
     table = true,
   }
 
   for _, row in ipairs(rows) do
-    out[#out + 1] = draw_row(row, base_hl)
+    draw_row(row, base_hl)
   end
 
   return out

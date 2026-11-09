@@ -85,16 +85,28 @@ return function(t)
       t.eq(false, out[1]:find("Name", 1, true) ~= nil, "the table must not start on the icon line")
     end)
 
-    t.it("gives every table row one surface", function()
+    t.it("paints no background", function()
+      -- A table is text, not a surface; it must read like the prose around it.
       local lines = render("| a | b |\n|---|---|\n| 1 | 2 |")
-      local painted = 0
+      local rows = 0
       for _, line in ipairs(lines) do
         if line.table then
-          painted = painted + 1
-          t.eq("AcpCodeBlockBg", line.bg, "table rows should share the content surface")
+          rows = rows + 1
+          t.eq(nil, line.bg, "table rows must not carry a background")
         end
       end
-      t.eq(3, painted, "header, rule and body row should be painted")
+      t.eq(3, rows, "header, rule and body row should be present")
+    end)
+
+    t.it("uses one highlight group for every border character", function()
+      local lines = render("| a | b |\n|---|---|\n| 1 | 2 |")
+      for _, line in ipairs(lines) do
+        if line.table then
+          -- The whole row is covered by the border group first, so the frame is
+          -- a single tone; cell groups are layered on top.
+          t.eq("AcpTableBorder", line.segments[1].group, "border group missing on: " .. line.text)
+        end
+      end
     end)
 
     t.it("applies the alignment of each column", function()
@@ -136,6 +148,39 @@ return function(t)
         if line.table then
           t.truthy(vim.api.nvim_strwidth(line.text) <= 28, "table row exceeded the panel width: " .. line.text)
         end
+      end
+    end)
+
+    t.it("wraps long cell text across several rows", function()
+      local lines = render("| id | note |\n|---|---|\n| 1 | " .. string.rep("word ", 30) .. " |", 60)
+      local body = {}
+      for _, line in ipairs(lines) do
+        if line.table and not line.text:find("├", 1, true) then
+          body[#body + 1] = line.text
+        end
+      end
+      -- Header plus at least two wrapped body rows.
+      t.truthy(#body >= 3, "cell text was not wrapped: " .. table.concat(body, " / "))
+    end)
+
+    t.it("wraps CJK text without a space to break on", function()
+      local cjk = string.rep("内容", 20)
+      local lines = render("| a | b |\n|---|---|\n| x | " .. cjk .. " |", 40)
+      local row_count = 0
+      for _, line in ipairs(lines) do
+        if line.table and not line.text:find("├", 1, true) then
+          row_count = row_count + 1
+        end
+      end
+      t.truthy(row_count >= 3, "CJK text was not wrapped")
+    end)
+
+    t.it("does not split a latin word when it can be avoided", function()
+      local lines = render("| a | b |\n|---|---|\n| x | alpha bravo charlie delta echo |", 40)
+      local joined = table.concat(texts(lines), "\n")
+      -- Every word must appear whole somewhere; no mid-word break.
+      for _, word in ipairs({ "alpha", "bravo", "charlie", "delta", "echo" }) do
+        t.truthy(joined:find(word, 1, true), word .. " was split across rows")
       end
     end)
 

@@ -449,7 +449,8 @@ local function render_assistant(block, ctx)
   block._md_agent = block._md_agent or {}
   -- `indent_lines` indents the body by `#head` spaces, so a table has to fit in
   -- what remains after that indentation, not after the glyph's display width.
-  local body_width = math.max(20, ctx.width - #head)
+  -- One cell is left spare so a full-width table does not sit against the edge.
+  local body_width = math.max(20, ctx.width - #head - 1)
   local body = M.render_text(block.text or "", "AcpAssistant", body_width, block._md_agent)
 
   -- A table cannot share a line with the header glyph: the icon would shift only
