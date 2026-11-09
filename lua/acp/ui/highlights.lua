@@ -7,7 +7,15 @@ M.groups = {
   AcpBorder = { link = "FloatBorder" },
   AcpTitle = { link = "Title", bold = true },
   AcpToolbar = { link = "StatusLine" },
-  AcpToolbarAccent = { link = "DiagnosticInfo" },
+  -- Toolbar regions share the bar's background; only the foreground varies, so
+  -- the bar reads as one strip instead of a set of coloured blocks.
+  AcpToolbarAccent = { fg = "NONE" },
+  AcpToolbarModePlan = { fg = "NONE" },
+  AcpToolbarModeBuild = { fg = "NONE" },
+  AcpToolbarIdle = { fg = "NONE" },
+  AcpToolbarRunning = { fg = "NONE" },
+  AcpToolbarWaiting = { fg = "NONE" },
+  AcpToolbarCancelling = { fg = "NONE" },
   AcpUser = { link = "Identifier" },
   AcpUserChip = { link = "Visual" },
   AcpAssistant = { link = "Normal" },
@@ -180,12 +188,35 @@ local function set_surface(name, amount)
 end
 
 ---Copy the foreground of `source` onto `target`, ignoring its background.
+---Give `target` the foreground of `source` and the toolbar's background.
+---
+---Used for toolbar regions: they must all share one background, so a link to a
+---group that carries its own (DiagnosticInfo, Visual, ...) would paint a block
+---inside the bar instead of just colouring the glyph.
+---@param target string
+---@param source string
+local function set_toolbar_fg(target, source)
+  local ok, spec = pcall(vim.api.nvim_get_hl, 0, { name = source, link = false })
+  if not ok or type(spec) ~= "table" or spec.fg == nil then
+    return
+  end
+  local fg = spec.fg
+  if type(fg) == "number" then
+    fg = string.format("#%06x", fg)
+  end
+  local bar = vim.api.nvim_get_hl(0, { name = "AcpToolbar", link = false })
+  local bg = bar and bar.bg
+  if type(bg) == "number" then
+    bg = string.format("#%06x", bg)
+  end
+  vim.api.nvim_set_hl(0, target, { fg = fg, bg = bg })
+end
+
 ---Define every group. Safe to call again after a colorscheme change.
 local function apply()
   for name, spec in pairs(M.groups) do
     vim.api.nvim_set_hl(0, name, spec)
   end
-  -- Thoughts take the search highlight's text colour only.
   -- Thoughts take the search highlight's accent colour as text colour. Which of
   -- its two colours that is depends on the theme: some pair a dark foreground
   -- with a bright background, so the pair member that reads against our own
@@ -203,6 +234,20 @@ local function apply()
   -- a background per word is noisy in prose and breaks up a card.
   set_surface("AcpCodeBlockBg", 0.11)
   set_surface("AcpCardBg", 0.15)
+
+  -- Toolbar regions: one shared background, a distinct foreground each, so
+  -- state and mode are told apart by colour rather than by a coloured block.
+  --
+  -- Colours come from the theme's semantic groups, which keeps them readable on
+  -- light and dark schemes alike. Only the foreground is set; the background
+  -- stays whatever `AcpToolbar` (StatusLine) provides.
+  set_toolbar_fg("AcpToolbarModePlan", "DiagnosticInfo")
+  set_toolbar_fg("AcpToolbarModeBuild", "DiagnosticOk")
+  set_toolbar_fg("AcpToolbarIdle", "Comment")
+  set_toolbar_fg("AcpToolbarRunning", "DiagnosticInfo")
+  set_toolbar_fg("AcpToolbarWaiting", "DiagnosticWarn")
+  set_toolbar_fg("AcpToolbarCancelling", "DiagnosticError")
+  set_toolbar_fg("AcpToolbarAccent", "DiagnosticInfo")
   if zed_style then
     -- Low contrast surfaces: no hard borders, muted user text, quiet chrome.
     vim.api.nvim_set_hl(0, "AcpUser", { link = "Function" })

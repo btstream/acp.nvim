@@ -126,6 +126,19 @@ function M.mode_text(mode, ic)
   return M.escape(mode)
 end
 
+---Highlight group for the mode region, so plan and build read differently.
+---@param mode string
+---@return string
+function M.mode_hl(mode)
+  local lower = mode:lower()
+  if lower == "plan" then
+    return "AcpToolbarModePlan"
+  elseif lower == "build" then
+    return "AcpToolbarModeBuild"
+  end
+  return "AcpToolbarAccent"
+end
+
 ---Text for the status region.
 ---
 ---`running` shows the animation frame instead of a static glyph so the toolbar
@@ -165,10 +178,10 @@ function M.render(info, width)
   end
 
   if info.mode and info.mode ~= "" then
-    push_left(M.mode_text(info.mode, ic) .. " " .. ic.chevron_down, nil, "AcpPickMode")
+    push_left(M.mode_text(info.mode, ic), M.mode_hl(info.mode), "AcpPickMode")
   end
   if info.model and info.model ~= "" then
-    push_left(info.model .. " " .. ic.chevron_down, "AcpToolbarAccent", "AcpPickModel")
+    push_left(info.model, "AcpToolbarAccent", "AcpPickModel")
   end
   if info.show_usage and info.usage and info.usage.size and info.usage.size > 0 then
     local pct = math.floor((info.usage.used or 0) / info.usage.size * 100 + 0.5)
@@ -189,13 +202,13 @@ function M.render(info, width)
   -- Status is a glyph: a spinner while running, an alert while a permission is
   -- pending, a cross while cancelling, an outline when idle.
   if info.waiting then
-    push_right(M.status_text("waiting", ic, info.spinner), "AcpPermission")
+    push_right(M.status_text("waiting", ic, info.spinner), "AcpToolbarWaiting")
   elseif info.status == "running" then
-    push_right(M.status_text("running", ic, info.spinner), "AcpStreaming")
+    push_right(M.status_text("running", ic, info.spinner), "AcpToolbarRunning")
   elseif info.status == "cancelling" then
-    push_right(M.status_text("cancelling", ic, info.spinner), "AcpMuted")
+    push_right(M.status_text("cancelling", ic, info.spinner), "AcpToolbarCancelling")
   else
-    push_right(M.status_text("idle", ic, info.spinner), "AcpMuted")
+    push_right(M.status_text("idle", ic, info.spinner), "AcpToolbarIdle")
   end
   if info.queued and info.queued > 0 then
     push_right(string.format("+%d %s", info.queued, "queued"), "AcpMuted")
