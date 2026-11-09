@@ -35,6 +35,33 @@ return function(t)
       t.falsy(visible(plan):find("Plan", 1, true), "the mode name should not be spelled out")
     end)
 
+    t.it("pins the mode badge to the left edge", function()
+      local ic = require("acp.ui.icons").get(true)
+      local raw = toolbar.render({ mode = "build", model = "Sonnet", status = "idle", icons = true }, 80)
+      -- The badge starts at column 0: no leading space or separator before it.
+      t.truthy(raw:find("^%%@v:lua%.AcpPickMode@", 1), "the mode region should start the bar: " .. raw)
+      local group = raw:match("^%%@v:lua%.AcpPickMode@%%#([%w_]+)%#")
+      t.eq("AcpToolbarModeBuild", group)
+    end)
+
+    t.it("pads the badge glyph by one cell on each side", function()
+      local ic = require("acp.ui.icons").get(true)
+      local raw = toolbar.render({ mode = "build", status = "idle", icons = true }, 80)
+      local body = raw:match("%%#AcpToolbarModeBuild%#(.-)%%#AcpToolbar%#")
+      t.eq(" " .. ic.mode_build .. " ", body, "the badge should be ' glyph ', not the bare glyph")
+    end)
+
+    t.it("covers the badge padding with its own background", function()
+      local ic = require("acp.ui.icons").get(true)
+      local raw = toolbar.render({ mode = "plan", status = "idle", icons = true }, 80)
+      -- The group is opened before the leading space and closed after the
+      -- trailing one, so both cells are painted.
+      t.truthy(
+        raw:find("%%#AcpToolbarModePlan%# " .. vim.pesc(ic.mode_plan) .. " %%#AcpToolbar%#", 1),
+        "the badge background does not cover its padding: " .. raw
+      )
+    end)
+
     t.it("draws no chevron", function()
       local ic = require("acp.ui.icons").get(true)
       local text = visible(toolbar.render({

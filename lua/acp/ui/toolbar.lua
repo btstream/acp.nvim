@@ -163,23 +163,31 @@ function M.render(info, width)
   local ic = Icons.get(info.icons)
   local width_ok = math.max(1, width - 1)
 
-  -- The left side is kept as structured segments so truncation can shrink the
-  -- text while keeping every clickable region intact.
+  -- The mode is a badge pinned to the very start of the bar: no leading space,
+  -- and the highlight covers the padding around the glyph so it reads as a
+  -- solid block rather than a floating icon.
+  local badge = ""
+  local badge_width = 0
+  if info.mode and info.mode ~= "" then
+    local glyph = M.mode_text(info.mode, ic)
+    local group = M.mode_hl(info.mode)
+    badge = clickable(" " .. glyph .. " ", group, "AcpPickMode")
+    badge_width = dw(glyph) + 2
+  end
+
+  -- The rest of the left side is kept as structured segments so truncation can
+  -- shrink the text while keeping every clickable region intact.
   local left = {}
   ---@param text string
   ---@param hl_group string|nil
   ---@param action string|nil
-  ---@param tip string|nil plain-text name kept for narrow layouts
-  local function push_left(text, hl_group, action, tip)
+  local function push_left(text, hl_group, action)
     if #left > 0 then
       left[#left + 1] = { text = " · " }
     end
-    left[#left + 1] = { text = text, hl = hl_group, action = action, tip = tip }
+    left[#left + 1] = { text = text, hl = hl_group, action = action }
   end
 
-  if info.mode and info.mode ~= "" then
-    push_left(M.mode_text(info.mode, ic), M.mode_hl(info.mode), "AcpPickMode")
-  end
   if info.model and info.model ~= "" then
     push_left(info.model, "AcpToolbarAccent", "AcpPickModel")
   end
@@ -223,11 +231,11 @@ function M.render(info, width)
   local right_w = dw(right_text)
 
   -- The status side always wins: drop the left side entirely when needed.
-  if right_w >= width_ok then
-    return "%#AcpToolbar# " .. hl(M.truncate(right_text, width_ok - 1), nil) .. " "
+  if right_w + badge_width >= width_ok then
+    return badge .. "%#AcpToolbar# " .. hl(M.truncate(right_text, width_ok - 1), nil) .. " "
   end
 
-  local budget = width_ok - right_w - 2
+  local budget = width_ok - right_w - badge_width - 2
   local body
   if budget <= 0 or left_text == "" then
     body = table.concat(right_parts)
@@ -254,7 +262,9 @@ function M.render(info, width)
     body = left_rendered ~= "" and (left_rendered .. "%=" .. table.concat(right_parts)) or table.concat(right_parts)
   end
 
-  return "%#AcpToolbar# " .. body .. " "
+  -- The badge is emitted with no surrounding spaces of its own, so its
+  -- background starts at column 0 of the window.
+  return badge .. "%#AcpToolbar# " .. body .. " "
 end
 
 ---Build the transcript window title.
