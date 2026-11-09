@@ -11,6 +11,11 @@ local M = {}
 local Icons = require("acp.ui.icons")
 local session_state = require("acp.session.state")
 local Markdown = require("acp.ui.markdown")
+local CodeHL = require("acp.ui.code_hl")
+
+-- Prefix drawn in front of every line inside a fenced block.
+local CODE_PREFIX = "│ "
+local CODE_PREFIX_LEN = #CODE_PREFIX
 
 ---Resolve the icon set used for rendering.
 ---@param use_icons boolean
@@ -105,24 +110,43 @@ end
 ---Render one markdown-ish line, toggling fenced-code state in `state`.
 ---@param raw string
 ---@param base_hl string
----@param state {in_fence: boolean, fence_lang: string|nil}
+---@param state {in_fence: boolean, fence_lang: string|nil, fence_start: integer|nil, fence_code: string[]|nil}
 ---@return AcpRenderedLine
 local function render_line(raw, base_hl, state)
   local line = raw:gsub("\r$", "")
   local fence = line:match("^```(%S*)")
   if fence then
-    state.in_fence = not state.in_fence
-    state.fence_lang = state.in_fence and fence or nil
-    local label = state.in_fence and (state.fence_lang ~= "" and state.fence_lang or "code") or ""
+    if state.in_fence then
+      -- Closing fence: the code follows, so keep the language available until
+      -- the caller has produced the highlighted segments.
+      state.in_fence = false
+      return {
+        text = "╰─",
+        segments = { { s = 0, e = -1, group = "AcpCodeFence" } },
+        bg = "AcpCodeBlockBg",
+        code_close = true,
+      }
+    end
+    state.in_fence = true
+    state.fence_lang = fence
+    state.fence_code = {}
+    local label = fence ~= "" and fence or "code"
     return {
-      text = state.in_fence and ("╭─ " .. label) or "╰─",
+      text = "╭─ " .. label,
       segments = { { s = 0, e = -1, group = "AcpCodeFence" } },
+      bg = "AcpCodeBlockBg",
+      code_open = true,
     }
   end
   if state.in_fence then
+    if state.fence_code then
+      state.fence_code[#state.fence_code + 1] = line
+    end
     return {
-      text = "│ " .. line,
-      segments = { { s = 0, e = 1, group = "AcpCodeFence" } },
+      text = CODE_PREFIX .. line,
+      segments = { { s = 0, e = CODE_PREFIX_LEN, group = "AcpCodeFence" } },
+      bg = "AcpCodeBlockBg",
+      code = true,
     }
   end
   local base = base_hl
@@ -153,14 +177,24 @@ end
 ---@param text string
 ---@param base_hl string
 ---@param width integer
----@param cache {text: string, lines: AcpRenderedLine[], in_fence: boolean, fence_lang: string|nil, done: integer, final: integer}|nil
+---@param cache {text: string, lines: AcpRenderedLine[], in_fence: boolean, fence_lang: string|nil, fence_code: string[]|nil, fence_start: integer|nil, done: integer, final: integer}|nil
 ---@return AcpRenderedLine[]
 function M.render_text(text, base_hl, width, cache)
+  -- Blocks that contain a fence are always re-rendered in full.
+  --
+  -- Highlighting needs the complete fence body, and a streaming block crosses
+  -- several states (open fence, closed fence, text appending after it). Making
+  -- every one of those transitions agree with an incremental prefix is where
+  -- stale and duplicated segments came from, so correctness wins: fenced blocks
+  -- are a minority and the parse result is cached on the block.
+  local has_fence = text:find("```", 1, true) ~= nil
+
   local lines
   local pos = 1
-  local mark = { in_fence = false, fence_lang = nil }
+  local mark = { in_fence = false, fence_lang = nil, fence_code = nil, fence_start = nil }
 
-  local resume = cache ~= nil
+  local resume = not has_fence
+    and cache ~= nil
     and type(cache.text) == "string"
     and #text >= #cache.text
     and text:sub(1, #cache.text) == cache.text
@@ -173,9 +207,56 @@ function M.render_text(text, base_hl, width, cache)
     end
     mark.in_fence = cache.in_fence
     mark.fence_lang = cache.fence_lang
+    mark.fence_code = cache.fence_code
+    mark.fence_start = cache.fence_start
     pos = cache.done + 1
   else
     lines = {}
+  end
+
+  ---Apply syntax highlighting to the code rows emitted for the fence that just
+  ---closed. The fence is only parsed once it is complete, so a streaming block
+  ---never pays for a partial parse.
+  local function close_fence()
+    local lang = mark.fence_lang
+    local body = mark.fence_code
+    local start = mark.fence_start
+    if not lang or not body or not start or #body == 0 then
+      return
+    end
+    local ranges, ok = CodeHL.highlight(table.concat(body, "\n"), lang)
+    if not ok or not ranges then
+      return
+    end
+    -- Group the ranges by code row.
+    local by_row = {}
+    for _, r in ipairs(ranges) do
+      by_row[r.row] = by_row[r.row] or {}
+      table.insert(by_row[r.row], r)
+    end
+    for row, list in pairs(by_row) do
+      local line = lines[start + row]
+      if line then
+        -- Rebuild the segment list from scratch: a streaming render reuses the
+        -- cached line table, so appending would stack duplicate ranges on every
+        -- tick where the fence happens to be closed.
+        local kept = {}
+        for _, seg in ipairs(line.segments or {}) do
+          if not seg.syntax then
+            kept[#kept + 1] = seg
+          end
+        end
+        local byte_len = #line.text
+        for _, r in ipairs(list) do
+          local s = math.min(CODE_PREFIX_LEN + r.s, byte_len)
+          local e = r.e and math.min(CODE_PREFIX_LEN + r.e, byte_len) or byte_len
+          if e > s then
+            kept[#kept + 1] = { s = s, e = e, group = r.group, syntax = true }
+          end
+        end
+        line.segments = kept
+      end
+    end
   end
 
   local search = pos
@@ -184,7 +265,23 @@ function M.render_text(text, base_hl, width, cache)
     if not nl then
       break
     end
-    lines[#lines + 1] = render_line(text:sub(search, nl - 1), base_hl, mark)
+    local raw = text:sub(search, nl - 1)
+    local line = render_line(raw, base_hl, mark)
+    lines[#lines + 1] = line
+    if line.code_open then
+      -- The fence marker itself is the last pushed line; code starts after it.
+      mark.fence_start = #lines + 1
+    elseif line.code_close then
+      close_fence()
+      mark.fence_code = nil
+      mark.fence_lang = nil
+      mark.fence_start = nil
+    end
+    -- `code_open`/`code_close`/`code` are transient routing flags that must not
+    -- leak into the cached line table.
+    line.code_open = nil
+    line.code_close = nil
+    line.code = nil
     search = nl + 1
   end
 
@@ -195,13 +292,30 @@ function M.render_text(text, base_hl, width, cache)
     cache.lines = lines
     cache.in_fence = mark.in_fence
     cache.fence_lang = mark.fence_lang
+    cache.fence_code = mark.fence_code
+    cache.fence_start = mark.fence_start
     cache.done = search - 1
     cache.final = #lines
   end
 
   local tail = text:sub(search)
   if tail ~= "" then
-    lines[#lines + 1] = render_line(tail, base_hl, mark)
+    local line = render_line(tail, base_hl, mark)
+    lines[#lines + 1] = line
+    -- The trailing fragment is re-rendered when more text arrives, so the fence
+    -- state it carries must not be committed to the cache. Highlighting it now
+    -- would duplicate segments on the next call.
+    if line.code_open then
+      mark.fence_start = #lines + 1
+    elseif line.code_close then
+      close_fence()
+      mark.fence_code = nil
+      mark.fence_lang = nil
+      mark.fence_start = nil
+    end
+    line.code_open = nil
+    line.code_close = nil
+    line.code = nil
   end
 
   return lines
