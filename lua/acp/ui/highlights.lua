@@ -28,8 +28,8 @@ M.groups = {
   -- sets a foreground still paints the bar's background: the bar reads as one
   -- strip, and only the glyph colour changes between states.
   AcpToolbar = { link = "StatusLine" },
-  -- `fg = "fg"` takes `Normal`'s foreground without its background, so the
-  -- region keeps the bar's own surface underneath.
+  -- Only a foreground: the background is inherited from `AcpToolbar` via the
+  -- `%$...$` markup, so there is nothing to set here.
   AcpToolbarAccent = { fg = "fg" },
   -- Modes are badges, told apart by their background.
   AcpToolbarModePlan = { fg = "#212121", bg = "#ffcb6b" },

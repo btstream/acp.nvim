@@ -232,7 +232,9 @@ function M.composer_bar(win)
       labels[#labels + 1] = "[" .. (att.label or "") .. "]"
     end
     local plain = table.concat(labels, " ")
-    chips = "%#AcpUserChip#" .. toolbar.escape(plain) .. "%#AcpToolbar# "
+    -- `%$...$` inherits the bar's background; a `%#...%#` here would restart
+    -- from `WinBar`, which a layout manager may have remapped.
+    chips = "%#AcpToolbar#%$AcpUserChip$" .. toolbar.escape(plain) .. "%$AcpToolbar$ "
     chip_width = vim.api.nvim_strwidth(plain) + 1
   end
 

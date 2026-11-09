@@ -82,6 +82,11 @@ function M.truncate(s, max)
 end
 
 ---Wrap text in a highlight group.
+---
+---Uses `%$name$` rather than `%#name#`: `$` inherits the attributes already in
+---effect (notably the background) instead of restarting from `WinBar`. That
+---matters because a layout manager may remap `WinBar` to its own group, which
+---would otherwise repaint every region that only sets a foreground.
 ---@param text string
 ---@param hl string|nil
 ---@return string
@@ -90,7 +95,7 @@ local function hl(text, hl_group)
   if not hl_group then
     return escaped
   end
-  return "%#" .. hl_group .. "#" .. escaped .. "%#AcpToolbar#"
+  return "%$" .. hl_group .. "$" .. escaped .. "%$AcpToolbar$"
 end
 
 ---Render a clickable region.
@@ -166,12 +171,17 @@ function M.render(info, width)
   -- The mode is a badge pinned to the very start of the bar: no leading space,
   -- and the highlight covers the padding around the glyph so it reads as a
   -- solid block rather than a floating icon.
-  local badge = ""
+  --
+  -- `%#AcpToolbar#` opens the bar explicitly; everything after it uses
+  -- `%$...$`, which inherits that background. Relying on the window's `WinBar`
+  -- mapping instead would let a layout manager (edgy) remap it and turn every
+  -- foreground-only region into a differently coloured block.
+  local badge = "%#AcpToolbar#"
   local badge_width = 0
   if info.mode and info.mode ~= "" then
     local glyph = M.mode_text(info.mode, ic)
     local group = M.mode_hl(info.mode)
-    badge = clickable(" " .. glyph .. " ", group, "AcpPickMode")
+    badge = badge .. clickable(" " .. glyph .. " ", group, "AcpPickMode")
     badge_width = dw(glyph) + 2
   end
 
@@ -278,11 +288,14 @@ function M.chat_title(opts, width)
   end
   local suffix = opts.pending_new and ("  " .. Icons.get(opts.icons).arrow_down .. " new") or ""
   local available = math.max(10, width - dw(opts.agent) - dw(suffix) - 6)
-  return "%#AcpTitle# "
+  -- Opens with `%#AcpToolbar#` and continues with `%$...$` for the same reason
+  -- as `render`: the bar's background must not depend on the window's `WinBar`
+  -- mapping, which a layout manager may replace.
+  return "%#AcpToolbar#%$AcpTitle$"
     .. M.escape(opts.agent)
-    .. "%* %#AcpMuted#·%* "
+    .. "%$AcpToolbar$%$AcpMuted$·%$AcpToolbar$ "
     .. M.escape(M.truncate(title, available))
-    .. (opts.pending_new and ("  %#AcpStreaming#" .. M.escape(suffix .. "") .. "%*") or "")
+    .. (opts.pending_new and ("  %$AcpStreaming$" .. M.escape(suffix) .. "%$AcpToolbar$") or "")
 end
 
 return M
