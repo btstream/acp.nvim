@@ -74,11 +74,23 @@ return function(t)
       t.falsy(text:find(ic.chevron_right, 1, true), "the toolbar should not draw a chevron")
     end)
 
-    t.it("keeps the bar uniform for everything but the modes", function()
+    t.it("lets the window supply the bar background", function()
+      -- Regions only set a foreground; the background comes from the window's
+      -- `WinBar:AcpToolbar` mapping. Without that mapping each region would
+      -- inherit `WinBar` instead and the bar would not read as one strip.
+      local layout = require("acp.layout")
+      local config = require("acp.config")
+      layout.setup(config.merge(config.defaults, {}))
+      layout.apply_window_options(vim.api.nvim_get_current_win(), "chat")
+      local winhl = vim.api.nvim_get_option_value("winhighlight", { win = vim.api.nvim_get_current_win() })
+      t.match("WinBar:AcpToolbar", winhl, "WinBar must map to the toolbar group")
+      t.match("WinBarNC:AcpToolbar", winhl, "WinBarNC must map to the toolbar group")
+
       local highlights = require("acp.ui.highlights")
       highlights.setup()
-      -- `AcpToolbar` links to StatusLine, so resolve the link before reading bg.
-      local bar = vim.api.nvim_get_hl(0, { name = "AcpToolbar", link = false })
+      local bar_bg = vim.api.nvim_get_hl(0, { name = "AcpToolbar", link = false }).bg
+      -- Only the modes paint a background of their own. Every other region
+      -- leaves the surface alone, so whatever the bar provides shows through.
       for _, name in ipairs({
         "AcpToolbarAccent",
         "AcpToolbarIdle",
@@ -86,13 +98,12 @@ return function(t)
         "AcpToolbarWaiting",
         "AcpToolbarCancelling",
       }) do
-        local hl = vim.api.nvim_get_hl(0, { name = name })
-        t.eq(bar.bg, hl.bg, name .. " should share the toolbar background")
+        local hl = vim.api.nvim_get_hl(0, { name = name, link = false })
+        t.truthy(hl.bg == nil or hl.bg == bar_bg, name .. " pins a background other than the bar's")
       end
-      -- Modes are badges: they are told apart by their background on purpose.
       for _, name in ipairs({ "AcpToolbarModePlan", "AcpToolbarModeBuild" }) do
-        local hl = vim.api.nvim_get_hl(0, { name = name })
-        t.truthy(hl.bg and hl.bg ~= bar.bg, name .. " should have its own badge background")
+        local hl = vim.api.nvim_get_hl(0, { name = name, link = false })
+        t.truthy(hl.bg, name .. " should have its own badge background")
       end
     end)
 
@@ -122,29 +133,13 @@ return function(t)
       end
     end)
 
-    t.it("keeps every toolbar glyph readable on the bar", function()
+    t.it("defines a foreground for every toolbar glyph", function()
+      -- Colours come from the theme, so contrast is the theme's business. What
+      -- this module must guarantee is that each region actually resolves to a
+      -- foreground: a group linked to something the theme never defines would
+      -- silently fall back to the bar's own text colour and lose the state.
       local highlights = require("acp.ui.highlights")
       highlights.setup()
-
-      local function luminance(n)
-        local r = math.floor(n / 65536) % 256
-        local g = math.floor(n / 256) % 256
-        local b = n % 256
-        local function channel(c)
-          c = c / 255
-          return c <= 0.03928 and (c / 12.92) or (((c + 0.055) / 1.055) ^ 2.4)
-        end
-        return 0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b)
-      end
-      local function ratio(a, b)
-        local la, lb = luminance(a), luminance(b)
-        if la < lb then
-          la, lb = lb, la
-        end
-        return (la + 0.05) / (lb + 0.05)
-      end
-
-      local bar = vim.api.nvim_get_hl(0, { name = "AcpToolbar", link = false })
       for _, name in ipairs({
         "AcpToolbarAccent",
         "AcpToolbarModePlan",
@@ -154,12 +149,8 @@ return function(t)
         "AcpToolbarWaiting",
         "AcpToolbarCancelling",
       }) do
-        local hl = vim.api.nvim_get_hl(0, { name = name })
-        t.truthy(hl.fg, name .. " has no foreground")
-        -- The glyph sits on the region's own background, which for a mode is
-        -- its badge rather than the bar.
-        local surface = hl.bg or bar.bg
-        t.truthy(ratio(hl.fg, surface) >= 4.5, string.format("%s is unreadable (%.2f:1)", name, ratio(hl.fg, surface)))
+        local hl = vim.api.nvim_get_hl(0, { name = name, link = false })
+        t.truthy(hl.fg, name .. " resolves to no foreground")
       end
     end)
 

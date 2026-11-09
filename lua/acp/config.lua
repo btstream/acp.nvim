@@ -93,6 +93,13 @@ M.defaults = {
     ---@type "snacks"|"internal"
     session_picker = "snacks",
 
+    -- Override any highlight group, e.g.
+    --   highlights = { AcpUser = { fg = "#ff0000" } }
+    -- Definitions given here replace the built-in ones. Groups can also be set
+    -- from anywhere with `vim.api.nvim_set_hl`.
+    ---@type table<string, table>
+    highlights = {},
+
     title = {
       ---@type "auto"|"winbar"|"off"
       placement = "auto",
@@ -230,6 +237,11 @@ function M.validate(cfg)
   check_enum(cfg.permissions.prompt, { "select", "native" }, "permissions.prompt")
   if type(cfg.ui.thoughts) ~= "table" then
     fail("ui.thoughts must be a table")
+  end
+  -- `vim.islist({})` is true, so an empty table has to be allowed: `ui = {}`
+  -- must not fail just because the defaults leave this map empty.
+  if type(cfg.ui.highlights) ~= "table" or (next(cfg.ui.highlights) ~= nil and vim.islist(cfg.ui.highlights)) then
+    fail("ui.highlights must be a table of group -> definition")
   end
   if type(cfg.ui.thoughts.default_expanded) ~= "boolean" then
     fail("ui.thoughts.default_expanded must be a boolean")

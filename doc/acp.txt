@@ -98,6 +98,7 @@ q              隐藏面板
         },
         picker = "vim",       -- "vim" | "internal"
         session_picker = "snacks", -- "snacks" | "internal"
+        highlights = {},      -- 覆盖任意高亮组
         title = { placement = "auto" },
         toolbar = { placement = "auto", show_usage = false },
       },
@@ -247,15 +248,33 @@ cancelled。
 ==============================================================================
 13. 高亮                                                    *acp-highlights*
 
-所有样式通过语义化高亮组暴露，例如：
+所有样式都是静态定义：每个组直接链接到 Neovim 自己的组，插件不会在运行时
+读取或混合主题颜色。正文里的 Markdown（粗体、斜体、标题、引用、行内代码）链接到
+treesitter 的 @markup.* 捕获组，所以在对话记录里的呈现和普通 Markdown buffer
+一致。
+
+常用的组：
 
     AcpUser  AcpAssistant  AcpToolTitle  AcpToolRunning
     AcpToolSuccess  AcpToolError  AcpPlan  AcpSeparator
     AcpTitle  AcpToolbar  AcpPermission  AcpStreaming
 
-直接覆盖即可：
+两种覆盖方式，都会优先于内置定义。通过 setup 传入：
+
+    require("acp").setup({
+      ui = {
+        highlights = {
+          AcpUser = { link = "Function" },
+          AcpToolTitle = { fg = "#7aa2f7" },
+        },
+      },
+    })
+
+或者随时直接设置：
 
     vim.api.nvim_set_hl(0, "AcpUser", { link = "Function" })
+
+切换 colorscheme 后会自动重新应用，配置里的覆盖也会一并恢复。
 
 ui.icons = false 会改用 ASCII 图标。
 

@@ -103,7 +103,7 @@ function M.apply_window_options(win, kind)
     vim.wo[win].wrap = state.config.ui.wrap
     vim.wo[win].linebreak = true
     vim.wo[win].breakindent = true
-    vim.wo[win].winhighlight = "Normal:AcpNormal,NormalNC:AcpNormal"
+    vim.wo[win].winhighlight = "Normal:AcpNormal,NormalNC:AcpNormal,WinBar:AcpToolbar,WinBarNC:AcpToolbar"
     if kind == "chat" then
       vim.wo[win].winfixwidth = state.backend == "native"
       vim.wo[win].winfixheight = false

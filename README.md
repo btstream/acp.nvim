@@ -160,6 +160,7 @@ require("acp").setup({
     wrap = true,
     picker = "vim",       -- "vim" = vim.ui.select（推荐）| "internal" = 内置浮窗
     session_picker = "snacks", -- "snacks"（可用时）| "internal"
+    highlights = {},      -- 覆盖任意高亮组，见「外观」
     title = { placement = "auto" },   -- "auto" | "winbar" | "off"
     toolbar = {
       placement = "auto",             -- "auto" | "winbar" | "off"
@@ -332,16 +333,31 @@ heirline 同理，只需调用 `statusline()` 或读取 `status()`。
 
 ## 外观
 
-所有样式都通过语义化高亮组暴露。切换 colorscheme 后会自动重新应用，
-不会因为换主题而丢失配色。
+所有样式都是**静态定义**：每个组直接链接到 Neovim 自己的组，插件不会在运行时
+读取或混合主题颜色。正文里的 Markdown（粗体、斜体、标题、引用、行内代码）链接到
+treesitter 的 `@markup.*` 捕获组，所以在对话记录里的呈现和普通 Markdown buffer
+完全一致。
 
-直接覆盖即可：
+两种覆盖方式，都会优先于内置定义：
+
+1. 在 `setup()` 里通过 `ui.highlights` 传入
+2. 任何时候直接 `vim.api.nvim_set_hl`
 
 ```lua
-vim.api.nvim_set_hl(0, "AcpUser", { link = "Function" })
-vim.api.nvim_set_hl(0, "AcpToolTitle", { fg = "#7aa2f7" })
+require("acp").setup({
+  ui = {
+    highlights = {
+      AcpUser = { link = "Identifier" },
+      AcpToolTitle = { fg = "#7aa2f7" },
+    },
+  },
+})
+
+-- 等价，但不必重新 setup
 vim.api.nvim_set_hl(0, "AcpSeparator", { fg = "#3b4261" })
 ```
+
+切换 colorscheme 后会自动重新应用，配置里的覆盖也会一并恢复。
 
 可用的组：`AcpNormal` `AcpMuted` `AcpBorder` `AcpTitle` `AcpToolbar` `AcpToolbarAccent`
 `AcpToolbarModePlan` `AcpToolbarModeBuild` `AcpToolbarIdle` `AcpToolbarRunning`

@@ -37,44 +37,50 @@ return function(t)
       end
     end)
 
-    t.it("derives visible surfaces from a dark background", function()
-      local saved = vim.api.nvim_get_hl(0, { name = "Normal", link = false })
-      vim.api.nvim_set_hl(0, "Normal", { fg = "#c8ccd4", bg = "#14161b" })
+    -- Surfaces are links to theme groups, not colours blended at runtime, so
+    -- the check is that the link resolves to a background distinct from
+    -- `Normal` under whatever theme is active.
+    t.it("puts cards and code blocks on distinct theme surfaces", function()
+      vim.cmd("hi clear")
+      vim.cmd("syntax reset")
       highlights.setup()
 
       local function bg(name)
-        return vim.api.nvim_get_hl(0, { name = name }).bg
+        return vim.api.nvim_get_hl(0, { name = name, link = false }).bg
       end
       local normal = bg("Normal")
       local card = bg("AcpCardBg")
       local code = bg("AcpCodeBlockBg")
 
-      t.truthy(card and card ~= normal, "card background is indistinguishable from Normal")
-      t.truthy(code and code ~= normal, "code block background is indistinguishable from Normal")
-      t.truthy(card ~= code, "the card and the code block should differ")
-      -- Inline code is deliberately background-free.
+      t.truthy(card, "the card surface has no background")
+      t.truthy(code, "the code block surface has no background")
+      t.truthy(card ~= normal, "the card blends into Normal")
+      t.truthy(code ~= normal, "the code block blends into Normal")
+      t.truthy(card ~= code, "the card and the code block look the same")
+      -- Inline code deliberately has no surface: a background per word is noisy
+      -- in prose and would break up a card.
       t.eq(nil, bg("AcpMdCode"), "inline code should not paint a background")
-
-      vim.api.nvim_set_hl(0, "Normal", saved)
-      highlights.setup()
     end)
 
-    t.it("derives visible surfaces from a light background", function()
-      local saved = vim.api.nvim_get_hl(0, { name = "Normal", link = false })
-      vim.api.nvim_set_hl(0, "Normal", { fg = "#24292f", bg = "#ffffff" })
-      highlights.setup()
-
-      local function bg(name)
-        return vim.api.nvim_get_hl(0, { name = name }).bg
+    t.it("links content groups to the same captures a markdown buffer uses", function()
+      -- A bold word or a heading must look the same in the transcript as in a
+      -- Markdown file: reuse the treesitter captures instead of inventing
+      -- parallel colours.
+      local expected = {
+        AcpBold = "@markup.strong",
+        AcpItalic = "@markup.italic",
+        AcpStrike = "@markup.strikethrough",
+        AcpMdCode = "@markup.raw",
+        AcpMdLink = "@markup.link",
+        AcpH1 = "@markup.heading.1",
+        AcpH2 = "@markup.heading.2",
+        AcpH3 = "@markup.heading.3",
+        AcpH4 = "@markup.heading.4",
+        AcpQuote = "@markup.quote",
+      }
+      for name, target in pairs(expected) do
+        t.eq(target, highlights.groups[name].link, name .. " should link to " .. target)
       end
-      local normal = bg("Normal")
-      for _, name in ipairs({ "AcpCardBg", "AcpCodeBlockBg" }) do
-        t.truthy(bg(name) and bg(name) ~= normal, name .. " blends into a light background")
-      end
-      t.eq(nil, bg("AcpMdCode"), "inline code should not paint a background")
-
-      vim.api.nvim_set_hl(0, "Normal", saved)
-      highlights.setup()
     end)
 
     t.it("respects a user override made before setup", function()
@@ -124,6 +130,33 @@ return function(t)
       highlights.setup()
       -- No `AcpToolBody` group exists on purpose; body text inherits the card.
       t.eq(nil, highlights.groups["AcpToolBody"], "card body must not define a group")
+    end)
+
+    t.it("applies groups passed through the config", function()
+      vim.cmd("hi clear")
+      highlights.setup({ AcpUser = { fg = "#abcdef" }, AcpToolbarModePlan = { fg = "#111111", bg = "#222222" } })
+
+      t.eq(0xabcdef, vim.api.nvim_get_hl(0, { name = "AcpUser" }).fg, "configured group was not applied")
+      local badge = vim.api.nvim_get_hl(0, { name = "AcpToolbarModePlan" })
+      t.eq(0x222222, badge.bg, "configured badge background was not applied")
+      -- Groups not mentioned in the config keep their defaults.
+      t.truthy(defined("AcpAssistant"), "an unconfigured group lost its default")
+    end)
+
+    t.it("re-applies configured groups after a colorscheme change", function()
+      vim.cmd("hi clear")
+      highlights.setup({ AcpUser = { fg = "#abcdef" } })
+      vim.cmd("silent! colorscheme default")
+      vim.cmd("doautocmd ColorScheme")
+
+      t.eq(0xabcdef, vim.api.nvim_get_hl(0, { name = "AcpUser" }).fg, "configured colour lost on colorscheme change")
+    end)
+
+    t.it("lets a configured group replace a built-in one", function()
+      vim.cmd("hi clear")
+      highlights.setup({ AcpCardBg = { bg = "#101010" } })
+      -- The definition wins over the link the default table would install.
+      t.eq(0x101010, vim.api.nvim_get_hl(0, { name = "AcpCardBg", link = false }).bg)
     end)
 
     t.it("does not stack autocmds on repeated setup", function()
