@@ -103,7 +103,14 @@ function M.apply_window_options(win, kind)
     vim.wo[win].wrap = state.config.ui.wrap
     vim.wo[win].linebreak = true
     vim.wo[win].breakindent = true
-    vim.wo[win].winhighlight = "Normal:AcpNormal,NormalNC:AcpNormal,WinBar:AcpToolbar,WinBarNC:AcpToolbar"
+    -- The transcript title bar shares the window's own background, so `WinBar`
+    -- maps to `AcpNormal` rather than to the statusline group. The composer
+    -- keeps `AcpToolbar`: its bar is a toolbar, not a header.
+    if kind == "chat" then
+      vim.wo[win].winhighlight = "Normal:AcpNormal,NormalNC:AcpNormal,WinBar:AcpNormal,WinBarNC:AcpNormal"
+    else
+      vim.wo[win].winhighlight = "Normal:AcpNormal,NormalNC:AcpNormal,WinBar:AcpToolbar,WinBarNC:AcpToolbar"
+    end
     if kind == "chat" then
       vim.wo[win].winfixwidth = state.backend == "native"
       vim.wo[win].winfixheight = false

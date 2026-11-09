@@ -97,13 +97,34 @@ return function(t)
         t.eq("AcpToolbar", group, "a region restarted from WinBar instead of inheriting")
       end
 
-      -- The same holds for the transcript title.
+      -- The transcript title is a header, not a toolbar: it opens on the
+      -- window's own background so it matches the transcript below it.
       local title = toolbar.chat_title({ icons = true, agent = "opencode", title = "work" }, 60)
-      t.truthy(title:find("^%%#AcpToolbar#", 1), "the title must open with the bar background")
-      local rest = title:sub(#"%#AcpToolbar#" + 1)
+      t.truthy(title:find("^%%#AcpNormal#", 1), "the title must open on the transcript background")
+      local rest = title:sub(#"%#AcpNormal#" + 1)
       for group in rest:gmatch("%%#([%w_]+)#") do
-        t.eq("AcpToolbar", group, "the title restarted from WinBar instead of inheriting")
+        t.eq("AcpNormal", group, "the title restarted from WinBar instead of inheriting")
       end
+    end)
+
+    t.it("gives the transcript title the same background as the transcript", function()
+      -- A header in a different colour reads as a separate strip. The title bar
+      -- must sit on `AcpNormal`'s surface, and the window mapping must agree for
+      -- the blank remainder past the text.
+      local highlights = require("acp.ui.highlights")
+      highlights.setup()
+      local layout = require("acp.layout")
+      local config = require("acp.config")
+      layout.setup(config.merge(config.defaults, {}))
+      layout.apply_window_options(vim.api.nvim_get_current_win(), "chat")
+      local winhl = vim.api.nvim_get_option_value("winhighlight", { win = vim.api.nvim_get_current_win() })
+      t.match("WinBar:AcpNormal", winhl, "the transcript WinBar must map to AcpNormal")
+      t.match("WinBarNC:AcpNormal", winhl, "the transcript WinBarNC must map to AcpNormal")
+
+      -- The composer keeps the statusline colour: it is a toolbar.
+      layout.apply_window_options(vim.api.nvim_get_current_win(), "input")
+      local input_winhl = vim.api.nvim_get_option_value("winhighlight", { win = vim.api.nvim_get_current_win() })
+      t.match("WinBar:AcpToolbar", input_winhl, "the composer WinBar must keep AcpToolbar")
     end)
 
     t.it("keeps working when a layout manager replaces the WinBar mapping", function()

@@ -288,6 +288,10 @@ ui.separator.form 控制样式：
     AcpTitle  AcpToolbar  AcpPermission  AcpStreaming
     AcpUserIcon  AcpUserTitle  AcpAssistantIcon  AcpAssistantTitle
 
+acp_chat 的标题栏（winbar）与正文共用同一个背景（AcpNormal），读起来是对话记录
+的页眉，而不是一条独立的色带。acp_input 的工具栏仍然用 StatusLine 的颜色，因为
+它是工具栏而非页眉。
+
 对话记录的标题行拆成图标和文字两组。默认 AcpUserTitle 链接到
 AcpUserIcon、AcpAssistantTitle 链接到 AcpAssistantIcon，即同色；想区分时
 单独覆盖即可。助手回合开头的 Markdown 标题会用 AcpAssistantTitle，正文中间

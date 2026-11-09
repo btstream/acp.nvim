@@ -366,6 +366,10 @@ require("acp").setup({
 到 treesitter 的 `@markup.*` 捕获组，所以在对话记录里的呈现和普通 Markdown buffer
 完全一致。
 
+`acp_chat` 的标题栏（winbar）与正文共用同一个背景（`AcpNormal`），读起来是对话
+记录的页眉，而不是一条独立的色带。`acp_input` 的工具栏仍然用 `StatusLine` 的颜色，
+因为它是工具栏而非页眉。
+
 对话记录的标题行拆成了图标和文字两组：`AcpUserIcon` / `AcpUserTitle`、
 `AcpAssistantIcon` / `AcpAssistantTitle`。默认 `Title` 链接到 `Icon`，两者同色；
 想区分时单独覆盖即可。助手回合开头的 Markdown 标题会用 `AcpAssistantTitle`，

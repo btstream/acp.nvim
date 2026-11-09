@@ -288,14 +288,15 @@ function M.chat_title(opts, width)
   end
   local suffix = opts.pending_new and ("  " .. Icons.get(opts.icons).arrow_down .. " new") or ""
   local available = math.max(10, width - dw(opts.agent) - dw(suffix) - 6)
-  -- Opens with `%#AcpToolbar#` and continues with `%$...$` for the same reason
-  -- as `render`: the bar's background must not depend on the window's `WinBar`
-  -- mapping, which a layout manager may replace.
-  return "%#AcpToolbar#%$AcpTitle$"
+  -- The title bar sits on the transcript's own background, not the statusline
+  -- colour: it is the transcript's header, not a separate strip. `AcpNormal`
+  -- opens that background and every region inherits it with `%$...$`, so a
+  -- layout manager remapping `WinBar` cannot repaint any of them.
+  return "%#AcpNormal#%$AcpTitle$"
     .. M.escape(opts.agent)
-    .. "%$AcpToolbar$%$AcpMuted$·%$AcpToolbar$ "
+    .. "%$AcpNormal$%$AcpMuted$·%$AcpNormal$ "
     .. M.escape(M.truncate(title, available))
-    .. (opts.pending_new and ("  %$AcpStreaming$" .. M.escape(suffix) .. "%$AcpToolbar$") or "")
+    .. (opts.pending_new and ("  %$AcpStreaming$" .. M.escape(suffix) .. "%$AcpNormal$") or "")
 end
 
 return M

@@ -100,6 +100,20 @@ local function demo_session()
   return s
 end
 
+---Strip winbar highlight markup so the preview shows the visible text.
+---@param s string
+---@return string
+local function plain(s)
+  return (
+    s:gsub("%%#[%w_]+#", "")
+      :gsub("%%[$][%w_]+[$]", "")
+      :gsub("%%@v:lua%.%w+@", "")
+      :gsub("%%T", "")
+      :gsub("%%=", "")
+      :gsub("%%%%", "%")
+  )
+end
+
 local cfg = config.validate(config.merge(config.defaults, { ui = { toolbar = { show_usage = true } } }))
 highlights.setup()
 
@@ -136,7 +150,7 @@ local tb = toolbar.render({
   show_usage = true,
   spinner = "⠹",
 }, 60)
-out[#out + 1] = tb:gsub("%%#%w+#", ""):gsub("%%#", ""):gsub("%%*", ""):gsub("%%%%", "%")
+out[#out + 1] = plain(tb)
 
 out[#out + 1] = ""
 out[#out + 1] = "=== composer toolbar (width 28, waiting) ==="
@@ -146,12 +160,12 @@ local tb2 = toolbar.render({
   status = "running",
   waiting = true,
 }, 28)
-out[#out + 1] = tb2:gsub("%%#%w+#", ""):gsub("%%#", ""):gsub("%%*", ""):gsub("%%%%", "%")
+out[#out + 1] = plain(tb2)
 
 out[#out + 1] = ""
 out[#out + 1] = "=== chat title (width 60) ==="
 local title = toolbar.chat_title({ agent = "opencode", title = session.title, pending_new = true }, 60)
-out[#out + 1] = title:gsub("%%#%w+#", ""):gsub("%%#", ""):gsub("%%*", ""):gsub("%%%%", "%")
+out[#out + 1] = plain(title)
 
 local fh = io.open("tests/preview.txt", "wb")
 fh:write(table.concat(out, "\n") .. "\n")
