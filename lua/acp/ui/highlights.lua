@@ -52,8 +52,8 @@ M.groups = {
   -- one unit until someone deliberately splits them.
   AcpUserIcon = { link = "AcpUser" },
   AcpUserTitle = { link = "AcpUserIcon" },
-  AcpAssistantIcon = { link = "AcpAssistant" },
-  AcpAssistantTitle = { link = "AcpAssistantIcon" },
+  AcpAssistantIcon = { link = "Keyword" },
+  AcpAssistantTitle = { link = "Keyword" },
   -- Thoughts are quiet reasoning text; there is no standard capture for them.
   AcpThought = { link = "@markup.raw" },
   -- Tool headers label a call, they are not the content, so they stay quiet.

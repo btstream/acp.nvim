@@ -15,7 +15,7 @@ function M.nerd()
     tool_pending = "󰝦", -- circle-outline
     user = "󰀄", -- account
     assistant = "󰚩", -- robot
-    thought = "󰧤", -- brain
+    thought = "󰟷", -- brain
     plan = "󰉹", -- format-list
     notice = "󰋼", -- information
     compaction = "󰏘", -- compress
@@ -40,8 +40,8 @@ function M.nerd()
     history = "󰋚", -- history
     arrow_right = "󰁔", -- arrow-right
     -- Toolbar: mode and status are shown as glyphs rather than words.
-    mode_plan = "󰉹", -- format-list-bulleted (same family as `plan`)
-    mode_build = "󰒓", -- cog
+    mode_plan = "󰫽", -- format-list-bulleted (same family as `plan`)
+    mode_build = "󰫯", -- cog
     status_idle = "󰝦", -- circle-outline
     status_waiting = "󰀪", -- alert
     status_cancelling = "󰅖", -- close
