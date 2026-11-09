@@ -177,6 +177,39 @@ check("back-to-back prompts both complete", function()
   assert(not text:find("already has an active ACP prompt", 1, true), "overlapping prompt was rejected")
 end)
 
+-- A turn delegated to a subagent: opencode tags the updates it produces with
+-- `_meta["opencode/child-session"]`, and the transcript must label them without
+-- leaking the child session's own traffic.
+controller.submit("run the subagent", {})
+
+wait(function()
+  local text = table.concat(vim.api.nvim_buf_get_lines(st.chat.buf, 0, -1, false), "\n")
+  return text:find("call sites", 1, true) ~= nil
+end, 15000, "subagent turn")
+
+check("transcript labels the subagent turn", function()
+  local text = table.concat(vim.api.nvim_buf_get_lines(st.chat.buf, 0, -1, false), "\n")
+  -- The panel is narrow here, so only the start of the agent supplied title is
+  -- shown; the label itself must survive.
+  assert(text:find("subagent: ", 1, true), "the subagent label is missing")
+  assert(text:find("two call sites", 1, true), "the delegated answer is missing")
+end)
+
+check("child session updates stay out of the transcript", function()
+  local text = table.concat(vim.api.nvim_buf_get_lines(st.chat.buf, 0, -1, false), "\n")
+  assert(not text:find("CHILD-INTERNAL-ONLY", 1, true), "a child session update leaked into the parent transcript")
+end)
+
+check("the subagent label keeps the header inside the panel", function()
+  local width = vim.api.nvim_win_get_width(st.chat.win)
+  for _, line in ipairs(vim.api.nvim_buf_get_lines(st.chat.buf, 0, -1, false)) do
+    assert(
+      vim.api.nvim_strwidth(line) <= width,
+      string.format("a transcript line is %d cells at width %d: %s", vim.api.nvim_strwidth(line), width, line)
+    )
+  end
+end)
+
 -- Nothing should be left running once the queue drained.
 check("no prompt outlived the queue", function()
   wait(function()

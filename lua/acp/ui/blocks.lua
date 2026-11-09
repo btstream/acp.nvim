@@ -662,18 +662,55 @@ local function render_tool(block, ctx)
   end
 
   local label = string.format("%s %s %s", caret, glyph, table.concat(parts, " · "))
+
+  -- The suffix is built before the label is truncated, so the label leaves room
+  -- for what is actually there rather than for a guess: a fixed reserve either
+  -- overflows on a long subagent title or truncates the label for space that
+  -- was never used.
+  --
+  -- The title is agent supplied and unbounded, so it is fitted to what the row
+  -- leaves over and shrinks instead of pushing the header past the panel.
+  local function build_suffix(child_title_)
+    local meta = {}
+    if child_title_ then
+      meta[#meta + 1] = "subagent: " .. child_title_
+    end
+    if status ~= "" then
+      meta[#meta + 1] = status
+    end
+    return #meta > 0 and ("  " .. table.concat(meta, " · ")) or ""
+  end
+
+  local child_title = block.child and block.child.title and one_line(block.child.title) or nil
+  local suffix = build_suffix(child_title)
+  if child_title then
+    -- Shrink the title until the whole row fits. Measuring the assembled row
+    -- rather than predicting its width keeps this correct for any combination
+    -- of icon widths, separators and status text.
+    local function row_width()
+      return vim.api.nvim_strwidth(label) + vim.api.nvim_strwidth(suffix)
+    end
+    for _ = 1, 8 do
+      if row_width() <= ctx.width then
+        break
+      end
+      local current = vim.api.nvim_strwidth(child_title)
+      if current <= 4 then
+        break
+      end
+      local excess = row_width() - ctx.width
+      child_title = M.truncate_width(child_title, math.max(3, current - excess - 1)) .. ic.more
+      suffix = build_suffix(child_title)
+    end
+  end
+
   -- A shell command can be hundreds of columns long. The header is a summary;
-  -- the full text is in the card body, so truncate to the panel width.
-  local suffix_reserve = 0
-  if block.child and block.child.title then
-    suffix_reserve = suffix_reserve + 12
-  end
-  if block.status then
-    suffix_reserve = suffix_reserve + 12
-  end
-  local max_label = math.max(20, ctx.width - suffix_reserve)
+  -- the full text is in the card body, so truncate to exactly what the panel
+  -- leaves once the suffix is accounted for. Clamping to a fixed floor here
+  -- would let a narrow panel be overflowed by the floor itself.
+  local max_label = ctx.width - vim.api.nvim_strwidth(suffix)
   if vim.api.nvim_strwidth(label) > max_label then
-    label = M.truncate_width(label, max_label - 1) .. ic.more
+    label = M.truncate_width(label, math.max(1, max_label - 1)) .. ic.more
   end
 
   local caret_end = #caret
@@ -698,14 +735,6 @@ local function render_tool(block, ctx)
     end
   end
 
-  local meta = {}
-  if block.child and block.child.title then
-    meta[#meta + 1] = "subagent" .. ": " .. one_line(block.child.title)
-  end
-  if status ~= "" then
-    meta[#meta + 1] = status
-  end
-  local suffix = #meta > 0 and ("  " .. table.concat(meta, " · ")) or ""
   if suffix ~= "" then
     segments[#segments + 1] = { s = #label, e = -1, group = "AcpMuted" }
   end

@@ -9,6 +9,8 @@ the prompt text so tests can request specific flows:
   contains "slow"       -> streams, then waits for session/cancel
   contains "fail"       -> returns a JSON-RPC error
   contains "toolfail"   -> tool call that completes with failed status
+  contains "subagent"   -> a delegated turn: tool call plus agent text, both
+                           tagged with `opencode/child-session` metadata
 """
 import json
 import os
@@ -148,6 +150,41 @@ def run_prompt(msg_id, text):
             "toolCallId": "call_fail",
             "status": "failed",
             "rawOutput": "exit code 1",
+        })
+        finish(msg_id)
+        return
+
+    if "subagent" in text:
+        child = {"title": "Explore the repo", "sessionId": "child_1"}
+        update({
+            "sessionUpdate": "tool_call",
+            "toolCallId": "call_child",
+            "title": "Read src/main.lua",
+            "kind": "read",
+            "status": "pending",
+            "_meta": {"opencode/child-session": child},
+        })
+        update({
+            "sessionUpdate": "tool_call_update",
+            "toolCallId": "call_child",
+            "status": "completed",
+            "_meta": {"opencode/child-session": child},
+        })
+        # Text produced by the delegated turn, tagged so the client can label it.
+        update({
+            "sessionUpdate": "agent_message_chunk",
+            "messageId": "m_child",
+            "content": {"type": "text", "text": "The helper found two call sites."},
+            "_meta": {"opencode/child-session": child},
+        })
+        # Updates for the child session itself must never reach the transcript.
+        notify("session/update", {
+            "sessionId": "child_1",
+            "update": {
+                "sessionUpdate": "agent_message_chunk",
+                "messageId": "c1",
+                "content": {"type": "text", "text": "CHILD-INTERNAL-ONLY"},
+            },
         })
         finish(msg_id)
         return

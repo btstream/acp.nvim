@@ -36,5 +36,6 @@ require("tests.spec_cards")(t)
 require("tests.spec_thoughts")(t)
 require("tests.spec_tables")(t)
 require("tests.spec_separator")(t)
+require("tests.spec_subagent")(t)
 
 t.run()
