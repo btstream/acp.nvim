@@ -70,7 +70,7 @@ return function(t)
         AcpBold = "@markup.strong",
         AcpItalic = "@markup.italic",
         AcpStrike = "@markup.strikethrough",
-        AcpMdCode = "@markup.raw",
+        AcpMdCode = "String",
         AcpMdLink = "@markup.link",
         AcpH1 = "@markup.heading.1",
         AcpH2 = "@markup.heading.2",

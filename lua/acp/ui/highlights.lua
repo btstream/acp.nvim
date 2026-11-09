@@ -65,17 +65,22 @@ M.groups = {
   AcpCodeLang = { link = "@label" },
 
   AcpTableHead = { link = "@markup.heading" },
-  -- Every table border character shares one group so the frame reads as a
-  -- single quiet line.
-  AcpTableBorder = { link = "@punctuation.special" },
+  -- The frame is chrome, not content: one quiet grey group for every border
+  -- character. `@punctuation.special` would be the Markdown-parity choice, but
+  -- themes colour it as an accent (orange under gruvbox), which turns a table
+  -- into a neon grid.
+  AcpTableBorder = { link = "NonText" },
 
   AcpToolRunning = { link = "DiagnosticWarn" },
   AcpToolSuccess = { link = "DiagnosticOk" },
   AcpToolError = { link = "DiagnosticError" },
   AcpToolCancelled = { link = "Comment" },
 
-  -- Content shares the treesitter captures used by a Markdown buffer.
-  AcpMdCode = { link = "@markup.raw" },
+  -- Content shares the treesitter captures used by a Markdown buffer, except
+  -- inline code: `@markup.raw` is a warm accent there, which reads as emphasis
+  -- in prose. `String` keeps inline code distinguishable from running text
+  -- without shouting.
+  AcpMdCode = { link = "String" },
   AcpBold = { link = "@markup.strong" },
   AcpItalic = { link = "@markup.italic" },
   AcpStrike = { link = "@markup.strikethrough" },

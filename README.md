@@ -334,9 +334,16 @@ heirline 同理，只需调用 `statusline()` 或读取 `status()`。
 ## 外观
 
 所有样式都是**静态定义**：每个组直接链接到 Neovim 自己的组，插件不会在运行时
-读取或混合主题颜色。正文里的 Markdown（粗体、斜体、标题、引用、行内代码）链接到
-treesitter 的 `@markup.*` 捕获组，所以在对话记录里的呈现和普通 Markdown buffer
+读取或混合主题颜色。正文里的 Markdown（粗体、斜体、删除线、标题、引用、链接）链接
+到 treesitter 的 `@markup.*` 捕获组，所以在对话记录里的呈现和普通 Markdown buffer
 完全一致。
+
+两处例外，都是为了让表格读起来安静一些：
+
+- 行内代码链接到 `String`。`@markup.raw` 在多数主题里是暖色强调色，放在正文中
+  会抢注意力。
+- 表格边框链接到 `NonText`。`@punctuation.special` 会被主题染成橙色、品红之类
+  的高亮色，整个表格会变成霓虹网格。
 
 两种覆盖方式，都会优先于内置定义：
 
