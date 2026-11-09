@@ -27,5 +27,7 @@ require("tests.spec_newlines")(t)
 require("tests.spec_edgy_views")(t)
 require("tests.spec_layout_sizing")(t)
 require("tests.spec_highlights")(t)
+require("tests.spec_async")(t)
+require("tests.spec_optimizations")(t)
 
 t.run()

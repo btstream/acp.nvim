@@ -287,6 +287,12 @@ def handle(msg):
     elif method == "session/prompt":
         text = "".join(b.get("text", "") for b in params.get("prompt") or [] if b.get("type") == "text")
         with permissions_lock:
+            # OpenCode refuses a second prompt while one is running. Mirroring
+            # that here turns the client-side race into a test failure instead
+            # of silently letting two turns overlap.
+            if active_prompts:
+                error(msg_id, -32000, "Internal error: Session already has an active ACP prompt: " + SESSION_ID)
+                return
             active_prompts[msg_id] = True
         cancel_event.clear()
         threading.Thread(target=run_prompt, args=(msg_id, text), daemon=True).start()

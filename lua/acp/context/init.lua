@@ -29,13 +29,23 @@ local function buffer_path(bufnr)
   return vim.fn.fnamemodify(name, ":p")
 end
 
-local function read_file(path)
+local function read_file(path, max_bytes)
   local fh = io.open(path, "rb")
   if not fh then
     return nil
   end
-  local text = fh:read("*a")
+  local text
+  if max_bytes then
+    -- Read at most one byte more than the limit so an oversized file can be
+    -- detected without loading all of it.
+    text = fh:read(max_bytes + 1)
+  else
+    text = fh:read("*a")
+  end
   fh:close()
+  if text and max_bytes and #text > max_bytes then
+    return nil, "too_large"
+  end
   return text
 end
 
@@ -49,8 +59,9 @@ function M.file(path, config)
   if vim.fn.filereadable(abs) ~= 1 then
     return nil, "not a readable file: " .. path
   end
+  local limit = config.context.max_file_bytes or 512 * 1024
   local stat = vim.uv.fs_stat(abs)
-  if stat and stat.size > (config.context.max_file_bytes or 512 * 1024) then
+  if stat and stat.size > limit then
     return nil, "file is too large to attach"
   end
 
@@ -58,6 +69,12 @@ function M.file(path, config)
   if bufnr ~= -1 and vim.api.nvim_buf_is_loaded(bufnr) and vim.bo[bufnr].modified then
     -- Prefer the unsaved buffer contents so the agent sees what the user sees.
     local text = table.concat(vim.api.nvim_buf_get_lines(bufnr, 0, -1, false), "\n")
+    -- An unsaved buffer can be arbitrarily large; the disk size check above
+    -- does not apply to it. Oversized attachments would exceed
+    -- `transport.max_line_bytes` and kill the agent connection.
+    if #text > limit then
+      return nil, "buffer is too large to attach"
+    end
     return {
       kind = "file",
       label = vim.fn.fnamemodify(abs, ":t"),
@@ -72,8 +89,13 @@ function M.file(path, config)
     }
   end
 
-  local text = read_file(abs)
+  -- Bound the read so a file that grew after `fs_stat` (TOCTOU) still cannot
+  -- blow past the limit.
+  local text, err = read_file(abs, limit)
   if not text then
+    if err == "too_large" then
+      return nil, "file is too large to attach"
+    end
     return nil, "unable to read file: " .. path
   end
   return {
@@ -116,6 +138,12 @@ function M.selection(config)
   lines[1] = lines[1]:sub(start_col)
   lines[#lines] = lines[#lines]:sub(1, end_col)
   local text = table.concat(lines, "\n")
+  -- Line count alone does not bound the payload: a few very long lines can
+  -- still exceed the transport limit and kill the connection.
+  local limit = config.context.max_file_bytes or 512 * 1024
+  if #text > limit then
+    return nil, "selection is too large to attach"
+  end
   local label = string.format("%s %d-%d", vim.fn.fnamemodify(path, ":t"), start_line, end_line)
   return {
     kind = "selection",
@@ -146,8 +174,11 @@ function M.diagnostics(config)
     return nil, "no diagnostics in this buffer"
   end
   local lines = {}
+  local limit = config.context.max_file_bytes or 512 * 1024
+  local bytes = 0
+  local total = 0
   for _, diag in ipairs(diagnostics) do
-    lines[#lines + 1] = string.format(
+    local line = string.format(
       "%s:%d:%d %s %s",
       path,
       diag.lnum + 1,
@@ -155,11 +186,21 @@ function M.diagnostics(config)
       ({ "ERROR", "WARN", "INFO", "HINT" })[diag.severity] or "INFO",
       diag.message
     )
+    bytes = bytes + #line + 1
+    if bytes > limit then
+      -- Truncate instead of dropping everything: the first diagnostics are
+      -- usually the ones that matter, and an unbounded list would exceed the
+      -- transport limit.
+      lines[#lines + 1] = string.format("... (%d more diagnostics omitted)", #diagnostics - total)
+      break
+    end
+    lines[#lines + 1] = line
+    total = total + 1
   end
   local text = table.concat(lines, "\n")
   return {
     kind = "diagnostics",
-    label = string.format("diagnostics (%d)", #diagnostics),
+    label = string.format("diagnostics (%d)", total),
     path = path,
     text = text,
     block = {

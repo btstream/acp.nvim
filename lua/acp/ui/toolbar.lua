@@ -19,7 +19,31 @@ function M.escape(s)
 end
 
 local function dw(s)
-  return vim.fn.strdisplaywidth(s)
+  return vim.api.nvim_strwidth(s)
+end
+
+---Byte offsets where each UTF-8 codepoint starts (1-based, plus #s+1).
+---LuaJIT has no `utf8` library, so this walks continuation bytes directly.
+---@param s string
+---@return integer[]
+local function char_starts(s)
+  local starts = { 1 }
+  local i = 1
+  local len = #s
+  while i <= len do
+    local byte = s:byte(i)
+    local width = 1
+    if byte >= 0xF0 then
+      width = 4
+    elseif byte >= 0xE0 then
+      width = 3
+    elseif byte >= 0xC0 then
+      width = 2
+    end
+    i = i + width
+    starts[#starts + 1] = i
+  end
+  return starts
 end
 
 ---Truncate to a display width, appending an ellipsis when shortened.
@@ -36,17 +60,25 @@ function M.truncate(s, max)
   if max <= 1 then
     return ""
   end
-  local out = {}
-  local used = 0
-  for _, char in ipairs(vim.fn.split(s, "\\zs")) do
-    local w = vim.fn.strdisplaywidth(char)
-    if used + w > max - 1 then
-      break
+  -- Display width grows monotonically with the prefix, so binary search finds
+  -- the longest fitting prefix in O(log n) width measurements instead of one
+  -- per character (this runs on every winbar redraw).
+  local starts = char_starts(s)
+  local lo, hi = 1, #starts - 1 -- number of codepoints to keep
+  local best = 0
+  while lo <= hi do
+    local mid = math.floor((lo + hi) / 2)
+    if dw(s:sub(1, starts[mid + 1] - 1)) <= max - 1 then
+      best = mid
+      lo = mid + 1
+    else
+      hi = mid - 1
     end
-    out[#out + 1] = char
-    used = used + w
   end
-  return table.concat(out) .. "…"
+  if best == 0 then
+    return "…"
+  end
+  return s:sub(1, starts[best + 1] - 1) .. "…"
 end
 
 ---Wrap text in a highlight group.
@@ -130,10 +162,11 @@ function M.render(info, width)
     push_right(string.format("+%d %s", info.queued, "queued"), "AcpMuted")
   end
 
-  local left_text = ""
-  for _, seg in ipairs(left) do
-    left_text = left_text .. seg.text
+  local left_text = {}
+  for i, seg in ipairs(left) do
+    left_text[i] = seg.text
   end
+  left_text = table.concat(left_text)
   local right_text = table.concat(right_plain)
   local right_w = dw(right_text)
 
@@ -156,11 +189,12 @@ function M.render(info, width)
         break
       end
       local piece = M.truncate(seg.text, budget - used)
+      local piece_w = dw(piece)
       if piece ~= "" then
         rendered[#rendered + 1] = clickable(piece, seg.hl, seg.action)
-        used = used + dw(piece)
+        used = used + piece_w
       end
-      if dw(piece) < dw(seg.text) then
+      if piece_w < dw(seg.text) then
         break
       end
     end

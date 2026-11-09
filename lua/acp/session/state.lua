@@ -27,6 +27,63 @@ local function next_id(prefix)
   return (prefix or "b") .. counter
 end
 
+-- Long-running sessions used to keep every block forever, so a session left
+-- open for days grew without bound and every render walked the whole history.
+-- Older blocks are dropped once the transcript exceeds this many entries.
+local MAX_BLOCKS = 2000
+
+-- Streaming text accumulates one chunk at a time. Concatenating with `..` on
+-- every chunk copies the whole message, so a long streamed answer used to cost
+-- O(n²). Chunks are buffered in `_parts`; a metatable materialises them once,
+-- on first read, keeping `block.text` a plain string for every caller.
+local block_mt = {
+  __index = function(tbl, key)
+    if key == "text" then
+      local parts = rawget(tbl, "_parts")
+      if parts then
+        local joined = #parts > 0 and table.concat(parts) or ""
+        rawset(tbl, "_parts", nil)
+        rawset(tbl, "text", joined)
+        return joined
+      end
+    end
+    return nil
+  end,
+  __newindex = function(tbl, key, value)
+    -- An explicit assignment supersedes any buffered chunks.
+    if key == "text" then
+      rawset(tbl, "_parts", nil)
+    end
+    rawset(tbl, key, value)
+  end,
+}
+
+---Append `text` to a block's streaming text without copying what came before.
+---@param block AcpBlock
+---@param text string
+function M.append_block_text(block, text)
+  if text == nil or text == "" then
+    return
+  end
+  if getmetatable(block) ~= block_mt then
+    setmetatable(block, block_mt)
+  end
+  local parts = rawget(block, "_parts")
+  if not parts then
+    parts = { rawget(block, "text") or "" }
+    rawset(block, "text", nil)
+    rawset(block, "_parts", parts)
+  end
+  parts[#parts + 1] = text
+end
+
+---Materialise a block's text, folding any buffered streaming chunks.
+---@param block AcpBlock
+---@return string
+function M.block_text(block)
+  return block.text or ""
+end
+
 ---@class AcpSessionState
 ---@field id string
 ---@field cwd string
@@ -74,7 +131,37 @@ end
 
 function Session:append(block)
   self.blocks[#self.blocks + 1] = block
+  self:trim()
   return block
+end
+
+---Drop the oldest blocks once the transcript is over the cap.
+---
+---Trimming happens in batches (down to 90% of the cap) so the O(n) compaction
+---cost is amortised over many appends instead of running on every render tick.
+function Session:trim()
+  local n = #self.blocks
+  if n <= MAX_BLOCKS then
+    return
+  end
+  local keep_from = n - math.floor(MAX_BLOCKS * 0.9) + 1
+  local kept = {}
+  local removed = {}
+  for i = 1, keep_from - 1 do
+    removed[self.blocks[i].id] = true
+  end
+  for i = keep_from, n do
+    kept[#kept + 1] = self.blocks[i]
+  end
+  self.blocks = kept
+  -- Drop tool mappings whose block was trimmed; otherwise `session.tools`
+  -- would keep resurrecting removed entries on the next tool_call_update.
+  for id, tool in pairs(self.tools) do
+    if removed[tool.id] then
+      self.tools[id] = nil
+    end
+  end
+  self.trimmed = true
 end
 
 function Session:append_text(kind, text, message_id)
@@ -82,7 +169,7 @@ function Session:append_text(kind, text, message_id)
   if last and last.kind == kind and last.status == "streaming" then
     if not message_id or last.message_id == nil or last.message_id == message_id then
       last.message_id = last.message_id or message_id
-      last.text = last.text .. text
+      M.append_block_text(last, text)
       return last
     end
   end
@@ -96,6 +183,7 @@ function Session:append_text(kind, text, message_id)
 end
 
 ---Start a new turn: close out any streaming blocks.
+---@return integer turn the new turn number, used to reject stale events
 function Session:begin_turn()
   self.turn = self.turn + 1
   self.status = "running"
@@ -138,14 +226,18 @@ function Session:user_chunk(text, message_id)
 end
 
 ---Close streaming blocks at the end of a turn.
+---@param stop_reason string|nil
 function Session:finish_turn(stop_reason)
+  -- Cancelled and error turns both leave tools that will never report again;
+  -- they must not keep showing as "running" forever.
+  local interrupted = stop_reason == "cancelled" or stop_reason == "error"
   for _, block in ipairs(self.blocks) do
     if block.status == "streaming" then
       block.status = nil
     end
     if block.kind == "tool" and (block.status == "pending" or block.status == "in_progress") then
-      if stop_reason == "cancelled" then
-        block.status = "cancelled"
+      if interrupted then
+        block.status = stop_reason == "cancelled" and "cancelled" or "failed"
       end
     end
   end
@@ -166,10 +258,13 @@ function Session:option_by_category(category)
   return nil
 end
 
----Flatten select option values.
 ---@param option table
 ---@return {value: string|boolean, name: string, description: string|nil}[]
 function M.select_values(option)
+  local cached = option._select_values
+  if cached and cached.src == option.options then
+    return cached.values
+  end
   local out = {}
   for _, entry in ipairs(option.options or {}) do
     if entry.group then
@@ -180,6 +275,7 @@ function M.select_values(option)
       out[#out + 1] = entry
     end
   end
+  option._select_values = { src = option.options, values = out }
   return out
 end
 
@@ -187,10 +283,20 @@ end
 ---@param value string|boolean
 ---@return string|nil
 function M.option_label(option, value)
-  for _, entry in ipairs(M.select_values(option)) do
-    if entry.value == value then
-      return entry.name
+  -- The toolbar calls this on every redraw; index the values once instead of
+  -- rescanning the option list each time.
+  local cached = option._value_names
+  if not cached or cached.src ~= option.options then
+    cached = { src = option.options, names = {} }
+    for _, entry in ipairs(M.select_values(option)) do
+      if entry.value ~= nil and cached.names[entry.value] == nil then
+        cached.names[entry.value] = entry.name
+      end
     end
+    option._value_names = cached
+  end
+  if value ~= nil and cached.names[value] ~= nil then
+    return cached.names[value]
   end
   if type(value) == "string" then
     return value

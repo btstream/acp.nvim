@@ -104,16 +104,37 @@ function M.spawn(opts)
 end
 
 ---Write a payload to the agent's stdin.
+---
+---`chansend` may accept fewer bytes than requested when the pipe buffer is
+---full. The remainder is retried in a bounded loop so a large prompt is not
+---silently dropped on the floor.
 ---@param payload string
 ---@return boolean
 function Process:write(payload)
   if not self.alive or not self.job then
     return false
   end
-  local ok, sent = pcall(vim.fn.chansend, self.job, payload)
-  if not ok or sent == 0 then
-    Log.warn("failed to write to agent stdin")
-    return false
+  local offset = 1
+  local len = #payload
+  local attempts = 0
+  while offset <= len do
+    local ok, sent = pcall(vim.fn.chansend, self.job, payload:sub(offset))
+    if not ok then
+      Log.warn("failed to write to agent stdin: %s", tostring(sent))
+      return false
+    end
+    if sent == 0 then
+      attempts = attempts + 1
+      if attempts > 100 or not self.alive then
+        Log.warn("agent stdin stayed blocked; dropping %d bytes", len - offset + 1)
+        return false
+      end
+      -- Give the agent a moment to drain its stdin without freezing the loop.
+      vim.wait(1)
+    else
+      offset = offset + sent
+      attempts = 0
+    end
   end
   return true
 end
@@ -131,17 +152,52 @@ function Process:stop(force)
   if not self.job then
     return
   end
+  local job = self.job
   if self.alive and not force then
     self:close_stdin()
-    local job = self.job
-    vim.defer_fn(function()
-      if self.alive and self.job == job then
-        pcall(vim.fn.jobstop, job)
-      end
-    end, self.shutdown_timeout)
+    local timer = vim.uv.new_timer()
+    self.stop_timer = timer
+    timer:start(self.shutdown_timeout, 0, function()
+      vim.schedule(function()
+        timer:stop()
+        timer:close()
+        if self.stop_timer == timer then
+          self.stop_timer = nil
+        end
+        if self.alive and self.job == job then
+          -- SIGTERM lets an agent flush and exit cleanly; escalate to SIGKILL
+          -- only if it is still running after the grace period, otherwise an
+          -- agent that ignores SIGTERM would linger forever.
+          pcall(vim.fn.jobstop, job)
+          local pid = nil
+          pcall(function()
+            pid = vim.fn.jobpid(job)
+          end)
+          if pid and pid > 0 then
+            vim.defer_fn(function()
+              if self.job == job and self.alive then
+                pcall(vim.uv.kill, pid, 9)
+              end
+            end, 500)
+          end
+        end
+      end)
+    end)
     return
   end
-  pcall(vim.fn.jobstop, self.job)
+  -- Hard stop: SIGTERM, then SIGKILL shortly after.
+  pcall(vim.fn.jobstop, job)
+  local pid = nil
+  pcall(function()
+    pid = vim.fn.jobpid(job)
+  end)
+  if pid and pid > 0 then
+    vim.defer_fn(function()
+      if self.job == job and self.alive then
+        pcall(vim.uv.kill, pid, 9)
+      end
+    end, 500)
+  end
 end
 
 ---@return boolean

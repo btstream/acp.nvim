@@ -15,7 +15,7 @@ function M.views(opts)
     chat = {
       ft = "acp_chat",
       title = opts.agent_title or "Agent",
-      size = { width = opts.width or 0.38 },
+      size = { width = opts.width or require("acp.config").defaults.layout.width },
       wo = {
         -- acp renders a richer title (session name, new-output marker) by
         -- default. Set title_winbar = true to let edgy own it instead.
@@ -26,11 +26,11 @@ function M.views(opts)
     input = {
       ft = "acp_input",
       title = "Message",
-      size = { height = opts.input_height or 8 },
+      size = { height = opts.input_height or require("acp.config").defaults.layout.input_height },
       wo = {
         winbar = not toolbar_winbar,
         winfixwidth = true,
-        winfixheight = false,
+        winfixheight = true,
       },
     },
   }
@@ -47,10 +47,19 @@ end
 ---@return table
 function M.extend(edgy_opts, view_opts)
   edgy_opts = edgy_opts or {}
-  edgy_opts.right = edgy_opts.right or {}
+  -- Honour the configured panel side instead of always using `right`.
+  local position = "right"
+  local ok, config = pcall(require, "acp.config")
+  if ok and config.defaults and config.defaults.layout then
+    position = config.defaults.layout.position or "right"
+  end
+  if view_opts and view_opts.position then
+    position = view_opts.position
+  end
+  edgy_opts[position] = edgy_opts[position] or {}
   local views = M.views(view_opts)
   local present = {}
-  for _, view in ipairs(edgy_opts.right) do
+  for _, view in ipairs(edgy_opts[position]) do
     if type(view) == "table" and view.ft then
       present[view.ft] = true
     elseif type(view) == "string" then
@@ -58,17 +67,23 @@ function M.extend(edgy_opts, view_opts)
     end
   end
   if not present["acp_chat"] then
-    table.insert(edgy_opts.right, 1, views.chat)
+    table.insert(edgy_opts[position], 1, views.chat)
   end
   if not present["acp_input"] then
-    table.insert(edgy_opts.right, 2, views.input)
+    table.insert(edgy_opts[position], 2, views.input)
   end
   return edgy_opts
 end
 
 ---Whether edgy is installed and loaded.
+---
+---Uses `package.loaded` first so merely checking availability cannot trigger a
+---lazy-load of edgy as a side effect.
 ---@return boolean
 function M.available()
+  if package.loaded["edgy"] ~= nil then
+    return true
+  end
   local ok, edgy = pcall(require, "edgy")
   return ok and edgy ~= nil
 end

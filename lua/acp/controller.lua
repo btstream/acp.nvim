@@ -161,7 +161,7 @@ end
 function M.statusline()
   local st = M.status()
   local use_icons = S.config and S.config.ui.icons
-  local glyph = use_icons and Icons.get(true).assistant or "*"
+  local glyph = use_icons ~= nil and Icons.get(use_icons).assistant or "*"
   if not st.connected then
     return glyph .. " off"
   end
@@ -169,7 +169,7 @@ function M.statusline()
     return glyph .. " !"
   end
   if st.running then
-    return glyph .. " " .. Icons.get(icons).tool_run
+    return glyph .. " " .. Icons.get(use_icons).tool_run
   end
   if st.queued > 0 then
     return glyph .. " +" .. st.queued
@@ -229,11 +229,11 @@ function M.composer_bar(win)
   if S.input and #S.input.attachments > 0 then
     local labels = {}
     for _, att in ipairs(S.input.attachments) do
-      labels[#labels + 1] = "[" .. att.label .. "]"
+      labels[#labels + 1] = "[" .. (att.label or "") .. "]"
     end
     local plain = table.concat(labels, " ")
     chips = "%#AcpUserChip#" .. toolbar.escape(plain) .. "%#AcpToolbar# "
-    chip_width = vim.fn.strdisplaywidth(plain) + 1
+    chip_width = vim.api.nvim_strwidth(plain) + 1
   end
 
   local base = toolbar.render({
@@ -342,6 +342,9 @@ local function refresh_session_title(session, cb)
   end
   if S.title_refreshing then
     S.title_pending = true
+    -- Remember which session asked for a refresh; the coalesced retry must
+    -- query that session, not whichever one is current when it lands.
+    S.title_pending_session = session
     if cb then
       cb()
     end
@@ -350,6 +353,8 @@ local function refresh_session_title(session, cb)
   S.title_refreshing = true
   async.run(function()
     local ok, result = S.client:list_sessions(session.cwd)
+    -- Reset the guard before anything else can raise: an error used to leave
+    -- `title_refreshing` stuck true, disabling title refresh for the session.
     S.title_refreshing = false
     if ok and type(result) == "table" then
       for _, info in ipairs(result.sessions or {}) do
@@ -363,8 +368,17 @@ local function refresh_session_title(session, cb)
       cb()
     end
     if S.title_pending then
+      local pending_session = S.title_pending_session or session
       S.title_pending = false
-      refresh_session_title(S.session)
+      S.title_pending_session = nil
+      refresh_session_title(pending_session)
+    end
+  end, function()
+    -- The coroutine died before the reset above ran; clear the guard so a
+    -- later switch can still fetch the title.
+    S.title_refreshing = false
+    if cb then
+      cb()
     end
   end)
 end
@@ -641,7 +655,9 @@ local function ensure_windows()
   set_input_keymaps()
   set_chat_keymaps()
   refresh_chrome()
-  S.chat:render(true)
+  if S.chat then
+    S.chat:render(true)
+  end
 
   -- In external mode a layout manager owns the windows; warn when it has no
   -- view registered for them, which would leave the panel out of place.
@@ -776,8 +792,14 @@ function M.connect()
   end
 
   if not S.client:is_ready() then
+    local client = S.client
     S.client:start(function(ok, err)
       vim.schedule(function()
+        -- The connection may have been replaced or torn down between `start`
+        -- and this callback; adopt the result only for the live client.
+        if S.client ~= client then
+          return
+        end
         if ok then
           S.connection = "ready"
           refresh_chrome()
@@ -838,6 +860,67 @@ function M.reconnect()
 end
 
 ---Reload the current session after a reconnect, replaying agent-side history.
+---Load `session_id`, replaying the agent's history into the transcript.
+---
+---Used both when switching sessions and when restoring the current one after a
+---reconnect; the only difference is whether a fresh session object is built.
+---@param session_id string
+---@param opts {fresh: boolean|nil, kind: string|nil}
+local function replay_session(session_id, opts)
+  local cwd = session_cwd(session_id, S.session_cwds)
+  local entry
+  if opts.fresh then
+    entry = session_mod.new(session_id, cwd)
+    S.sessions[session_id] = entry
+  else
+    entry = S.sessions[session_id]
+    if not entry then
+      entry = session_mod.new(session_id, cwd)
+      S.sessions[session_id] = entry
+    end
+  end
+  activate_session(entry)
+
+  S.replaying = true
+  async.run(function()
+    async.finally(function()
+      S.replaying = false
+    end)
+    local ok, result = S.client:load_session(session_id, cwd)
+    if not ok then
+      local message = type(result) == "table" and (result.message or vim.inspect(result)) or tostring(result)
+      if opts.kind == "restore" and tostring(message):lower():match("shutdown") then
+        -- Expected during teardown; do not alarm the user.
+        M.new_session()
+        return
+      end
+      notify(
+        "unable to " .. (opts.kind or "load") .. " the session: " .. message,
+        opts.kind == "restore" and vim.log.levels.WARN or vim.log.levels.ERROR
+      )
+      if opts.kind == "restore" then
+        M.new_session()
+      end
+      return
+    end
+
+    if result.configOptions then
+      entry.config_options = result.configOptions
+    end
+    entry:finish_turn("end_turn")
+    if apply_cached_title(entry) then
+      refresh_chrome()
+    end
+    if S.chat then
+      S.chat:set_session(entry)
+      S.chat:render(true)
+    end
+    refresh_chrome()
+    refresh_session_title(entry)
+  end)
+end
+
+---Reload the current session after a reconnect, replaying agent-side history.
 ---@param session_id string
 function M.reload_session(session_id)
   if S.connection ~= "ready" or not S.client then
@@ -847,38 +930,8 @@ function M.reload_session(session_id)
     M.new_session()
     return
   end
-  local previous = S.sessions[session_id]
-  local cwd = session_cwd(session_id, S.session_cwds)
   -- Start from a clean transcript: the agent replays its authoritative history.
-  local fresh = session_mod.new(session_id, cwd)
-  S.sessions[session_id] = fresh
-  activate_session(fresh)
-  S.replaying = true
-  async.run(function()
-    local ok, result = S.client:load_session(session_id, cwd)
-    S.replaying = false
-    if not ok then
-      local message = type(result) == "table" and (result.message or vim.inspect(result)) or tostring(result)
-      if not tostring(message):lower():match("shutdown") then
-        notify("unable to restore the session: " .. message, vim.log.levels.WARN)
-      end
-      M.new_session()
-      return
-    end
-    if result.configOptions then
-      fresh.config_options = result.configOptions
-    end
-    fresh:finish_turn("end_turn")
-    if apply_cached_title(fresh) then
-      refresh_chrome()
-    end
-    if S.chat then
-      S.chat:set_session(fresh)
-      S.chat:render(true)
-    end
-    refresh_chrome()
-    refresh_session_title(fresh)
-  end)
+  replay_session(session_id, { fresh = true, kind = "restore" })
 end
 
 ---Create a new session with the current agent.
@@ -888,7 +941,16 @@ function M.new_session()
     return
   end
   local cwd = resolve_cwd()
+  -- Guard against overlapping creations (e.g. a double `new_session` from a
+  -- fast toggle): the last response would otherwise win and orphan a session.
+  if S.creating_session then
+    return
+  end
+  S.creating_session = true
   async.run(function()
+    async.finally(function()
+      S.creating_session = false
+    end)
     local ok, result = S.client:new_session(cwd)
     if not ok then
       local message = type(result) == "table" and (result.message or vim.inspect(result)) or tostring(result)
@@ -906,7 +968,9 @@ function M.new_session()
     S.sessions[session.id] = session
     S.session_cwds[session.id] = cwd
     activate_session(session)
-    S.chat:render(true)
+    if S.chat then
+      S.chat:render(true)
+    end
     notify("Session started", vim.log.levels.INFO)
     refresh_session_title(session)
   end)
@@ -920,37 +984,7 @@ function M.load_session(session_id)
     return
   end
   -- Agents reject session/load when the cwd does not match the session.
-  local cwd = session_cwd(session_id, S.session_cwds)
-  async.run(function()
-    local entry = S.sessions[session_id]
-    if entry then
-      activate_session(entry)
-    else
-      entry = session_mod.new(session_id, cwd)
-      S.sessions[session_id] = entry
-      activate_session(entry)
-    end
-    S.replaying = true
-    local ok, result = S.client:load_session(session_id, cwd)
-    S.replaying = false
-    if not ok then
-      local message = type(result) == "table" and (result.message or vim.inspect(result)) or tostring(result)
-      notify("unable to load session: " .. message, vim.log.levels.ERROR)
-      return
-    end
-    if result.configOptions then
-      entry.config_options = result.configOptions
-    end
-    entry:finish_turn("end_turn")
-    -- A freshly built session object carries no title; take it from the cache
-    -- so the winbar updates the moment the switch completes.
-    if apply_cached_title(entry) then
-      refresh_chrome()
-    end
-    S.chat:render(true)
-    refresh_chrome()
-    refresh_session_title(entry)
-  end)
+  replay_session(session_id, { kind = "load" })
 end
 
 ---Delete a session through the agent and drop it from local state.
@@ -1094,18 +1128,20 @@ local function add_system_block(text, kind)
     return
   end
   S.session:append({ id = "sys:" .. tostring(#S.session.blocks), kind = kind or "error", text = text })
-  S.chat:schedule_render()
+  if S.chat then
+    S.chat:schedule_render()
+  end
 end
 
 ---Send the composer contents.
 function M.send_now(text, attachments)
   if not S.session then
     notify("No active session", vim.log.levels.WARN)
-    return
+    return false
   end
   if S.connection ~= "ready" or not S.client then
     notify("No agent process is running", vim.log.levels.WARN)
-    return
+    return false
   end
 
   -- Expand @file mentions into attachments before queueing.
@@ -1129,20 +1165,21 @@ function M.send_now(text, attachments)
     end
   end
 
-  if S.session.status == "running" then
-    -- Session already has an active turn: queue locally.
+  if S.session.status == "running" or S.session.status == "cancelling" then
+    -- Session already has an active turn (or one being cancelled): queue
+    -- locally instead of starting a second overlapping prompt.
     S.session.queue[#S.session.queue + 1] = { text = text, attachments = attachments }
     refresh_chrome()
-    return
+    return true
   end
 
   local blocks = context.to_prompt(text, attachments)
   if #blocks == 0 then
-    return
+    return false
   end
 
   local session = S.session
-  session:begin_turn()
+  local turn = session:begin_turn()
   session:add_local_user(text, attachments)
   if S.chat then
     S.chat.follow = true
@@ -1152,12 +1189,22 @@ function M.send_now(text, attachments)
   refresh_chrome()
 
   async.run(function()
-    local ok, result = S.client:prompt(session.id, blocks)
+    local ok, result = S.client:prompt(session.id, blocks, turn)
     if not ok then
       local raw = type(result) == "table" and (result.message or vim.inspect(result)) or tostring(result)
       local lowered = tostring(raw):lower()
       if lowered:match("auth") then
         add_system_block("OpenCode requires authentication. Run `opencode auth login` in a terminal, then reconnect.")
+      elseif lowered:match("already has an active") then
+        -- The agent still has a turn running that this client does not know
+        -- about (for example another editor sharing the session). Do not
+        -- silently swallow it: explain the state and how to recover.
+        add_system_block(
+          raw
+            .. "\n\n"
+            .. "The agent still considers a turn active for this session. "
+            .. "Use :Acp cancel to ask it to stop, or :Acp reconnect to start a fresh connection."
+        )
       elseif lowered:match("limit") or lowered:match("quota") or lowered:match("rate") then
         -- Provider-side quota problems are not plugin errors; give the user
         -- the one action that actually helps.
@@ -1181,13 +1228,17 @@ function M.send_now(text, attachments)
     -- The agent auto-generates a title from the first exchange, and it is only
     -- exposed through session/list, so refresh once the turn has settled.
     refresh_session_title(session)
-    if S.session == session then
+    -- Dispatch the next queued message only if this turn is still the current
+    -- one. `send_now` starts it immediately, so the `prompt_finished` event for
+    -- *this* turn must not settle the newly started turn when it arrives later.
+    if S.session == session and session.turn == turn then
       local next_item = table.remove(session.queue, 1)
       if next_item then
         M.send_now(next_item.text, next_item.attachments)
       end
     end
   end)
+  return true
 end
 
 ---Submit from the composer.
@@ -1198,8 +1249,12 @@ function M.submit(text, attachments)
     notify("No active session", vim.log.levels.WARN)
     return
   end
-  M.send_now(text, attachments)
-  S.input:clear()
+  -- Only clear the composer when the message was actually accepted; clearing
+  -- after a no-op send silently discarded what the user typed.
+  local accepted = M.send_now(text, attachments)
+  if accepted and S.input then
+    S.input:clear()
+  end
   refresh_chrome()
 end
 
@@ -1222,7 +1277,9 @@ function M.cancel()
     S.client:cancel(session.id)
   end
   refresh_chrome()
-  S.chat:schedule_render()
+  if S.chat then
+    S.chat:schedule_render()
+  end
 end
 
 ---------------------------------------------------------------------------
@@ -1306,10 +1363,17 @@ function M.on_client_event(name, payload)
 
   if name == "prompt_finished" then
     local session = S.sessions[payload.session_id]
-    if session and session.status ~= "idle" then
+    -- `send_now` settles the turn itself and may already have started the next
+    -- queued turn. This event is delivered asynchronously, so only act when it
+    -- still refers to the turn that is currently running: otherwise it used to
+    -- mark a freshly started turn as idle, and the following prompt hit the
+    -- agent's "session already has an active prompt" error.
+    if session and session.status ~= "idle" and (payload.turn == nil or session.turn == payload.turn) then
       session:finish_turn(payload.ok and (payload.result and payload.result.stopReason) or "error")
       refresh_chrome()
-      S.chat:schedule_render()
+      if S.chat then
+        S.chat:schedule_render()
+      end
     end
     return
   end
@@ -1317,6 +1381,9 @@ function M.on_client_event(name, payload)
   if name == "exit" then
     S.connection = "disconnected"
     stop_spinner()
+    -- The agent is gone: its pending permission prompts can never be answered,
+    -- so clear them instead of leaving the picker (and the toolbar badge) up.
+    S.pending_permissions = {}
     local session = current()
     if session and session.status == "running" then
       session:finish_turn("error")
@@ -1523,8 +1590,8 @@ function M.pick_option(category, title)
     return
   end
   local items = {}
+  local ic = Icons.get(cfg().ui.icons)
   for _, entry in ipairs(session_mod.select_values(option)) do
-    local ic = Icons.get(cfg().ui.icons)
     local marked = entry.value == option.currentValue and (ic.check_circle .. " ") or (ic.tool_pending .. " ")
     items[#items + 1] = {
       label = marked .. (entry.name or tostring(entry.value)),
@@ -1536,6 +1603,17 @@ function M.pick_option(category, title)
     title = title .. " · " .. option.name,
     items = items,
     on_choice = function(value)
+      -- The agent may have gone away (crash, explicit disconnect) while the
+      -- picker was open.
+      if not S.client then
+        notify("no agent connection", vim.log.levels.WARN)
+        return
+      end
+      -- The session may also have been switched; do not apply the choice to a
+      -- stale object.
+      if S.session ~= session then
+        return
+      end
       async.run(function()
         local ok, result = S.client:set_config_option(session.id, option.id, value)
         if not ok then
@@ -1640,6 +1718,9 @@ function M.show_help()
   vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
   vim.bo[buf].filetype = "markdown"
   vim.bo[buf].modifiable = false
+  -- Closing the window must not leave the buffer behind; repeated `:Acp help`
+  -- used to accumulate one hidden buffer per invocation.
+  vim.bo[buf].bufhidden = "wipe"
   local width = math.min(70, vim.o.columns - 8)
   local height = math.min(#lines, vim.o.lines - 6)
   local win = vim.api.nvim_open_win(buf, true, {
@@ -1743,6 +1824,13 @@ function M.setup(opts)
     pcall(S.client.shutdown, S.client, true)
     S.client = nil
   end
+  -- Release the previous views' buffers and autocmd groups; without this every
+  -- `setup` leaked a nofile buffer plus an augroup.
+  for _, view in ipairs({ S.input, S.chat }) do
+    if view and view.destroy then
+      pcall(view.destroy, view)
+    end
+  end
   S.session = nil
   S.sessions = {}
   S.titles = {}
@@ -1751,6 +1839,10 @@ function M.setup(opts)
   S.connection = "stopped"
   S.pending_reload = nil
   S.replaying = false
+  S.title_refreshing = false
+  S.title_pending = false
+  S.title_pending_session = nil
+  S.creating_session = false
 
   S.chat = Chat.new({ config = merged })
   S.chat.on_pending_new = function()

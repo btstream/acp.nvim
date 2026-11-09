@@ -7,20 +7,60 @@ local M = {}
 
 local MAX_FILES = 200
 
+-- Bounded, short-lived cache: `completefunc` is invoked twice per keystroke
+-- (findstart + items) and the file list rarely changes between them.
+local CACHE_TTL_MS = 2000
+local cache = { key = nil, at = 0, items = nil }
+
+---Monotonic milliseconds, with a fallback for Neovim versions without
+---`uv.now()`.
+---@return number
+local function now_ms()
+  if vim.uv and vim.uv.now then
+    return vim.uv.now()
+  end
+  return math.floor(vim.loop.hrtime() / 1e6)
+end
+
+---@param dir string|nil
 ---@param prefix string
 ---@return string[]
-local function file_candidates(prefix)
+local function file_candidates(dir, prefix)
   local pattern = prefix == "" and "*" or (vim.pesc(prefix) .. "*")
-  local found = vim.fn.glob(pattern, false, true)
+  local key = (dir or "") .. "\0" .. pattern
+  local now = now_ms()
+  if cache.key == key and cache.items and now - cache.at < CACHE_TTL_MS then
+    return cache.items
+  end
+
+  local found
+  if dir and dir ~= "" then
+    found = vim.fn.globpath(dir, pattern, false, true)
+  else
+    found = vim.fn.glob(pattern, false, true)
+  end
+
   local items = {}
   for _, path in ipairs(found) do
     if #items >= MAX_FILES then
       break
     end
-    if vim.fn.isdirectory(path) == 0 then
-      items[#items + 1] = path
+    -- `globpath` returns absolute paths already prefixed with `dir`; plain
+    -- `glob` returns paths relative to the editor cwd.
+    local full = path
+    if dir and dir ~= "" and path:sub(1, 1) ~= "/" then
+      full = dir .. "/" .. path
+    end
+    local stat = vim.uv.fs_stat(full)
+    if stat and stat.type ~= "directory" then
+      local shown = path
+      if dir and dir ~= "" and shown:sub(1, #dir + 1) == dir .. "/" then
+        shown = shown:sub(#dir + 2)
+      end
+      items[#items + 1] = shown
     end
   end
+  cache = { key = key, at = now, items = items }
   return items
 end
 
@@ -83,7 +123,10 @@ function M.complete(findstart, base, session)
   end
 
   local prefix = base:gsub("^@", "")
-  for _, path in ipairs(file_candidates(prefix)) do
+  -- Resolve against the session's cwd, not Neovim's: the agent works in the
+  -- session directory, so a mention has to name a file the agent can read.
+  local cwd = session and session.cwd or nil
+  for _, path in ipairs(file_candidates(cwd, prefix)) do
     items[#items + 1] = {
       word = "@" .. path,
       abbr = path,

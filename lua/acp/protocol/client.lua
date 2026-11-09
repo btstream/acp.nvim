@@ -11,6 +11,19 @@ local CLIENT_INFO = { name = "acp.nvim", title = "acp.nvim", version = "0.1.0" }
 
 local REQUEST_TIMEOUT = 30000
 
+---Resolve the effective request timeout from the client's transport limits.
+---@param self AcpClient
+---@param fallback integer
+---@return integer
+local function request_timeout(self, fallback)
+  local limits = self.limits or {}
+  local value = limits.request_timeout
+  if type(value) == "number" and value > 0 then
+    return math.floor(value)
+  end
+  return fallback
+end
+
 ---@class AcpClient
 ---@field rpc AcpRpc
 ---@field proc AcpProcess|nil
@@ -71,6 +84,13 @@ function Client:start(cb)
     if cb then
       cb(ok, err)
     end
+  end, function(err)
+    -- `do_start` raised before the line above ran; reset the guard so a later
+    -- `start` is not silently swallowed.
+    self.starting = false
+    if cb then
+      cb(false, err)
+    end
   end)
 end
 
@@ -114,7 +134,7 @@ function Client:do_start(generation)
     protocolVersion = PROTOCOL_VERSION,
     clientCapabilities = self.client_capabilities,
     clientInfo = CLIENT_INFO,
-  }, REQUEST_TIMEOUT)
+  }, request_timeout(self, REQUEST_TIMEOUT))
 
   if not ok then
     self:emit("connection_error", result)
@@ -155,30 +175,39 @@ function Client:request(method, params, timeout)
   local settled = false
   local id
   local co = coroutine.running()
-  id = self.rpc:request(method, params, function(ok, value)
+  if not co then
+    return false, { message = "request() must run inside a coroutine" }
+  end
+  local timer
+  local function settle(ok, value)
     if settled then
       return
     end
     settled = true
-    if co then
-      async.resume(co, ok, value)
+    if timer then
+      timer:stop()
+      timer:close()
+      timer = nil
     end
-  end)
+    async.resume(co, ok, value)
+  end
+  id = self.rpc:request(method, params, settle)
   if not id then
-    return false, { message = "connection closed" }
+    settle(false, { message = "connection closed" })
+    return coroutine.yield()
   end
   if timeout then
-    vim.defer_fn(function()
-      if settled then
-        return
-      end
-      settled = true
-      Log.warn("request %s timed out after %dms", method, timeout)
-      self.rpc:cancel(id)
-      if co then
-        async.resume(co, false, { code = -32000, message = "request timed out: " .. method })
-      end
-    end, timeout)
+    timer = vim.uv.new_timer()
+    timer:start(timeout, 0, function()
+      vim.schedule(function()
+        if settled then
+          return
+        end
+        Log.warn("request %s timed out after %dms", method, timeout)
+        self.rpc:cancel(id)
+        settle(false, { code = -32000, message = "request timed out: " .. method })
+      end)
+    end)
   end
   return coroutine.yield()
 end
@@ -195,7 +224,7 @@ function Client:on_line(line)
   if not self.rpc then
     return
   end
-  self.rpc:handle(decoded)
+  self.rpc:handle(decoded, line)
 end
 
 function Client:install_handlers()
@@ -276,7 +305,7 @@ function Client:new_session(cwd)
   return self:request("session/new", {
     cwd = cwd,
     mcpServers = {},
-  }, REQUEST_TIMEOUT)
+  }, request_timeout(self, REQUEST_TIMEOUT))
 end
 
 ---Load an existing session (replays history through session/update).
@@ -288,7 +317,7 @@ function Client:load_session(session_id, cwd)
     sessionId = session_id,
     cwd = cwd,
     mcpServers = {},
-  }, REQUEST_TIMEOUT)
+  }, request_timeout(self, REQUEST_TIMEOUT))
 end
 
 ---List sessions known to the agent.
@@ -305,7 +334,7 @@ function Client:list_sessions(cwd, cursor)
   if cursor then
     params.cursor = cursor
   end
-  return self:request("session/list", params, REQUEST_TIMEOUT)
+  return self:request("session/list", params, request_timeout(self, REQUEST_TIMEOUT))
 end
 
 ---Delete a session from the agent's history.
@@ -313,7 +342,7 @@ end
 ---@param session_id string
 ---@return boolean ok, any value
 function Client:delete_session(session_id)
-  local ok, result = self:request("session/delete", { sessionId = session_id }, REQUEST_TIMEOUT)
+  local ok, result = self:request("session/delete", { sessionId = session_id }, request_timeout(self, REQUEST_TIMEOUT))
   if not ok and type(result) == "table" and result.code == -32002 then
     -- The spec says an unknown session counts as a successful delete.
     return true, {}
@@ -334,14 +363,22 @@ end
 
 ---@param session_id string
 ---@param blocks table[]
+---@param turn integer|nil turn number, echoed back so stale events can be ignored
 ---@return boolean ok, any value
-function Client:prompt(session_id, blocks)
-  self:emit("prompt_started", { session_id = session_id })
+function Client:prompt(session_id, blocks, turn)
+  self:emit("prompt_started", { session_id = session_id, turn = turn })
+  -- A prompt can legitimately run for minutes, so it gets its own timeout
+  -- rather than the generic request one. Without any timeout an agent that
+  -- ignores `session/cancel` left the turn, the spinner and the queue stuck.
+  local timeout = (self.limits or {}).prompt_timeout
+  if type(timeout) ~= "number" then
+    timeout = 600000
+  end
   local ok, result = self:request("session/prompt", {
     sessionId = session_id,
     prompt = blocks,
-  })
-  self:emit("prompt_finished", { session_id = session_id, ok = ok, result = result })
+  }, timeout > 0 and timeout or nil)
+  self:emit("prompt_finished", { session_id = session_id, ok = ok, result = result, turn = turn })
   return ok, result
 end
 
@@ -364,20 +401,24 @@ function Client:set_config_option(session_id, config_id, value)
   if type(value) == "boolean" then
     params.type = "boolean"
   end
-  return self:request("session/set_config_option", params, REQUEST_TIMEOUT)
+  return self:request("session/set_config_option", params, request_timeout(self, REQUEST_TIMEOUT))
 end
 
 ---@param session_id string
 ---@param mode_id string
 ---@return boolean ok, any value
 function Client:set_mode(session_id, mode_id)
-  return self:request("session/set_mode", { sessionId = session_id, modeId = mode_id }, REQUEST_TIMEOUT)
+  return self:request(
+    "session/set_mode",
+    { sessionId = session_id, modeId = mode_id },
+    request_timeout(self, REQUEST_TIMEOUT)
+  )
 end
 
 ---@param session_id string
 ---@return boolean ok, any value
 function Client:authenticate(method_id)
-  return self:request("authenticate", { methodId = method_id }, REQUEST_TIMEOUT)
+  return self:request("authenticate", { methodId = method_id }, request_timeout(self, REQUEST_TIMEOUT))
 end
 
 function Client:handle_exit(code, stderr, generation)
@@ -385,16 +426,27 @@ function Client:handle_exit(code, stderr, generation)
     return
   end
   self.initialized = false
+  self.starting = false
+  -- Answer every pending permission request before dropping them: otherwise
+  -- the agent side waits forever and the UI keeps showing a dead prompt.
+  for key in pairs(self.permissions or {}) do
+    pcall(self.resolve_permission, self, key, nil)
+  end
+  self.permissions = {}
   if self.rpc then
     self.rpc:close("agent process exited")
   end
-  self.permissions = {}
   self:emit("exit", { code = code, stderr = stderr })
 end
 
 ---Terminate the connection.
 ---@param force boolean|nil
 function Client:shutdown(force)
+  for key in pairs(self.permissions or {}) do
+    pcall(self.resolve_permission, self, key, nil)
+  end
+  self.permissions = {}
+  self.starting = false
   if self.rpc then
     self.rpc:close("client shutdown")
   end

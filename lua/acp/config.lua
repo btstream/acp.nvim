@@ -35,6 +35,12 @@ M.defaults = {
     stderr_keep_bytes = 64 * 1024,
     -- Milliseconds to wait for graceful shutdown before killing the process.
     shutdown_timeout = 2000,
+    -- Milliseconds to wait for a response to a regular request.
+    request_timeout = 30000,
+    -- Absolute ceiling for a prompt turn, in milliseconds. Prompts may run for
+    -- minutes, so this is deliberately generous; it exists only so a wedged
+    -- agent cannot hang the turn forever. 0 disables it.
+    prompt_timeout = 600000,
   },
 
   layout = {
@@ -143,17 +149,32 @@ local function is_map(t, default)
 end
 
 ---Deep merge `over` into `base` without mutating either.
+---
+---Nested tables are copied, so the merged result never shares structure with
+---`base` (the module defaults) or with `over` (the user's table). Sharing them
+---meant validation-time normalisation such as `agent.args = agent.args or {}`
+---wrote into the global defaults.
 ---@param base table
 ---@param over table|nil
 ---@return table
 function M.merge(base, over)
   local out = {}
   for k, v in pairs(base) do
-    out[k] = v
+    if type(v) == "table" then
+      out[k] = M.merge(v, nil)
+    else
+      out[k] = v
+    end
   end
   for k, v in pairs(over or {}) do
     if is_map(v, out[k]) and is_map(out[k], out[k]) then
       out[k] = M.merge(out[k], v)
+    elseif type(v) == "table" and not vim.islist(v) then
+      out[k] = M.merge({}, v)
+    elseif type(v) == "table" then
+      -- Lists are replaced wholesale, but still deep-copied so callers cannot
+      -- mutate the merged config through the table they passed in.
+      out[k] = vim.deepcopy(v)
     else
       out[k] = v
     end
@@ -178,6 +199,10 @@ local function check_number(value, min, max, path)
   if type(value) ~= "number" then
     fail("%s must be a number, got %s", path, type(value))
   end
+  -- NaN compares false to everything, so it would slip past the range check.
+  if value ~= value then
+    fail("%s must be a number, got NaN", path)
+  end
   if value < min or value > max then
     fail("%s must be between %s and %s, got %s", path, min, max, value)
   end
@@ -201,6 +226,41 @@ function M.validate(cfg)
   if cfg.layout.min_width > cfg.layout.max_width then
     fail("layout.min_width must not exceed layout.max_width")
   end
+  check_number(cfg.layout.min_width, 1, cfg.layout.max_width, "layout.min_width")
+  check_number(cfg.layout.max_width, 1, 10000, "layout.max_width")
+  check_number(cfg.layout.min_input_height, 1, 200, "layout.min_input_height")
+  check_number(cfg.layout.max_input_height, 1, 200, "layout.max_input_height")
+  if cfg.layout.min_input_height > cfg.layout.max_input_height then
+    fail("layout.min_input_height must not exceed layout.max_input_height")
+  end
+
+  -- Transport limits: a bad value here either aborts on the first message or
+  -- makes every prompt "too large", so validate eagerly.
+  check_number(cfg.transport.max_line_bytes, 1024, 1024 * 1024 * 1024, "transport.max_line_bytes")
+  check_number(cfg.transport.stderr_keep_bytes, 0, 1024 * 1024 * 1024, "transport.stderr_keep_bytes")
+  check_number(cfg.transport.shutdown_timeout, 0, 600000, "transport.shutdown_timeout")
+  check_number(cfg.transport.request_timeout, 0, 3600000, "transport.request_timeout")
+  check_number(cfg.transport.prompt_timeout, 0, 24 * 3600 * 1000, "transport.prompt_timeout")
+
+  check_enum(cfg.log.level, { "trace", "debug", "info", "warn", "error" }, "log.level")
+  check_number(cfg.log.max_bytes, 0, 1024 * 1024 * 1024, "log.max_bytes")
+  if type(cfg.log.protocol) ~= "boolean" then
+    fail("log.protocol must be a boolean, got %s", type(cfg.log.protocol))
+  end
+
+  check_number(cfg.context.max_file_bytes, 0, 1024 * 1024 * 1024, "context.max_file_bytes")
+  check_number(cfg.context.max_selection_lines, 0, 1000000, "context.max_selection_lines")
+  check_number(cfg.ui.toolbar.animation_interval, 10, 60000, "ui.toolbar.animation_interval")
+
+  if type(cfg.permissions.auto_allow) ~= "table" or not vim.islist(cfg.permissions.auto_allow) then
+    fail("permissions.auto_allow must be a list")
+  end
+  if type(cfg.notices) ~= "boolean" then
+    fail("notices must be a boolean, got %s", type(cfg.notices))
+  end
+  if cfg.cwd ~= nil and cfg.cwd ~= vim.NIL and type(cfg.cwd) ~= "string" then
+    fail("cwd must be a string, got %s", type(cfg.cwd))
+  end
 
   local agent = cfg.agents[cfg.agent]
   if not agent or type(agent.command) ~= "string" or agent.command == "" then
@@ -209,6 +269,16 @@ function M.validate(cfg)
   agent.args = agent.args or {}
   if not vim.islist(agent.args) then
     fail("agents.%s.args must be a list", cfg.agent)
+  end
+  if agent.env ~= nil then
+    if type(agent.env) ~= "table" then
+      fail("agents.%s.env must be a table", cfg.agent)
+    end
+    for k, v in pairs(agent.env) do
+      if type(k) ~= "string" or type(v) ~= "string" then
+        fail("agents.%s.env must map strings to strings", cfg.agent)
+      end
+    end
   end
 
   return cfg

@@ -25,6 +25,13 @@ function M.setup(opts)
   state.max_bytes = opts.max_bytes or state.max_bytes
   state.protocol = opts.protocol == true
   state.path = opts.path or default_path()
+  state.warned = false
+  lines_since_check = 0
+  -- Make sure the directory exists; otherwise every write silently fails.
+  local dir = vim.fn.fnamemodify(state.path, ":h")
+  if dir ~= "" and vim.fn.isdirectory(dir) == 0 then
+    pcall(vim.fn.mkdir, dir, "p")
+  end
 end
 
 function M.path()
@@ -41,16 +48,35 @@ end
 ---@return string
 function M.redact(s, limit)
   local out = tostring(s)
-  out = out:gsub('("?[Aa]pi[_-]?[Kk]ey"?%s*[:=]%s*")[^"]*"', '%1***"')
-  out = out:gsub('("?[Aa]uthorization"?%s*[:=]%s*")[^"]*"', '%1***"')
-  out = out:gsub('("?[Tt]oken"?%s*[:=]%s*")[^"]*"', '%1***"')
+  -- Both quoted JSON style ("apiKey": "x") and bare assignment style
+  -- (API_KEY=xxx, --token xxx).
+  out = out:gsub('("?[Aa]pi[_-]?[Kk]ey"?%s*[:=]%s*")[^"]*"', "%1***" .. '"')
+  out = out:gsub('("?[Aa]uthorization"?%s*[:=]%s*")[^"]*"', "%1***" .. '"')
+  out = out:gsub('("?[Tt]oken"?%s*[:=]%s*")[^"]*"', "%1***" .. '"')
+  out = out:gsub("([%w_%-]*[Aa]pi[_-]?[Kk]ey%s*[:=]%s*)[^%s\"',}]+", "%1***")
+  out = out:gsub("([%w_%-]*[Tt]oken%s*[:=]%s*)[^%s\"',}]+", "%1***")
+  out = out:gsub("([%w_%-]*[Ss]ecret%s*[:=]%s*)[^%s\"',}]+", "%1***")
+  -- CLI style: `--token VALUE` / `--api-key VALUE`.
+  out = out:gsub("(%-%-[Tt]oken%s+)[^%s\"',}]+", "%1***")
+  out = out:gsub("(%-%-[Aa]pi%-?[Kk]ey%s+)[^%s\"',}]+", "%1***")
+  out = out:gsub("(%-%-[Ss]ecret%s+)[^%s\"',}]+", "%1***")
+  -- Short CLI style: `-token VALUE`.
+  out = out:gsub("(%-[Tt]oken%s+)[^%s\"',}]+", "%1***")
+  out = out:gsub("(%-[Ss]ecret%s+)[^%s\"',}]+", "%1***")
   out = out:gsub("(Bearer%s+)[%w%-%._~%+/=]+", "%1***")
+  out = out:gsub("(sk%-)[%w%-_]+", "%1***")
   limit = limit or 4096
   if #out > limit then
     out = out:sub(1, limit) .. "...<truncated " .. (#out - limit) .. " bytes>"
   end
   return out
 end
+
+-- How many lines may be written before checking the file size again. The
+-- previous implementation `fs_stat`ed (and sometimes read the whole file) on
+-- every single log line.
+local ROTATE_CHECK_INTERVAL = 200
+local lines_since_check = 0
 
 local function truncate_file(path, max_bytes)
   local ok, stat = pcall(vim.uv.fs_stat, path)
@@ -64,11 +90,16 @@ local function truncate_file(path, max_bytes)
   local data = src:read("*a") or ""
   src:close()
   local keep = data:sub(-math.floor(max_bytes / 2))
-  local dst = io.open(path, "wb")
+  -- Rotate via a temp file so a concurrent reader never sees a half-written log.
+  local tmp = path .. ".tmp"
+  local dst = io.open(tmp, "wb")
   if dst then
     dst:write("...<log rotated>...\n")
     dst:write(keep)
     dst:close()
+    if not vim.uv.fs_rename(tmp, path) then
+      pcall(vim.uv.fs_unlink, tmp)
+    end
   end
 end
 
@@ -82,8 +113,16 @@ function M.log(level, fmt, ...)
   end
   local ok, message = pcall(string.format, fmt, ...)
   if not ok then
-    message = tostring(fmt)
+    -- Keep the arguments: a bad format string is a bug, and the raw values are
+    -- what make it debuggable.
+    local args = {}
+    local n = select("#", ...)
+    for i = 1, n do
+      args[i] = tostring((select(i, ...)))
+    end
+    message = tostring(fmt) .. " " .. table.concat(args, " ")
   end
+  -- `%f` keeps sub-second ordering for bursts of events in the same second.
   local line = string.format("[%s] [%s] %s\n", os.date("%Y-%m-%d %H:%M:%S"), level:upper(), M.redact(message))
   local path = M.path()
   local fh = io.open(path, "ab")
@@ -96,7 +135,11 @@ function M.log(level, fmt, ...)
   end
   fh:write(line)
   fh:close()
-  truncate_file(path, state.max_bytes)
+  lines_since_check = lines_since_check + 1
+  if lines_since_check >= ROTATE_CHECK_INTERVAL then
+    lines_since_check = 0
+    truncate_file(path, state.max_bytes)
+  end
 end
 
 function M.trace(fmt, ...)

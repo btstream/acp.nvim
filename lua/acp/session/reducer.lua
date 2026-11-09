@@ -76,7 +76,11 @@ function M.apply(session, update)
   end
 
   if kind == "agent_message_chunk" then
-    local block = session:append_text("agent", text_of(update.content), update.messageId)
+    local text = text_of(update.content)
+    if text == "" then
+      return false
+    end
+    local block = session:append_text("agent", text, update.messageId)
     block.child = update._meta and update._meta["opencode/child-session"] or nil
     return true
   end
@@ -92,14 +96,14 @@ function M.apply(session, update)
 
   if kind == "tool_call" then
     local id = update.toolCallId
-    if not id then
+    if id == nil then
       return false
     end
     local existing = session.tools[id]
     local block = existing
     if not block then
       block = session:append({
-        id = "tool:" .. id,
+        id = "tool:" .. tostring(id),
         kind = "tool",
         text = "",
         title = update.title or "",
@@ -129,20 +133,24 @@ function M.apply(session, update)
 
   if kind == "tool_call_update" then
     local id = update.toolCallId
-    local block = id and session.tools[id]
+    if not id then
+      -- An update without an id cannot be matched to a tool call; creating a
+      -- placeholder would pollute the transcript with a bogus `tool:nil` row.
+      Log.debug("dropping tool_call_update without toolCallId")
+      return false
+    end
+    local block = session.tools[id]
     if not block then
       -- Update for an unknown tool call: create a placeholder so progress is not lost.
       block = session:append({
         id = "tool:" .. tostring(id),
         kind = "tool",
         text = "",
-        title = update.title or tostring(id or "tool"),
+        title = update.title or tostring(id),
         status = update.status or "pending",
         expanded = false,
       })
-      if id then
-        session.tools[id] = block
-      end
+      session.tools[id] = block
     end
     if update.title then
       block.title = update.title
@@ -165,9 +173,22 @@ function M.apply(session, update)
   end
 
   if kind == "plan" then
-    local last = session.blocks[#session.blocks]
-    if last and last.kind == "plan" then
-      last.entries = update.entries or {}
+    -- Plans can be interspersed with agent chunks, so looking only at the last
+    -- block appended a fresh plan block on every update and grew without bound.
+    -- Reuse the active plan of the current turn instead.
+    local active
+    for i = #session.blocks, 1, -1 do
+      local candidate = session.blocks[i]
+      if candidate.kind == "plan" then
+        active = candidate
+        break
+      end
+      if candidate.kind == "user" or candidate.kind == "agent" then
+        break
+      end
+    end
+    if active then
+      active.entries = update.entries or {}
       return true
     end
     session:append({ id = "plan:" .. session.turn, kind = "plan", text = "", entries = update.entries or {} })
@@ -175,17 +196,30 @@ function M.apply(session, update)
   end
 
   if kind == "available_commands_update" then
-    session.commands = update.availableCommands or {}
+    local commands = update.availableCommands or {}
+    -- Re-rendering for an identical list is pure work; the winbar and
+    -- transcript only care about the difference.
+    if vim.deep_equal(session.commands, commands) then
+      return false
+    end
+    session.commands = commands
     return true
   end
 
   if kind == "current_mode_update" then
+    if session.current_mode == update.currentModeId then
+      return false
+    end
     session.current_mode = update.currentModeId
     return true
   end
 
   if kind == "config_option_update" then
-    session.config_options = update.configOptions or {}
+    local options = update.configOptions or {}
+    if vim.deep_equal(session.config_options, options) then
+      return false
+    end
+    session.config_options = options
     return true
   end
 
@@ -231,7 +265,11 @@ function M.apply(session, update)
   end
 
   if kind == "usage_update" then
-    session.usage = { used = update.used, size = update.size, cost = update.cost }
+    local usage = { used = update.used, size = update.size, cost = update.cost }
+    if vim.deep_equal(session.usage, usage) then
+      return false
+    end
+    session.usage = usage
     return true
   end
 
@@ -298,7 +336,7 @@ function M.apply(session, update)
         compaction_id = id,
       })
     end
-    block.text = block.text .. text_of(update.content)
+    state.append_block_text(block, text_of(update.content))
     return true
   end
 
@@ -330,15 +368,43 @@ function M.short_model_name(name)
 end
 
 ---Extract the model and mode labels used by the composer toolbar.
+---
+---Called from the winbar, which Vim evaluates on every redraw (cursor moves,
+---scrolls, resizes). The labels only change when the session's config options
+---or current values change, so the result is memoised per option table.
 ---@param session AcpSessionState
 ---@return string|nil model_label
 ---@return string|nil mode_label
 function M.toolbar_labels(session)
+  local cached = session._toolbar_labels
+  local opts = session.config_options
   local model = session:option_by_category("model")
   local mode = session:option_by_category("mode")
+  local model_value = model and model.currentValue or nil
+  local mode_value = mode and mode.currentValue or nil
+  if
+    cached
+    and cached.options == opts
+    and cached.model == model
+    and cached.mode == mode
+    and cached.model_value == model_value
+    and cached.mode_value == mode_value
+  then
+    return cached.model_label, cached.mode_label
+  end
+
   local model_label = model and state.option_label(model, model.currentValue) or nil
   model_label = M.short_model_name(model_label)
   local mode_label = mode and state.option_label(mode, mode.currentValue) or nil
+  session._toolbar_labels = {
+    options = opts,
+    model = model,
+    mode = mode,
+    model_value = model_value,
+    mode_value = mode_value,
+    model_label = model_label,
+    mode_label = mode_label,
+  }
   return model_label, mode_label
 end
 

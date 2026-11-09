@@ -40,6 +40,7 @@ function M.new(opts)
   vim.bo[self.buf].modified = false
 
   local group = vim.api.nvim_create_augroup("AcpInput" .. self.buf, { clear = true })
+  self.augroup = group
   vim.api.nvim_create_autocmd({ "BufEnter", "WinEnter" }, {
     group = group,
     buffer = self.buf,
@@ -56,6 +57,19 @@ function M.new(opts)
   })
 
   return self
+end
+
+---Tear down the composer: drop its buffer and autocmd group.
+function Input:destroy()
+  if self.augroup then
+    pcall(vim.api.nvim_del_augroup_by_id, self.augroup)
+    self.augroup = nil
+  end
+  if self.buf and vim.api.nvim_buf_is_valid(self.buf) then
+    pcall(vim.api.nvim_buf_delete, self.buf, { force = true })
+  end
+  self.buf = nil
+  self.win = nil
 end
 
 function Input:apply_winbar()

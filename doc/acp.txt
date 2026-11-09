@@ -92,7 +92,6 @@ q              隐藏面板
       ui = {
         icons = true,
         show_thoughts = false,
-        language = "zh",
         picker = "vim",       -- "vim" | "internal"
         session_picker = "snacks", -- "snacks" | "internal"
         zed_style = true,

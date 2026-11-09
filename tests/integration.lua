@@ -161,6 +161,28 @@ wait(function()
   return #st.session.queue == 0
 end, 15000, "queue drain")
 
+-- Two prompts submitted back to back must run sequentially. The agent rejects
+-- an overlapping prompt, so a stale `prompt_finished` marking the freshly
+-- started turn idle used to surface as "Session already has an active ACP
+-- prompt" on the next send.
+controller.submit("first fast one", {})
+controller.submit("second fast one", {})
+check("back-to-back prompts both complete", function()
+  wait(function()
+    return st.session.status == "idle" and #st.session.queue == 0
+  end, 20000, "sequential turns")
+  local text = table.concat(vim.api.nvim_buf_get_lines(st.chat.buf, 0, -1, false), "\n")
+  assert(not text:find("already has an active ACP prompt", 1, true), "overlapping prompt was rejected")
+end)
+
+-- Nothing should be left running once the queue drained.
+check("no prompt outlived the queue", function()
+  wait(function()
+    return st.session.status == "idle"
+  end, 10000, "idle after queue")
+  assert(#st.session.queue == 0, "queue not empty")
+end)
+
 acp.hide()
 
 if #failures > 0 then

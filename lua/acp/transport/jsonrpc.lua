@@ -20,6 +20,10 @@ function M.new(opts)
     next_id = 0,
     pending = {},
     incoming = {},
+    -- ids cancelled by us; late responses are ignored instead of being logged
+    -- as unknown (and the set is bounded by a ring buffer).
+    cancelled = {},
+    cancelled_order = {},
     request_handlers = {},
     notification_handlers = {},
     send = opts.send,
@@ -87,7 +91,16 @@ function Rpc:cancel(id)
   if not entry then
     return
   end
-  entry.cancelled = true
+  -- Drop the entry immediately. Waiting for a response that may never arrive
+  -- leaked one table per cancelled request (`pending` grew monotonically).
+  self.pending[id] = nil
+  self.cancelled[id] = true
+  self.cancelled_order[#self.cancelled_order + 1] = id
+  -- Bound the memory used to recognise late responses.
+  while #self.cancelled_order > 256 do
+    local oldest = table.remove(self.cancelled_order, 1)
+    self.cancelled[oldest] = nil
+  end
   self:write({ jsonrpc = "2.0", method = "$/cancel_request", params = { id = id } })
 end
 
@@ -148,13 +161,16 @@ end
 
 ---Route one decoded JSON value.
 ---@param msg any
-function Rpc:handle(msg)
+---@param raw string|nil original payload, already logged by the client
+function Rpc:handle(msg, raw)
   if type(msg) ~= "table" then
     Log.warn("ignoring non-object JSON-RPC message")
     return
   end
-  if Log.protocol_enabled() then
-    Log.debug("<-- %s", vim.json.encode(msg))
+  -- The client already logs the raw line; re-encoding the decoded message just
+  -- to log it again doubled the JSON cost for every large payload.
+  if raw == nil and Log.protocol_enabled() then
+    Log.debug("<-- %s", Log.redact(vim.json.encode(msg), 2000))
   end
 
   -- Notification
@@ -188,6 +204,10 @@ function Rpc:handle(msg)
 
   -- Response
   if msg.id ~= nil then
+    if self.cancelled[msg.id] then
+      -- We asked to cancel this request; its response carries no useful value.
+      return
+    end
     local entry = self.pending[msg.id]
     if not entry then
       Log.debug("response for unknown request id %s", tostring(msg.id))
@@ -219,8 +239,12 @@ function Rpc:close(reason)
   local pending = self.pending
   self.pending = {}
   self.incoming = {}
+  self.cancelled = {}
+  self.cancelled_order = {}
   for _, entry in pairs(pending) do
-    entry.cb(false, { code = -32000, message = reason or "connection closed" })
+    -- A failing callback used to abort the loop, leaving the remaining
+    -- requests unresolved forever.
+    pcall(entry.cb, false, { code = -32000, message = reason or "connection closed" })
   end
 end
 

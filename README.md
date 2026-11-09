@@ -153,7 +153,6 @@ require("acp").setup({
     show_thoughts = false,
     follow_output = true,
     wrap = true,
-    language = "zh",      -- "zh" | "en"
     picker = "vim",       -- "vim" = vim.ui.select（推荐）| "internal" = 内置浮窗
     session_picker = "snacks", -- "snacks"（可用时）| "internal"
     zed_style = true,
@@ -186,6 +185,19 @@ require("acp").setup({
   context = {
     max_file_bytes = 512 * 1024,
     max_selection_lines = 2000,
+  },
+
+  transport = {
+    -- 单条 JSON 消息的字节上限；超过会断开连接
+    max_line_bytes = 8 * 1024 * 1024,
+    -- 保留多少字节的 agent stderr 用于诊断
+    stderr_keep_bytes = 64 * 1024,
+    -- 关闭时等待 agent 自行退出的毫秒数，超时后升级为 SIGKILL
+    shutdown_timeout = 2000,
+    -- 普通请求的超时（毫秒，0 表示不限制）
+    request_timeout = 30000,
+    -- 单轮对话的绝对上限（毫秒，0 表示不限制）；默认 10 分钟
+    prompt_timeout = 600000,
   },
 
   log = {

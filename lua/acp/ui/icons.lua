@@ -80,14 +80,22 @@ function M.ascii()
   }
 end
 
+-- The sets are immutable from the callers' point of view (they only read), so
+-- build each one once. `get()` runs on every winbar redraw, where allocating a
+-- fresh 30-key table each time is pure churn.
+local nerd_set = nil
+local ascii_set = nil
+
 ---Resolve the active icon set.
 ---@param use_icons boolean|nil
 ---@return table<string, string>
 function M.get(use_icons)
   if use_icons == false then
-    return M.ascii()
+    ascii_set = ascii_set or M.ascii()
+    return ascii_set
   end
-  return M.nerd()
+  nerd_set = nerd_set or M.nerd()
+  return nerd_set
 end
 
 return M
