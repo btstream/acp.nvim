@@ -216,5 +216,22 @@ return function(t)
       local lines = blocks.indent_lines({ { text = "x", segments = {} } }, "  ")
       t.eq(nil, lines[1].bg)
     end)
+
+    t.it("preserves conceal markers", function()
+      local lines = blocks.indent_lines({
+        {
+          text = "**x**",
+          segments = {
+            { s = 0, e = 2, conceal = true },
+            { s = 2, e = 3, group = "AcpBold" },
+            { s = 3, e = 5, conceal = true },
+          },
+        },
+      }, "  ")
+      t.truthy(lines[1].segments[1].conceal, "conceal was dropped by indentation")
+      t.eq("AcpBold", lines[1].segments[2].group)
+      t.eq(4, lines[1].segments[2].s, "segments must shift by the prefix")
+      t.truthy(lines[1].segments[3].conceal, "trailing conceal was dropped")
+    end)
   end)
 end

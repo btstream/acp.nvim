@@ -428,11 +428,20 @@ function Chat:apply_line_highlights(index, segments, text)
       e = byte_len
     end
     if e > s then
-      pcall(vim.api.nvim_buf_set_extmark, self.buf, ns, index - 1, s, {
-        end_col = e,
-        hl_group = seg.group,
-        priority = 100,
-      })
+      if seg.conceal then
+        -- Markup delimiters stay in the text so byte offsets remain stable;
+        -- conceal hides them instead. Requires 'conceallevel' >= 2.
+        pcall(vim.api.nvim_buf_set_extmark, self.buf, ns, index - 1, s, {
+          end_col = e,
+          conceal = "",
+        })
+      else
+        pcall(vim.api.nvim_buf_set_extmark, self.buf, ns, index - 1, s, {
+          end_col = e,
+          hl_group = seg.group,
+          priority = 100,
+        })
+      end
     end
   end
 end

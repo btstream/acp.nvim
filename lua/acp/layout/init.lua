@@ -109,6 +109,11 @@ function M.apply_window_options(win, kind)
       vim.wo[win].winfixheight = false
       vim.wo[win].cursorline = false
       vim.wo[win].scrolloff = 2
+      -- Inline Markdown delimiters are hidden through `conceal` extmarks. The
+      -- cursor must not reveal them, otherwise the transcript jumps whenever it
+      -- is focused.
+      vim.wo[win].conceallevel = 2
+      vim.wo[win].concealcursor = "nvic"
     else
       vim.wo[win].winfixheight = state.backend == "native"
       vim.wo[win].winfixwidth = state.backend == "native"

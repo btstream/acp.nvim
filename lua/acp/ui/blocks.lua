@@ -10,6 +10,7 @@ local M = {}
 
 local Icons = require("acp.ui.icons")
 local session_state = require("acp.session.state")
+local Markdown = require("acp.ui.markdown")
 
 ---Resolve the icon set used for rendering.
 ---@param use_icons boolean
@@ -124,28 +125,21 @@ local function render_line(raw, base_hl, state)
       segments = { { s = 0, e = 1, group = "AcpCodeFence" } },
     }
   end
-  local segments = { { s = 0, e = -1, group = base_hl } }
-  local heading = line:match("^(#+)%s+(.*)")
-  if heading then
-    line = heading
-    segments[1].group = "AcpHeading"
+  local base = base_hl
+  local heading_level, heading_text = line:match("^(#+)%s+(.*)")
+  if heading_level then
+    line = heading_text
+    -- Levels 1..4 get their own group; deeper headings reuse the last one.
+    base = "AcpH" .. math.min(#heading_level, 4)
   elseif line:match("^>%s?") then
     line = line:gsub("^>%s?", "")
-    segments[1].group = "AcpQuote"
+    base = "AcpQuote"
   elseif line:match("^[%-%*]%s+") or line:match("^%d+[%.%)]%s+") then
     line = line:gsub("^([%-%*])%s+", "• "):gsub("^(%d+[%.%)])%s+", "%1 ")
   end
-  -- inline code
-  local pos = 1
-  while true do
-    local s, e = line:find("`[^`]+`", pos)
-    if not s then
-      break
-    end
-    segments[#segments + 1] = { s = s - 1, e = e, group = "AcpInlineCode" }
-    pos = e + 1
-  end
-  return { text = line, segments = segments }
+  -- Inline markup. The text keeps its delimiters; they are concealed later, so
+  -- the byte offsets stay identical to `line`.
+  return { text = line, segments = Markdown.parse_inline(line, base) }
 end
 
 ---Render markdown-ish text into lines with simple inline highlighting.
@@ -229,6 +223,8 @@ function M.indent_lines(lines, prefix, first_prefix)
         s = seg.s + #head,
         e = seg.e >= 0 and (seg.e + #head) or seg.e,
         group = seg.group,
+        -- Conceal must survive indentation or markup delimiters reappear.
+        conceal = seg.conceal,
       }
     end
     out[#out + 1] = {
@@ -287,10 +283,9 @@ end
 local function render_thought(block, ctx)
   block._md_thought = block._md_thought or {}
   local lines = M.render_text(block.text or "", "AcpThought", ctx.width, block._md_thought)
+  -- Keep the inline segments `render_text` produced: overwriting them here
+  -- would drop inline code and other markup inside thoughts.
   local out = M.indent_lines(lines, "  ", (ctx.icons.thought .. " "))
-  for _, line in ipairs(out) do
-    line.segments = { { s = 0, e = -1, group = "AcpThought" } }
-  end
   out[#out + 1] = { text = "", segments = nil }
   return out
 end
