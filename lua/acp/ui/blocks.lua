@@ -5,6 +5,8 @@ local M = {}
 ---@class AcpRenderedLine
 ---@field text string
 ---@field segments {s: integer, e: integer, group: string}[]|nil
+---@field bg string|nil highlight group painted behind the whole line
+---@field location table|nil jump target when the line is a file location
 
 local Icons = require("acp.ui.icons")
 local session_state = require("acp.session.state")
@@ -218,7 +220,6 @@ end
 ---@param first_prefix string|nil text replacing the prefix on the first line
 ---@return AcpRenderedLine[]
 function M.indent_lines(lines, prefix, first_prefix)
-  local shift = #prefix
   local out = {}
   for i, line in ipairs(lines) do
     local head = (i == 1 and first_prefix ~= nil) and first_prefix or prefix
@@ -230,7 +231,13 @@ function M.indent_lines(lines, prefix, first_prefix)
         group = seg.group,
       }
     end
-    out[#out + 1] = { text = head .. line.text, segments = segs, location = line.location }
+    out[#out + 1] = {
+      text = head .. line.text,
+      segments = segs,
+      -- Background is line-wide, so it survives indentation unchanged.
+      bg = line.bg,
+      location = line.location,
+    }
   end
   return out
 end

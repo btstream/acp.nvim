@@ -5,6 +5,10 @@ local session_state = require("acp.session.state")
 local M = {}
 
 local ns = vim.api.nvim_create_namespace("acp_chat")
+-- Line-wide backgrounds (code blocks, tool cards) live in their own namespace
+-- so they can be repainted per rewritten range without touching the many
+-- inline highlight extmarks.
+local ns_bg = vim.api.nvim_create_namespace("acp_chat_bg")
 
 ---@class AcpChatView
 ---@field buf integer
@@ -14,6 +18,74 @@ local ns = vim.api.nvim_create_namespace("acp_chat")
 ---@field cache table<string, {sig: string, lines: table[]}>
 local Chat = {}
 Chat.__index = Chat
+
+---Collect contiguous runs of lines sharing the same background group.
+---
+---Comparing these runs is how `render` decides whether the painted backgrounds
+---need repainting at all: streaming text inside a card changes lines but not
+---the layout, so the common tick does no extmark work.
+---@param meta table[]
+---@return {s: integer, e: integer, group: string}[] runs, using 0-based rows
+local function background_runs(meta)
+  local runs = {}
+  local row = 0
+  while row < #meta do
+    local bg = meta[row + 1] and meta[row + 1].bg
+    if bg then
+      local stop = row
+      while stop + 1 < #meta and meta[stop + 2] and meta[stop + 2].bg == bg do
+        stop = stop + 1
+      end
+      runs[#runs + 1] = { s = row, e = stop + 1, group = bg }
+      row = stop + 1
+    else
+      row = row + 1
+    end
+  end
+  return runs
+end
+
+---Paint (or repaint) every line background.
+---
+---`nvim_buf_clear_namespace` only drops extmarks whose *start* falls inside the
+---given range, so a mark spanning several rows survives a partial clear and
+---would paint stale rows. Backgrounds are therefore always cleared and redrawn
+---as a whole; callers avoid the work when the runs did not change.
+---@param buf integer
+---@param runs {s: integer, e: integer, group: string}[]
+local function paint_backgrounds(buf, runs)
+  vim.api.nvim_buf_clear_namespace(buf, ns_bg, 0, -1)
+  for _, run in ipairs(runs) do
+    pcall(vim.api.nvim_buf_set_extmark, buf, ns_bg, run.s, 0, {
+      end_row = run.e,
+      end_col = 0,
+      hl_group = run.group,
+      hl_eol = true,
+      hl_mode = "combine",
+      priority = 50,
+    })
+  end
+end
+
+---@param a {s: integer, e: integer, group: string}[]|nil
+---@param b {s: integer, e: integer, group: string}[]
+---@return boolean
+local function runs_equal(a, b)
+  if not a or #a ~= #b then
+    return false
+  end
+  for i = 1, #a do
+    local x, y = a[i], b[i]
+    if x.s ~= y.s or x.e ~= y.e or x.group ~= y.group then
+      return false
+    end
+  end
+  return true
+end
+
+-- Exposed for the test suite; not part of the public API.
+M._background_runs = background_runs
+M._runs_equal = runs_equal
 
 ---@param opts {config: table}
 ---@return AcpChatView
@@ -25,6 +97,7 @@ function M.new(opts)
     meta = {},
     line_starts = {},
     cache = {},
+    bg_runs = nil,
     follow = opts.config.ui.follow_output,
     pending_new = false,
     width = 80,
@@ -76,6 +149,7 @@ function Chat:set_session(session)
   -- cache, so it must be told to replace the whole buffer instead: otherwise
   -- it inserts the new lines at the top and leaves the old ones behind.
   self.lines_cache = {}
+  self.bg_runs = nil
   self.full_rewrite = true
   self.pending_new = false
   self.follow = self.config.ui.follow_output
@@ -180,12 +254,14 @@ function Chat:render(force)
       self.buf_cleared = true
       self.cache = {}
       self.lines_cache = {}
+      self.bg_runs = nil
       self.meta = {}
       self.line_starts = {}
       vim.bo[self.buf].modifiable = true
       vim.api.nvim_buf_set_lines(self.buf, 0, -1, false, { "" })
       vim.bo[self.buf].modifiable = false
       vim.api.nvim_buf_clear_namespace(self.buf, ns, 0, -1)
+      vim.api.nvim_buf_clear_namespace(self.buf, ns_bg, 0, -1)
     end
     return
   end
@@ -244,6 +320,7 @@ function Chat:render(force)
         status = block.status,
         location = line.location,
         segments = line.segments,
+        bg = line.bg,
       }
     end
   end
@@ -311,6 +388,16 @@ function Chat:render(force)
         self:apply_line_highlights(i, entry.segments, lines[i])
       end
     end
+  end
+
+  -- Backgrounds are repainted as a whole whenever their layout shifts. A card
+  -- whose text streams in keeps the same layout, so the common tick does no
+  -- extmark work here.
+  local runs = background_runs(meta)
+  local runs_changed = changed or not runs_equal(self.bg_runs, runs)
+  if runs_changed then
+    paint_backgrounds(self.buf, runs)
+    self.bg_runs = runs
   end
 
   self.meta = meta
@@ -511,15 +598,24 @@ function Chat:is_visible()
 end
 
 ---Copy the full transcript as plain text.
+---
+---Trailing padding is stripped: cards and code blocks pad their lines with real
+---spaces (extmarks cannot colour past the end of a line), and those spaces are
+---a rendering detail rather than content.
 ---@return string
 function Chat:transcript()
-  if self.lines_cache and #self.lines_cache > 0 then
-    return table.concat(self.lines_cache, "\n")
+  local lines = self.lines_cache
+  if not lines or #lines == 0 then
+    if not vim.api.nvim_buf_is_valid(self.buf) then
+      return ""
+    end
+    lines = vim.api.nvim_buf_get_lines(self.buf, 0, -1, false)
   end
-  if vim.api.nvim_buf_is_valid(self.buf) then
-    return table.concat(vim.api.nvim_buf_get_lines(self.buf, 0, -1, false), "\n")
+  local out = {}
+  for i, line in ipairs(lines) do
+    out[i] = (line:gsub("%s+$", ""))
   end
-  return ""
+  return table.concat(out, "\n")
 end
 
 return M
