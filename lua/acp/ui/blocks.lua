@@ -850,6 +850,47 @@ local function render_error(block, ctx)
   return out
 end
 
+---Render the divider drawn between conversation turns.
+---
+---The rule spans the transcript width and carries a centred marker: either a
+---plain dot, or the turn number. Kept out of `render_block` because a turn is a
+---property of the transcript, not of one block — the number depends on how many
+---turns precede it.
+---@param ctx {width: integer, icons: table}
+---@param opts {form: string, turn: integer}
+---@return AcpRenderedLine[]
+function M.render_separator(ctx, opts)
+  local width = math.max(1, ctx.width or 1)
+  local ic = ctx.icons or {}
+  local label
+  if opts.form == "turn" and ic.history then
+    label = string.format(" %s Turn %d ", ic.history, opts.turn or 1)
+  else
+    label = " ● "
+  end
+  local label_w = vim.api.nvim_strwidth(label)
+  local rule_w = width - label_w
+  if rule_w < 2 then
+    -- Too narrow for a rule on both sides: the marker alone still separates.
+    return { { text = label, segments = { { s = 0, e = -1, group = "AcpMuted" } } } }
+  end
+  local left = math.floor(rule_w / 2)
+  local right = rule_w - left
+  local left_text = string.rep("─", left)
+  local text = left_text .. label .. string.rep("─", right)
+  local label_s = #left_text
+  return {
+    {
+      text = text,
+      segments = {
+        { s = 0, e = label_s, group = "AcpSeparator" },
+        { s = label_s, e = label_s + #label, group = "AcpMuted" },
+        { s = label_s + #label, e = -1, group = "AcpSeparator" },
+      },
+    },
+  }
+end
+
 ---Render a single block.
 ---@param block AcpBlock
 ---@param ctx {icons: table, width: integer, cwd: string|nil, show_thoughts: boolean}

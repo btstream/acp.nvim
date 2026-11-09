@@ -101,6 +101,7 @@ q              隐藏面板
         highlights = {},      -- 覆盖任意高亮组
         title = { placement = "auto" },
         toolbar = { placement = "auto", show_usage = false },
+        separator = { form = "dot" },   -- "dot" | "turn" | "off"
       },
       keymaps = {
         send = "<C-s>",
@@ -246,7 +247,27 @@ Agent 崩溃后使用 :Acp reconnect。重连会通过 session/load 重放 Agent
 cancelled。
 
 ==============================================================================
-13. 高亮                                                    *acp-highlights*
+13. 轮次分隔符                                          *acp-separator*
+
+每两轮对话之间画一条细分隔线。默认中间一个圆点：
+
+    ────────────────────────── ● ──────────────────────────
+
+ui.separator.form 控制样式：
+
+    "dot"    细分隔线 + 居中圆点（默认）
+    "turn"   细分隔线 + 轮次，形如 `Turn 2`
+    "off"    不画分隔符
+
+    require("acp").setup({
+      ui = { separator = { form = "turn" } },
+    })
+
+面板太窄、放不下两侧的线时，只保留中间的标记。分隔符不绑定任何 block，光标停在
+上面时 <Tab> 不会误展开相邻的卡片。
+
+==============================================================================
+14. 高亮                                                    *acp-highlights*
 
 所有样式都是**静态定义**：每个组直接链接到 Neovim 自己的组，插件不会在运行时
 读取或混合主题颜色。正文里的 Markdown（粗体、斜体、删除线、标题、引用、链接）链接
@@ -292,7 +313,7 @@ AcpUserIcon、AcpAssistantTitle 链接到 AcpAssistantIcon，即同色；想区�
 ui.icons = false 会改用 ASCII 图标。
 
 ==============================================================================
-14. 健康检查                                                 *acp-health*
+15. 健康检查                                                 *acp-health*
 
     :checkhealth acp
 

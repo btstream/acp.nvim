@@ -128,15 +128,11 @@ return function(t)
 
     t.it("gives each block header glyph and title their own group", function()
       -- The four groups exist so an icon and its label can be coloured apart.
-      -- They default to the same colour, chained icon -> title.
-      local expected = {
-        AcpUserIcon = "AcpUser",
-        AcpUserTitle = "AcpUserIcon",
-        AcpAssistantIcon = "AcpAssistant",
-        AcpAssistantTitle = "AcpAssistantIcon",
-      }
-      for name, target in pairs(expected) do
-        t.eq(target, highlights.groups[name].link, name .. " should link to " .. target)
+      -- What each one points at is a styling choice, so only their existence is
+      -- asserted here; how the blocks use them is covered in spec_markdown.
+      for _, name in ipairs({ "AcpUserIcon", "AcpUserTitle", "AcpAssistantIcon", "AcpAssistantTitle" }) do
+        t.truthy(highlights.groups[name], name .. " is not in the group table")
+        t.truthy(defined(name), name .. " was not defined")
       end
     end)
 

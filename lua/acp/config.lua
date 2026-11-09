@@ -113,6 +113,15 @@ M.defaults = {
       animate = true,
       animation_interval = 120,
     },
+
+    -- Divider drawn between conversation turns.
+    ---@type { form: "dot"|"turn"|"off" }
+    separator = {
+      -- "dot"  a thin rule with a centred dot
+      -- "turn" the same rule with the turn number in the middle
+      -- "off"  no divider
+      form = "dot",
+    },
   },
 
   keymaps = {
@@ -234,6 +243,7 @@ function M.validate(cfg)
   check_enum(cfg.ui.session_picker, { "snacks", "internal" }, "ui.session_picker")
   check_enum(cfg.ui.title.placement, { "auto", "winbar", "off" }, "ui.title.placement")
   check_enum(cfg.ui.toolbar.placement, { "auto", "winbar", "off" }, "ui.toolbar.placement")
+  check_enum(cfg.ui.separator.form, { "dot", "turn", "off" }, "ui.separator.form")
   check_enum(cfg.permissions.prompt, { "select", "native" }, "permissions.prompt")
   if type(cfg.ui.thoughts) ~= "table" then
     fail("ui.thoughts must be a table")

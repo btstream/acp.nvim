@@ -168,6 +168,9 @@ require("acp").setup({
       animate = true,
       animation_interval = 120,
     },
+    separator = {
+      form = "dot",                   -- "dot" | "turn" | "off"
+    },
   },
 
   keymaps = {
@@ -330,6 +333,31 @@ lualine 示例：
 ```
 
 heirline 同理，只需调用 `statusline()` 或读取 `status()`。
+
+## 轮次分隔符
+
+默认在每两轮对话之间画一条细分隔线，中间一个圆点：
+
+```
+────────────────────────── ● ──────────────────────────
+```
+
+`ui.separator.form` 控制样式：
+
+| 值 | 效果 |
+|---|---|
+| `"dot"` | 细分隔线 + 居中圆点（默认） |
+| `"turn"` | 细分隔线 + 轮次，形如 `󰇚 Turn 2` |
+| `"off"` | 不画分隔符 |
+
+```lua
+require("acp").setup({
+  ui = { separator = { form = "turn" } },
+})
+```
+
+面板太窄、放不下两侧的线时，只保留中间的标记。分隔符本身不绑定任何 block，
+光标停在上面时 `<Tab>` 不会误展开相邻的卡片。
 
 ## 外观
 

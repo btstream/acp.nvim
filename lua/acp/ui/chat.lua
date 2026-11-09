@@ -294,9 +294,26 @@ function Chat:render(force)
   local starts = {}
   local seen = {}
   local new_cache = {}
+  local separator = self.config.ui.separator or {}
+  local show_separator = separator.form ~= "off"
+  -- A user block opens a turn, so counting them numbers the turns even for a
+  -- replayed session, where no `begin_turn` ran for the replayed messages.
+  local turn = 0
 
   for _, block in ipairs(self.session.blocks) do
     seen[block.id] = true
+    -- The divider belongs to the transcript, not to any block: it is inserted
+    -- between two turns rather than appended to one of them, so it never shows
+    -- up as a block the cursor can land on.
+    if block.kind == "user" then
+      turn = turn + 1
+      if show_separator and turn > 1 then
+        for _, line in ipairs(blocks.render_separator(ctx, { form = separator.form, turn = turn })) do
+          lines[#lines + 1] = line.text or ""
+          meta[#meta + 1] = { kind = "separator", segments = line.segments, bg = line.bg }
+        end
+      end
+    end
     -- Join buffered stream chunks before measuring the signature.
     session_state.block_text(block)
     local sig = block_signature(block)

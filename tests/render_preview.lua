@@ -87,6 +87,16 @@ local function demo_session()
   s:append({ id = "c1", kind = "compaction", text = "", status = "completed" })
 
   s:finish_turn("end_turn")
+
+  -- A second turn, so the preview shows the divider drawn between turns.
+  s:add_local_user("Now add the tests for the extracted helper.")
+  s:begin_turn()
+  s:append({
+    id = "a2",
+    kind = "agent",
+    text = "Added `tests/token_spec.lua` covering the extracted validator.",
+  })
+  s:finish_turn("end_turn")
   return s
 end
 
