@@ -254,6 +254,71 @@ local function ensure_contrast(hex, bg, target)
   return string.format("#%02x%02x%02x", r, g, b)
 end
 
+---Tint `hex` towards `target` by `amount`, keeping its own colour cast.
+---
+---@param hex string
+---@param target string
+---@param amount number
+---@return string|nil
+local function tint(hex, target, amount)
+  if type(hex) ~= "string" or type(target) ~= "string" then
+    return nil
+  end
+  if #hex ~= 7 or #target ~= 7 then
+    return nil
+  end
+  local function parts(s)
+    return tonumber(s:sub(2, 3), 16), tonumber(s:sub(4, 5), 16), tonumber(s:sub(6, 7), 16)
+  end
+  local hr, hg, hb = parts(hex)
+  local tr, tg, tb = parts(target)
+  if not (hr and tr) then
+    return nil
+  end
+  local function blend(a, b)
+    return math.max(0, math.min(255, math.floor(a + (b - a) * amount + 0.5)))
+  end
+  return string.format("#%02x%02x%02x", blend(hr, tr), blend(hg, tg), blend(hb, tb))
+end
+
+---Style a toolbar mode as a tinted block.
+---
+---Modes are told apart by their *background*, not their glyph colour: the mode
+---block reads as a small badge, while the status stays a bare glyph on the bar.
+---The text colour is resolved against the tinted block so it stays readable.
+---@param target string
+---@param accent string theme group supplying the tint
+---@param amount number|nil how strongly to tint (default 0.55)
+local function set_toolbar_mode(target, accent, amount)
+  local bar = vim.api.nvim_get_hl(0, { name = "AcpToolbar", link = false })
+  local bar_bg = bar and bar.bg
+  local ok, spec = pcall(vim.api.nvim_get_hl, 0, { name = accent, link = false })
+  if not ok or type(spec) ~= "table" then
+    return
+  end
+  local accent_hex = spec.bg or spec.fg
+  if type(accent_hex) == "number" then
+    accent_hex = string.format("#%06x", accent_hex)
+  end
+  if type(bar_bg) == "number" then
+    bar_bg = string.format("#%06x", bar_bg)
+  end
+  if type(accent_hex) ~= "string" or type(bar_bg) ~= "string" then
+    return
+  end
+
+  -- A strong tint on the badge, so it stands out from the bar it sits on.
+  local bg = tint(bar_bg, accent_hex, amount or 0.85)
+  if not bg then
+    return
+  end
+  -- The glyph sits *on* the badge, so its contrast is measured against the
+  -- badge, not against the bar. Starting from the bar colour and pushing away
+  -- from the badge gives a dark glyph on a bright badge (and vice versa).
+  local fg = ensure_contrast(bar_bg, bg, 4.5)
+  vim.api.nvim_set_hl(0, target, { fg = fg, bg = bg })
+end
+
 ---Give `target` the foreground of `source` and the toolbar's background.
 ---
 ---Used for toolbar regions: they must all share one background, so a link to a
@@ -318,8 +383,9 @@ local function apply()
   --
   -- Modes and statuses also have to differ from each other, so `plan` takes the
   -- remaining accent rather than repeating the `running` colour.
-  set_toolbar_fg("AcpToolbarModePlan", "DiagnosticHint")
-  set_toolbar_fg("AcpToolbarModeBuild", "DiagnosticOk")
+  -- Modes read as tinted badges; statuses stay plain glyphs on the bar.
+  set_toolbar_mode("AcpToolbarModePlan", "DiagnosticInfo")
+  set_toolbar_mode("AcpToolbarModeBuild", "DiagnosticOk")
   set_toolbar_fg("AcpToolbarIdle", "Comment")
   set_toolbar_fg("AcpToolbarRunning", "DiagnosticInfo")
   set_toolbar_fg("AcpToolbarWaiting", "DiagnosticWarn")

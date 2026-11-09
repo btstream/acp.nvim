@@ -47,23 +47,25 @@ return function(t)
       t.falsy(text:find(ic.chevron_right, 1, true), "the toolbar should not draw a chevron")
     end)
 
-    t.it("uses one background across every region", function()
+    t.it("keeps the bar uniform for everything but the modes", function()
       local highlights = require("acp.ui.highlights")
       highlights.setup(false)
       -- `AcpToolbar` links to StatusLine, so resolve the link before reading bg.
       local bar = vim.api.nvim_get_hl(0, { name = "AcpToolbar", link = false })
-      local regions = {
+      for _, name in ipairs({
         "AcpToolbarAccent",
-        "AcpToolbarModePlan",
-        "AcpToolbarModeBuild",
         "AcpToolbarIdle",
         "AcpToolbarRunning",
         "AcpToolbarWaiting",
         "AcpToolbarCancelling",
-      }
-      for _, name in ipairs(regions) do
+      }) do
         local hl = vim.api.nvim_get_hl(0, { name = name })
         t.eq(bar.bg, hl.bg, name .. " should share the toolbar background")
+      end
+      -- Modes are badges: they are told apart by their background on purpose.
+      for _, name in ipairs({ "AcpToolbarModePlan", "AcpToolbarModeBuild" }) do
+        local hl = vim.api.nvim_get_hl(0, { name = name })
+        t.truthy(hl.bg and hl.bg ~= bar.bg, name .. " should have its own badge background")
       end
     end)
 
@@ -73,7 +75,13 @@ return function(t)
       local function fg(name)
         return vim.api.nvim_get_hl(0, { name = name }).fg
       end
-      t.truthy(fg("AcpToolbarModePlan") ~= fg("AcpToolbarModeBuild"), "modes share a colour")
+      local function bg(name)
+        return vim.api.nvim_get_hl(0, { name = name }).bg
+      end
+      t.truthy(
+        bg("AcpToolbarModePlan") ~= bg("AcpToolbarModeBuild"),
+        "modes should be told apart by their badge background"
+      )
       local statuses = {
         fg("AcpToolbarIdle"),
         fg("AcpToolbarRunning"),
@@ -119,12 +127,23 @@ return function(t)
         "AcpToolbarWaiting",
         "AcpToolbarCancelling",
       }) do
-        local fg = vim.api.nvim_get_hl(0, { name = name }).fg
-        t.truthy(fg, name .. " has no foreground")
-        t.truthy(
-          ratio(fg, bar.bg) >= 4.5,
-          string.format("%s is too close to the bar (%.2f:1)", name, ratio(fg, bar.bg))
-        )
+        local hl = vim.api.nvim_get_hl(0, { name = name })
+        t.truthy(hl.fg, name .. " has no foreground")
+        -- The glyph sits on the region's own background, which for a mode is
+        -- its badge rather than the bar.
+        local surface = hl.bg or bar.bg
+        t.truthy(ratio(hl.fg, surface) >= 4.5, string.format("%s is unreadable (%.2f:1)", name, ratio(hl.fg, surface)))
+      end
+    end)
+
+    t.it("makes the mode badge stand out from the bar", function()
+      local highlights = require("acp.ui.highlights")
+      highlights.setup(false)
+      local bar = vim.api.nvim_get_hl(0, { name = "AcpToolbar", link = false })
+      for _, name in ipairs({ "AcpToolbarModePlan", "AcpToolbarModeBuild" }) do
+        local badge = vim.api.nvim_get_hl(0, { name = name }).bg
+        t.truthy(badge, name .. " has no badge background")
+        t.truthy(badge ~= bar.bg, name .. " does not stand out from the bar")
       end
     end)
 
