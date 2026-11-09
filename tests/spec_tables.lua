@@ -88,14 +88,30 @@ return function(t)
     t.it("paints no background", function()
       -- A table is text, not a surface; it must read like the prose around it.
       local lines = render("| a | b |\n|---|---|\n| 1 | 2 |")
-      local rows = 0
       for _, line in ipairs(lines) do
         if line.table then
-          rows = rows + 1
           t.eq(nil, line.bg, "table rows must not carry a background")
         end
       end
-      t.eq(3, rows, "header, rule and body row should be present")
+    end)
+
+    t.it("draws a full grid around every row", function()
+      local lines = render("| a | b |\n|---|---|\n| 1 | 2 |\n| 3 | 4 |")
+      local out = texts(lines)
+      local borders = {}
+      for _, line in ipairs(out) do
+        if line:find("─", 1, true) or line:find("│", 1, true) then
+          borders[#borders + 1] = line
+        end
+      end
+      -- Top, header, header rule, row, row rule, row, bottom.
+      t.eq(7, #borders, "expected a closed grid: " .. table.concat(borders, " / "))
+      t.truthy(borders[1]:find("┌", 1, true), "missing top border")
+      t.truthy(borders[#borders]:find("└", 1, true), "missing bottom border")
+      -- Every grid line must end with a right-hand border character.
+      for _, line in ipairs(borders) do
+        t.truthy(line:match("[│┐┤┘]$"), "row not closed on the right: " .. line)
+      end
     end)
 
     t.it("uses one highlight group for every border character", function()

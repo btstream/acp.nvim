@@ -339,24 +339,37 @@ function M.render(table_spec, base_hl, width)
     end
   end
 
+  ---Build a horizontal rule across all columns.
+  ---@param left string
+  ---@param middle string
+  ---@param right string
+  ---@return AcpRenderedLine
+  local function draw_rule(left, middle, right)
+    local parts = { left }
+    for c = 1, columns do
+      parts[#parts + 1] = string.rep("─", widths[c] + 2)
+      parts[#parts + 1] = c < columns and middle or right
+    end
+    local text = table.concat(parts)
+    return {
+      text = text,
+      segments = { { s = 0, e = #text, group = "AcpTableBorder" } },
+      table = true,
+    }
+  end
+
+  -- Full grid: every row is fenced on all sides, matching how the agent itself
+  -- draws tables.
+  out[#out + 1] = draw_rule("┌", "┬", "┐")
   draw_row(header, "AcpTableHead")
-
-  -- Header rule, in the same colour as every other border character.
-  local rule = { "├" }
-  for c = 1, columns do
-    rule[#rule + 1] = string.rep("─", widths[c] + 2)
-    rule[#rule + 1] = c < columns and "┼" or "┤"
-  end
-  local rule_text = table.concat(rule)
-  out[#out + 1] = {
-    text = rule_text,
-    segments = { { s = 0, e = #rule_text, group = "AcpTableBorder" } },
-    table = true,
-  }
-
-  for _, row in ipairs(rows) do
+  out[#out + 1] = draw_rule("├", "┼", "┤")
+  for index, row in ipairs(rows) do
     draw_row(row, base_hl)
+    if index < #rows then
+      out[#out + 1] = draw_rule("├", "┼", "┤")
+    end
   end
+  out[#out + 1] = draw_rule("└", "┴", "┘")
 
   return out
 end
