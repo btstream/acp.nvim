@@ -62,6 +62,14 @@ check("history is replayed after reconnect", function()
   assert(vim.tbl_contains(kinds, "agent"), "no agent block")
 end)
 
+-- Blocks are rendered on a deferred tick (`Chat:schedule_render` waits 40ms), so
+-- the state can be complete while the buffer is still empty. Wait for the buffer
+-- itself rather than reading it straight after the state check.
+vim.wait(3000, function()
+  local text = table.concat(vim.api.nvim_buf_get_lines(st.chat.buf, 0, -1, false), "\n")
+  return text:find("old answer", 1, true) ~= nil
+end, 20)
+
 check("transcript shows the replayed history", function()
   local text = table.concat(vim.api.nvim_buf_get_lines(st.chat.buf, 0, -1, false), "\n")
   assert(text:find("old answer", 1, true), "replayed answer missing")

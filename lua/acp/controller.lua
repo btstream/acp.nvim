@@ -1784,7 +1784,7 @@ function M.setup(opts)
   S.config = merged
 
   log.setup(merged.log)
-  highlights.setup(merged.ui.zed_style)
+  highlights.setup()
   layout.setup(merged)
 
   -- Reconfiguring means a different agent, cwd or UI: drop the old runtime

@@ -106,9 +106,6 @@ M.defaults = {
       animate = true,
       animation_interval = 120,
     },
-
-    -- Approximate Zed look: restrained colors, minimal decoration.
-    zed_style = true,
   },
 
   keymaps = {

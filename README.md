@@ -160,7 +160,6 @@ require("acp").setup({
     wrap = true,
     picker = "vim",       -- "vim" = vim.ui.select（推荐）| "internal" = 内置浮窗
     session_picker = "snacks", -- "snacks"（可用时）| "internal"
-    zed_style = true,
     title = { placement = "auto" },   -- "auto" | "winbar" | "off"
     toolbar = {
       placement = "auto",             -- "auto" | "winbar" | "off"
@@ -345,10 +344,14 @@ vim.api.nvim_set_hl(0, "AcpSeparator", { fg = "#3b4261" })
 ```
 
 可用的组：`AcpNormal` `AcpMuted` `AcpBorder` `AcpTitle` `AcpToolbar` `AcpToolbarAccent`
-`AcpUser` `AcpUserChip` `AcpAssistant` `AcpThought` `AcpToolTitle` `AcpToolRunning`
-`AcpToolSuccess` `AcpToolError` `AcpCode` `AcpCodeFence` `AcpInlineCode` `AcpHeading`
-`AcpQuote` `AcpLink` `AcpPlan` `AcpPlanDone` `AcpPlanPending` `AcpNotice` `AcpPermission`
-`AcpChild` `AcpSeparator` `AcpStreaming` `AcpSelection`
+`AcpToolbarModePlan` `AcpToolbarModeBuild` `AcpToolbarIdle` `AcpToolbarRunning`
+`AcpToolbarWaiting` `AcpToolbarCancelling` `AcpUser` `AcpUserChip` `AcpAssistant`
+`AcpThought` `AcpToolTitle` `AcpToolTag` `AcpCardBg` `AcpCodeBlockBg` `AcpCodeLang`
+`AcpTableHead` `AcpTableBorder` `AcpToolRunning` `AcpToolSuccess` `AcpToolError`
+`AcpToolCancelled` `AcpMdCode` `AcpBold` `AcpItalic` `AcpStrike` `AcpMdLink` `AcpH1`
+`AcpH2` `AcpH3` `AcpH4` `AcpQuote` `AcpLink` `AcpPlan` `AcpPlanDone` `AcpPlanPending`
+`AcpNotice` `AcpNoticeWarn` `AcpNoticeError` `AcpPermission` `AcpChild` `AcpSeparator`
+`AcpStreaming` `AcpSelection` `AcpPinned`
 
 `ui.icons = false` 会把所有图标换成 ASCII，适用于不支持的终端。
 

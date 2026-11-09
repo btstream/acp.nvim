@@ -8,14 +8,14 @@ return function(t)
 
   t.describe("highlights", function()
     t.it("defines every semantic group", function()
-      highlights.setup(true)
+      highlights.setup()
       for name in pairs(highlights.groups) do
         t.truthy(defined(name), name .. " was not defined")
       end
     end)
 
     t.it("survives a colorscheme change", function()
-      highlights.setup(true)
+      highlights.setup()
       t.truthy(defined("AcpUser"), "not defined after setup")
 
       -- Loading any colorscheme clears user groups; the ColorScheme autocmd
@@ -29,7 +29,7 @@ return function(t)
     end)
 
     t.it("re-applies after several colorscheme switches", function()
-      highlights.setup(true)
+      highlights.setup()
       for _, scheme in ipairs({ "default", "blue", "default" }) do
         vim.cmd("silent! colorscheme " .. scheme)
         vim.cmd("doautocmd ColorScheme")
@@ -40,7 +40,7 @@ return function(t)
     t.it("derives visible surfaces from a dark background", function()
       local saved = vim.api.nvim_get_hl(0, { name = "Normal", link = false })
       vim.api.nvim_set_hl(0, "Normal", { fg = "#c8ccd4", bg = "#14161b" })
-      highlights.setup(false)
+      highlights.setup()
 
       local function bg(name)
         return vim.api.nvim_get_hl(0, { name = name }).bg
@@ -56,13 +56,13 @@ return function(t)
       t.eq(nil, bg("AcpMdCode"), "inline code should not paint a background")
 
       vim.api.nvim_set_hl(0, "Normal", saved)
-      highlights.setup(true)
+      highlights.setup()
     end)
 
     t.it("derives visible surfaces from a light background", function()
       local saved = vim.api.nvim_get_hl(0, { name = "Normal", link = false })
       vim.api.nvim_set_hl(0, "Normal", { fg = "#24292f", bg = "#ffffff" })
-      highlights.setup(false)
+      highlights.setup()
 
       local function bg(name)
         return vim.api.nvim_get_hl(0, { name = name }).bg
@@ -74,14 +74,14 @@ return function(t)
       t.eq(nil, bg("AcpMdCode"), "inline code should not paint a background")
 
       vim.api.nvim_set_hl(0, "Normal", saved)
-      highlights.setup(true)
+      highlights.setup()
     end)
 
     t.it("respects a user override made before setup", function()
       vim.cmd("hi clear")
       vim.api.nvim_set_hl(0, "AcpUser", { fg = "#ff0000" })
       vim.api.nvim_set_hl(0, "AcpBold", { fg = "#00ff00" })
-      highlights.setup(false)
+      highlights.setup()
 
       t.eq(0xff0000, vim.api.nvim_get_hl(0, { name = "AcpUser" }).fg, "AcpUser was overwritten")
       t.eq(0x00ff00, vim.api.nvim_get_hl(0, { name = "AcpBold" }).fg, "AcpBold was overwritten")
@@ -89,7 +89,7 @@ return function(t)
 
     t.it("respects a user override made after setup", function()
       vim.cmd("hi clear")
-      highlights.setup(false)
+      highlights.setup()
       vim.api.nvim_set_hl(0, "AcpThought", { fg = "#123456" })
 
       -- A colorscheme load re-applies every group; the user's value must survive.
@@ -102,7 +102,7 @@ return function(t)
       vim.api.nvim_set_hl(0, "AcpCardBg", { bg = "#123456" })
       vim.api.nvim_set_hl(0, "AcpToolbarModePlan", { fg = "#abcdef", bg = "#111111" })
       vim.api.nvim_set_hl(0, "AcpToolbarIdle", { fg = "#999999" })
-      highlights.setup(false)
+      highlights.setup()
 
       t.eq(0x123456, vim.api.nvim_get_hl(0, { name = "AcpCardBg" }).bg, "derived surface was overwritten")
       local badge = vim.api.nvim_get_hl(0, { name = "AcpToolbarModePlan" })
@@ -114,33 +114,22 @@ return function(t)
     t.it("still defines groups the user left alone", function()
       vim.cmd("hi clear")
       vim.api.nvim_set_hl(0, "AcpUser", { fg = "#ff0000" })
-      highlights.setup(false)
+      highlights.setup()
       -- A group next to the overridden one must still get its default.
       t.truthy(defined("AcpAssistant"), "a non-overridden group was not defined")
       t.truthy(defined("AcpToolbarModePlan"), "a derived group was not defined")
     end)
 
     t.it("does not give card body text a background of its own", function()
-      highlights.setup(false)
+      highlights.setup()
       -- No `AcpToolBody` group exists on purpose; body text inherits the card.
       t.eq(nil, highlights.groups["AcpToolBody"], "card body must not define a group")
     end)
 
-    t.it("honours the zed palette", function()
-      vim.cmd("hi clear")
-      highlights.setup(true)
-      local hl = vim.api.nvim_get_hl(0, { name = "AcpUser" })
-      t.eq("Function", hl.link, "zed style should link AcpUser to Function")
-
-      highlights.setup(false)
-      local plain = vim.api.nvim_get_hl(0, { name = "AcpUser" })
-      t.eq("Identifier", plain.link, "plain style should link AcpUser to Identifier")
-    end)
-
     t.it("does not stack autocmds on repeated setup", function()
-      highlights.setup(true)
-      highlights.setup(true)
-      highlights.setup(true)
+      highlights.setup()
+      highlights.setup()
+      highlights.setup()
       local count = 0
       for _, autocmd in ipairs(vim.api.nvim_get_autocmds({ event = "ColorScheme" })) do
         if autocmd.group_name == "AcpHighlights" then

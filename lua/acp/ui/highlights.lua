@@ -16,7 +16,8 @@ M.groups = {
   AcpToolbarRunning = { fg = "NONE" },
   AcpToolbarWaiting = { fg = "NONE" },
   AcpToolbarCancelling = { fg = "NONE" },
-  AcpUser = { link = "Identifier" },
+  -- Low contrast surfaces: no hard borders, muted user text, quiet chrome.
+  AcpUser = { link = "Function" },
   AcpUserChip = { link = "Visual" },
   AcpAssistant = { link = "Normal" },
   -- Thoughts borrow the search highlight's *foreground* only. Linking the group
@@ -42,9 +43,6 @@ M.groups = {
   AcpToolSuccess = { link = "DiagnosticOk" },
   AcpToolError = { link = "DiagnosticError" },
   AcpToolCancelled = { link = "Comment" },
-  AcpCode = { link = "NormalFloat" },
-  AcpCodeFence = { link = "Comment" },
-  AcpInlineCode = { link = "String" },
   AcpMdCode = { link = "String" },
   AcpBold = { bold = true },
   AcpItalic = { italic = true },
@@ -54,7 +52,6 @@ M.groups = {
   AcpH2 = { link = "Title" },
   AcpH3 = { link = "Function" },
   AcpH4 = { link = "Function" },
-  AcpHeading = { link = "Title", bold = true },
   AcpQuote = { link = "Comment", italic = true },
   AcpLink = { link = "Underlined" },
   AcpPlan = { link = "DiagnosticInfo" },
@@ -65,78 +62,27 @@ M.groups = {
   AcpNoticeError = { link = "DiagnosticError" },
   AcpPermission = { link = "DiagnosticWarn", bold = true },
   AcpChild = { link = "Comment" },
-  AcpSeparator = { link = "NonText" },
+  AcpSeparator = { fg = "grey30" },
   AcpStreaming = { link = "DiagnosticInfo" },
   AcpSelection = { link = "Visual" },
   AcpPinned = { link = "StatusLine" },
 }
 
-local zed_style = true
-local augroup = nil
-
----Serialise a highlight definition into a comparable string.
----@param hl table
----@return string
-local function serialise(hl)
-  local keys = {}
-  for key in pairs(hl) do
-    keys[#keys + 1] = key
-  end
-  table.sort(keys)
-  local parts = {}
-  for _, key in ipairs(keys) do
-    parts[#parts + 1] = key .. "=" .. tostring(hl[key])
-  end
-  return table.concat(parts, ";")
-end
-
----Serialise whatever the group currently resolves to ("" when undefined).
----@param name string
----@return string
-local function current(name)
-  local ok, hl = pcall(vim.api.nvim_get_hl, 0, { name = name })
-  if not ok or type(hl) ~= "table" then
-    return ""
-  end
-  return serialise(hl)
-end
-
--- What this module last wrote for each group. A group whose current value does
--- not match this is treated as user-owned and left alone.
-local written = {}
-
----Set a highlight group unless the user has defined it themselves.
+---Define a highlight group without clobbering an existing definition.
 ---
----A user override is detected by comparing the group's current value with the
----value this module last wrote. Anything else — including a value the user set
----before `setup` ran — wins over ours.
+---`default = true` is Neovim's `:hi-default`: the group is only defined when it
+---does not exist yet, so a colour the user set (before or after setup, or from a
+---theme) always wins. A colorscheme load clears the groups, which lets the
+---defaults be re-established on the next apply.
 ---@param name string
 ---@param spec table
----@return boolean applied false when the group is user-owned
+---@return boolean applied false when the group already existed
 local function set_hl(name, spec)
-  local existing = current(name)
-  -- An empty group means it was cleared (a new colorscheme, or `:hi clear`), so
-  -- any previous ownership is gone and we may define it again.
-  if existing == "" then
-    written[name] = nil
-  elseif existing ~= written[name] then
-    return false
-  end
-  vim.api.nvim_set_hl(0, name, spec)
-  written[name] = current(name)
-  return true
+  -- `default` belongs *in* the spec, not in an opts argument: nvim_set_hl takes
+  -- three parameters, and a fourth is silently ignored by pcall.
+  local ok = pcall(vim.api.nvim_set_hl, 0, name, vim.tbl_extend("force", spec, { default = true }))
+  return ok
 end
-
----Whether the group is currently owned by the user.
----@param name string
----@return boolean
-local function is_user_owned(name)
-  local existing = current(name)
-  return existing ~= "" and existing ~= written[name]
-end
-
-M._set_hl = set_hl
-M._is_user_owned = is_user_owned
 
 ---Relative luminance of a `#rrggbb` colour, 0 (black) to 1 (white).
 ---@param hex string
@@ -414,9 +360,11 @@ end
 
 ---Define every group. Safe to call again after a colorscheme change.
 local function apply()
-  for name, spec in pairs(M.groups) do
-    set_hl(name, spec)
-  end
+  -- Order matters with `default = true`: a group is only defined once per pass,
+  -- so anything a later step reads has to be written first. The bar is defined
+  -- up front because the toolbar regions derive their background from it.
+  set_hl("AcpToolbar", M.groups.AcpToolbar)
+
   -- Thoughts take the search highlight's accent colour as text colour. Which of
   -- its two colours that is depends on the theme: some pair a dark foreground
   -- with a bright background, so the pair member that reads against our own
@@ -428,6 +376,7 @@ local function apply()
   if type(normal_bg) == "string" then
     set_accent_fg("AcpThought", "IncSearch", normal_bg)
   end
+
   -- Surfaces derived from the theme background so they work on light and dark
   -- themes. The card is the most prominent and the code block subtler so the
   -- two read as different things. Inline code intentionally has no surface:
@@ -441,12 +390,11 @@ local function apply()
   -- Colours come from the theme's semantic groups, which keeps them readable on
   -- light and dark schemes alike. Only the foreground is set; the background
   -- stays whatever `AcpToolbar` (StatusLine) provides.
+  --
   -- Every foreground is picked to stand out from the bar itself. `Comment` is
   -- deliberately not used: it sits at ~2.9:1 against a typical statusline
   -- background, which reads as almost invisible for a small glyph.
   --
-  -- Modes and statuses also have to differ from each other, so `plan` takes the
-  -- remaining accent rather than repeating the `running` colour.
   -- Modes read as tinted badges; statuses stay plain glyphs on the bar.
   set_toolbar_mode("AcpToolbarModePlan", "DiagnosticInfo")
   set_toolbar_mode("AcpToolbarModeBuild", "DiagnosticOk")
@@ -455,24 +403,21 @@ local function apply()
   set_toolbar_fg("AcpToolbarWaiting", "DiagnosticWarn")
   set_toolbar_fg("AcpToolbarCancelling", "DiagnosticError")
   set_toolbar_fg("AcpToolbarAccent", "Normal")
-  if zed_style then
-    -- Low contrast surfaces: no hard borders, muted user text, quiet chrome.
-    set_hl("AcpUser", { link = "Function" })
-    set_hl("AcpUserChip", { link = "Visual" })
-    set_hl("AcpSeparator", { fg = "grey30" })
+
+  -- Everything else comes from the static table.
+  for name, spec in pairs(M.groups) do
+    set_hl(name, spec)
   end
 end
 
 M.apply = apply
 
----Apply highlights. `zed` selects a lower-contrast palette on top of the theme links.
+---Apply highlights.
 ---
 ---A colorscheme load clears every user group, so the definitions are re-applied
 ---on ColorScheme. Without this the whole panel loses its colours when the user
 ---switches theme after setup.
----@param zed boolean|nil
-function M.setup(zed)
-  zed_style = zed ~= false
+function M.setup()
   apply()
 
   if augroup then

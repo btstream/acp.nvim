@@ -76,7 +76,7 @@ return function(t)
 
     t.it("keeps the bar uniform for everything but the modes", function()
       local highlights = require("acp.ui.highlights")
-      highlights.setup(false)
+      highlights.setup()
       -- `AcpToolbar` links to StatusLine, so resolve the link before reading bg.
       local bar = vim.api.nvim_get_hl(0, { name = "AcpToolbar", link = false })
       for _, name in ipairs({
@@ -98,7 +98,7 @@ return function(t)
 
     t.it("gives each mode and status its own colour", function()
       local highlights = require("acp.ui.highlights")
-      highlights.setup(false)
+      highlights.setup()
       local function fg(name)
         return vim.api.nvim_get_hl(0, { name = name }).fg
       end
@@ -124,7 +124,7 @@ return function(t)
 
     t.it("keeps every toolbar glyph readable on the bar", function()
       local highlights = require("acp.ui.highlights")
-      highlights.setup(false)
+      highlights.setup()
 
       local function luminance(n)
         local r = math.floor(n / 65536) % 256
@@ -165,7 +165,7 @@ return function(t)
 
     t.it("makes the mode badge stand out from the bar", function()
       local highlights = require("acp.ui.highlights")
-      highlights.setup(false)
+      highlights.setup()
       local bar = vim.api.nvim_get_hl(0, { name = "AcpToolbar", link = false })
       for _, name in ipairs({ "AcpToolbarModePlan", "AcpToolbarModeBuild" }) do
         local badge = vim.api.nvim_get_hl(0, { name = name }).bg

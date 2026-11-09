@@ -91,7 +91,7 @@ local function demo_session()
 end
 
 local cfg = config.validate(config.merge(config.defaults, { ui = { toolbar = { show_usage = true } } }))
-highlights.setup(cfg.ui.zed_style)
+highlights.setup()
 
 local chat = Chat.new({ config = cfg })
 chat.width = 60

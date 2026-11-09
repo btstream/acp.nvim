@@ -98,7 +98,6 @@ q              隐藏面板
         },
         picker = "vim",       -- "vim" | "internal"
         session_picker = "snacks", -- "snacks" | "internal"
-        zed_style = true,
         title = { placement = "auto" },
         toolbar = { placement = "auto", show_usage = false },
       },

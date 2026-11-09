@@ -128,7 +128,7 @@ return function(t)
 
     t.it("uses the search accent as text colour only", function()
       local highlights = require("acp.ui.highlights")
-      highlights.setup(false)
+      highlights.setup()
 
       -- The group must carry a foreground and *no* background: linking
       -- `IncSearch` wholesale painted a solid block behind the label.
