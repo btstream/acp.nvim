@@ -84,7 +84,7 @@ return function(t)
   t.describe("code block rendering", function()
     t.it("gives every fence row a background", function()
       local lines = render("```lua\nlocal x = 1\n```")
-      -- Marker, code, closing marker.
+      -- Language label and code line; the closing fence emits no row.
       local seen = 0
       for _, line in ipairs(lines) do
         if line.bg then
@@ -92,7 +92,7 @@ return function(t)
           t.eq("AcpCodeBlockBg", line.bg)
         end
       end
-      t.eq(3, seen, "the whole fenced block should share one background group")
+      t.eq(2, seen, "the language row and the code row should be painted")
     end)
 
     t.it("does not background prose outside the fence", function()
@@ -158,6 +158,42 @@ return function(t)
         end
       end
       t.truthy(saw_syntax, "highlighting should appear after the fence closes")
+    end)
+
+    t.it("renders the block without border characters", function()
+      local lines = render("```lua\nlocal x = 1\n```")
+      for _, line in ipairs(lines) do
+        t.falsy(line.text:find("╭", 1, true), "code block should not draw a top border")
+        t.falsy(line.text:find("╰", 1, true), "code block should not draw a bottom border")
+        t.falsy(line.text:find("│", 1, true), "code block should not draw a side border")
+      end
+    end)
+
+    t.it("labels the block with the fence language", function()
+      local lines = render("```lua\nlocal x = 1\n```")
+      local found
+      for _, line in ipairs(lines) do
+        if line.text:find("lua", 1, true) then
+          found = line
+        end
+      end
+      t.truthy(found, "language label missing")
+      t.eq("AcpCodeBlockBg", found.bg, "the label row is part of the block surface")
+    end)
+
+    t.it("does not add a row for the closing fence", function()
+      local with_close = render("```lua\nx\n```")
+      local without = render("```lua\nx")
+      -- The closing fence must not introduce a blank line the text did not
+      -- have; an unterminated fence renders the same two rows.
+      t.eq(#without, #with_close, "the closing fence added a row")
+      local blank_rows = 0
+      for _, line in ipairs(with_close) do
+        if line.bg and vim.trim(line.text) == "" then
+          blank_rows = blank_rows + 1
+        end
+      end
+      t.eq(0, blank_rows, "the surface should end with the last code line")
     end)
 
     t.it("keeps syntax ranges inside the rendered line", function()

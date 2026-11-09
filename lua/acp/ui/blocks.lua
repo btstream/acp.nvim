@@ -14,8 +14,10 @@ local Markdown = require("acp.ui.markdown")
 local CodeHL = require("acp.ui.code_hl")
 
 -- Prefix drawn in front of every line inside a fenced block.
-local CODE_PREFIX = "│ "
-local CODE_PREFIX_LEN = #CODE_PREFIX
+-- Fenced code blocks are drawn as a background only: no border characters.
+-- A small left gutter keeps the text off the surface's edge.
+local CODE_GUTTER = "  "
+local CODE_GUTTER_LEN = #CODE_GUTTER
 
 ---Resolve the icon set used for rendering.
 ---@param use_icons boolean
@@ -111,29 +113,27 @@ end
 ---@param raw string
 ---@param base_hl string
 ---@param state {in_fence: boolean, fence_lang: string|nil, fence_start: integer|nil, fence_code: string[]|nil}
----@return AcpRenderedLine
+---@return AcpRenderedLine|nil line, or nil when the source line produces no row
+---@return string|nil flag "code_close" when a fence just closed
 local function render_line(raw, base_hl, state)
   local line = raw:gsub("\r$", "")
   local fence = line:match("^```(%S*)")
   if fence then
     if state.in_fence then
       -- Closing fence: the code follows, so keep the language available until
-      -- the caller has produced the highlighted segments.
+      -- the caller has produced the highlighted segments. No row is emitted:
+      -- the surface ends with the last code line, and a blank line here would
+      -- be one the source text did not have.
       state.in_fence = false
-      return {
-        text = "╰─",
-        segments = { { s = 0, e = -1, group = "AcpCodeFence" } },
-        bg = "AcpCodeBlockBg",
-        code_close = true,
-      }
+      return nil, "code_close"
     end
     state.in_fence = true
     state.fence_lang = fence
     state.fence_code = {}
-    local label = fence ~= "" and fence or "code"
     return {
-      text = "╭─ " .. label,
-      segments = { { s = 0, e = -1, group = "AcpCodeFence" } },
+      -- The language label sits on the block's top row and acts as padding.
+      text = fence ~= "" and fence or "",
+      segments = { { s = 0, e = -1, group = "AcpCodeLang" } },
       bg = "AcpCodeBlockBg",
       code_open = true,
     }
@@ -143,8 +143,8 @@ local function render_line(raw, base_hl, state)
       state.fence_code[#state.fence_code + 1] = line
     end
     return {
-      text = CODE_PREFIX .. line,
-      segments = { { s = 0, e = CODE_PREFIX_LEN, group = "AcpCodeFence" } },
+      text = CODE_GUTTER .. line,
+      segments = nil,
       bg = "AcpCodeBlockBg",
       code = true,
     }
@@ -248,8 +248,8 @@ function M.render_text(text, base_hl, width, cache)
         end
         local byte_len = #line.text
         for _, r in ipairs(list) do
-          local s = math.min(CODE_PREFIX_LEN + r.s, byte_len)
-          local e = r.e and math.min(CODE_PREFIX_LEN + r.e, byte_len) or byte_len
+          local s = math.min(CODE_GUTTER_LEN + r.s, byte_len)
+          local e = r.e and math.min(CODE_GUTTER_LEN + r.e, byte_len) or byte_len
           if e > s then
             kept[#kept + 1] = { s = s, e = e, group = r.group, syntax = true }
           end
@@ -266,22 +266,24 @@ function M.render_text(text, base_hl, width, cache)
       break
     end
     local raw = text:sub(search, nl - 1)
-    local line = render_line(raw, base_hl, mark)
-    lines[#lines + 1] = line
-    if line.code_open then
-      -- The fence marker itself is the last pushed line; code starts after it.
-      mark.fence_start = #lines + 1
-    elseif line.code_close then
+    local line, flag = render_line(raw, base_hl, mark)
+    if flag == "code_close" then
+      -- The closing fence emits no row of its own.
       close_fence()
       mark.fence_code = nil
       mark.fence_lang = nil
       mark.fence_start = nil
+    elseif line then
+      lines[#lines + 1] = line
+      if line.code_open then
+        -- The fence marker itself is the last pushed line; code starts after it.
+        mark.fence_start = #lines + 1
+      end
+      -- `code_open`/`code` are transient routing flags that must not leak into
+      -- the cached line table.
+      line.code_open = nil
+      line.code = nil
     end
-    -- `code_open`/`code_close`/`code` are transient routing flags that must not
-    -- leak into the cached line table.
-    line.code_open = nil
-    line.code_close = nil
-    line.code = nil
     search = nl + 1
   end
 
@@ -300,22 +302,23 @@ function M.render_text(text, base_hl, width, cache)
 
   local tail = text:sub(search)
   if tail ~= "" then
-    local line = render_line(tail, base_hl, mark)
-    lines[#lines + 1] = line
+    local line, flag = render_line(tail, base_hl, mark)
     -- The trailing fragment is re-rendered when more text arrives, so the fence
     -- state it carries must not be committed to the cache. Highlighting it now
     -- would duplicate segments on the next call.
-    if line.code_open then
-      mark.fence_start = #lines + 1
-    elseif line.code_close then
+    if flag == "code_close" then
       close_fence()
       mark.fence_code = nil
       mark.fence_lang = nil
       mark.fence_start = nil
+    elseif line then
+      lines[#lines + 1] = line
+      if line.code_open then
+        mark.fence_start = #lines + 1
+      end
+      line.code_open = nil
+      line.code = nil
     end
-    line.code_open = nil
-    line.code_close = nil
-    line.code = nil
   end
 
   return lines
@@ -524,6 +527,20 @@ local function render_tool(block, ctx)
   end
 
   local label = string.format("%s %s %s", caret, glyph, table.concat(parts, " · "))
+  -- A shell command can be hundreds of columns long. The header is a summary;
+  -- the full text is in the card body, so truncate to the panel width.
+  local suffix_reserve = 0
+  if block.child and block.child.title then
+    suffix_reserve = suffix_reserve + 12
+  end
+  if block.status then
+    suffix_reserve = suffix_reserve + 12
+  end
+  local max_label = math.max(20, ctx.width - suffix_reserve)
+  if vim.api.nvim_strwidth(label) > max_label then
+    label = M.truncate_width(label, max_label - 1) .. ic.more
+  end
+
   local caret_end = #caret
   local glyph_start = caret_end + 1
   local glyph_end = glyph_start + #glyph
@@ -531,13 +548,19 @@ local function render_tool(block, ctx)
   local segments = {
     { s = 0, e = caret_end, group = "AcpSeparator" },
     { s = glyph_start, e = glyph_end, group = glyph_hl },
+    -- Quiet by default: the header names the call, it is not the important part
+    -- of the transcript. `AcpToolTitle` is a muted tone rather than a link to
+    -- `Function`, which used to make long commands glare.
     { s = tag_start, e = -1, group = "AcpToolTag" },
   }
   if #parts > 1 then
-    -- The title part keeps the default body colour so it reads as content.
     local shown_title = parts[2]
     local title_offset = #caret + 1 + #glyph + 1 + #tag + 3
-    segments[#segments + 1] = { s = title_offset, e = title_offset + #shown_title, group = "AcpToolTitle" }
+    local available = #label - title_offset
+    if available > 0 then
+      local end_col = title_offset + math.min(#shown_title, available)
+      segments[#segments + 1] = { s = title_offset, e = end_col, group = "AcpToolTitle" }
+    end
   end
 
   local meta = {}

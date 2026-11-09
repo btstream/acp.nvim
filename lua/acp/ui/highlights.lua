@@ -12,7 +12,9 @@ M.groups = {
   AcpUserChip = { link = "Visual" },
   AcpAssistant = { link = "Normal" },
   AcpThought = { link = "Comment", italic = true },
-  AcpToolTitle = { link = "Function" },
+  -- Tool headers are deliberately quiet: they label a call, they are not the
+  -- content. Linking `AcpToolTitle` to `Function` made long commands glare.
+  AcpToolTitle = { link = "Comment" },
   AcpToolTag = { link = "Comment" },
   -- There is deliberately no `AcpToolBody` group: card body text must inherit
   -- whatever is behind it so the card's background shows through. A group

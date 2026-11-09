@@ -195,6 +195,22 @@ return function(t)
       end
     end)
 
+    t.it("truncates a very long title", function()
+      local s = state.new("s", "/proj")
+      s:append({
+        id = "t",
+        kind = "tool",
+        tool_kind = "execute",
+        title = string.rep("very long command segment ", 20),
+        status = "completed",
+      })
+      local lines = render(s.blocks[1])
+      t.truthy(
+        vim.api.nvim_strwidth(lines[1].text) <= 60 + 5,
+        "header exceeded the panel width: " .. vim.api.nvim_strwidth(lines[1].text)
+      )
+    end)
+
     t.it("does not open a card with nothing to show", function()
       local s = state.new("s", "/proj")
       s:append({ id = "t", kind = "tool", tool_kind = "execute", status = "completed", expanded = true })
