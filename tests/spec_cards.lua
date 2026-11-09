@@ -296,6 +296,37 @@ return function(t)
       end
     end)
 
+    t.it("keeps the cursor on the toggled block", function()
+      local cfg = config.validate(config.merge(config.defaults, {}))
+      local s = state.new("s", "/proj")
+      s:append({
+        id = "t1",
+        kind = "tool",
+        tool_kind = "execute",
+        status = "completed",
+        expanded = false,
+        detail = "a\nb\nc",
+      })
+      s:append({ id = "a", kind = "agent", text = "middle" })
+      s:append({ id = "z", kind = "agent", text = "tail" })
+
+      local chat = Chat.new({ config = cfg })
+      local win = vim.api.nvim_get_current_win()
+      vim.api.nvim_win_set_buf(win, chat.buf)
+      chat.win = win
+      chat:set_session(s)
+      chat:render(true)
+
+      vim.api.nvim_win_set_cursor(win, { 1, 0 })
+      chat:toggle_current()
+      chat:render()
+      t.eq({ 1, 0 }, vim.api.nvim_win_get_cursor(win), "expanding jumped the cursor")
+
+      chat:toggle_current()
+      chat:render()
+      t.eq({ 1, 0 }, vim.api.nvim_win_get_cursor(win), "collapsing jumped the cursor")
+    end)
+
     t.it("does not drop highlights of blocks after a growing card", function()
       local cfg = config.validate(config.merge(config.defaults, {}))
       local s = state.new("s", "/proj")

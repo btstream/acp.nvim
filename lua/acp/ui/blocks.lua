@@ -420,13 +420,28 @@ local function render_thought(block, ctx)
   end
 
   block._md_thought = block._md_thought or {}
-  local lines = M.render_text(block.text or "", "AcpThought", ctx.width, block._md_thought)
-  -- Keep the inline segments `render_text` produced: overwriting them here
-  -- would drop inline code and other markup inside thoughts.
+  -- Expanded reasoning sits on the same surface as an expanded tool card, so the
+  -- two read as the same kind of content. The body sets no highlight group of
+  -- its own; it inherits the card background.
+  local body = M.render_text(block.text or "", nil, ctx.width - 2, block._md_thought)
   local out = { header }
-  for _, line in ipairs(M.indent_lines(lines, "  ")) do
-    out[#out + 1] = line
+  out[#out + 1] = { text = "  ", segments = nil, bg = "AcpCardBg" }
+  for _, line in ipairs(body) do
+    out[#out + 1] = {
+      text = "  " .. line.text,
+      segments = vim.tbl_map(function(seg)
+        return {
+          s = seg.s + 2,
+          e = seg.e >= 0 and seg.e + 2 or seg.e,
+          group = seg.group,
+          -- Conceal must survive the indent shift or markup markers reappear.
+          conceal = seg.conceal,
+        }
+      end, line.segments or {}),
+      bg = "AcpCardBg",
+    }
   end
+  out[#out + 1] = { text = "  ", segments = nil, bg = "AcpCardBg" }
   out[#out + 1] = { text = "", segments = nil }
   return out
 end

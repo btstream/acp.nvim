@@ -11,7 +11,7 @@ M.groups = {
   AcpUser = { link = "Identifier" },
   AcpUserChip = { link = "Visual" },
   AcpAssistant = { link = "Normal" },
-  AcpThought = { link = "Comment", italic = true },
+  AcpThought = { link = "IncSearch" },
   -- Tool headers are deliberately quiet: they label a call, they are not the
   -- content. Linking `AcpToolTitle` to `Function` made long commands glare.
   AcpToolTitle = { link = "Comment" },

@@ -107,6 +107,30 @@ return function(t)
       t.eq(nil, block.expanded, "show_thoughts should not mutate the block")
     end)
 
+    t.it("puts expanded reasoning on the same surface as a tool card", function()
+      local block = thought("visible reasoning")
+      block.expanded = true
+      local lines = blocks.render_block(block, ctx())
+      local bg_lines = 0
+      for _, line in ipairs(lines) do
+        if line.bg then
+          bg_lines = bg_lines + 1
+          t.eq("AcpCardBg", line.bg, "thoughts and tool cards must share a surface")
+        end
+      end
+      t.truthy(bg_lines >= 2, "expanded reasoning should have a padded surface")
+    end)
+
+    t.it("does not paint the collapsed header", function()
+      local lines = blocks.render_block(thought("hidden"), ctx())
+      t.eq(nil, lines[1].bg, "the collapsed header is not part of the surface")
+    end)
+
+    t.it("uses the search highlight for the header", function()
+      local highlights = require("acp.ui.highlights")
+      t.eq("IncSearch", highlights.groups.AcpThought.link)
+    end)
+
     t.it("renders inline markup inside an expanded thought", function()
       local block = thought("uses `code` and **bold**")
       block.expanded = true

@@ -408,7 +408,15 @@ function Chat:render(force)
   self.lines_cache = lines
   self.line_starts = starts
 
-  if self.follow then
+  -- A block that was just toggled keeps the cursor: expanding or collapsing it
+  -- is a deliberate action, not new output to follow.
+  if self.keep_block then
+    local row = starts[self.keep_block]
+    self.keep_block = nil
+    if row and self:is_visible() then
+      pcall(vim.api.nvim_win_set_cursor, self.win, { row, 0 })
+    end
+  elseif self.follow then
     self:scroll_to_bottom()
   elseif self:is_visible() then
     if not self.pending_new then
@@ -511,6 +519,10 @@ function Chat:toggle_current()
   end
   if block.kind == "tool" or block.kind == "compaction" or block.kind == "thought" then
     block.expanded = not block.expanded
+    -- Expanding changes the transcript height. Without this the renderer would
+    -- treat the view as "following output" and jump the cursor to the end of the
+    -- buffer, which is disorienting when the user just opened a block to read it.
+    self.keep_block = block.id
     self:schedule_render()
     return true
   end
