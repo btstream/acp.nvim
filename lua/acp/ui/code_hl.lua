@@ -7,6 +7,20 @@
 -- The inline scanner stays hand-rolled (see `acp.ui.markdown`); only blocks use
 -- treesitter.
 local M = {}
+M.generation = 0
+
+-- Independent of transcript width. Bound both retained source bytes and the
+-- estimated range storage; do not let one huge code block monopolise the cache.
+local cache, bytes, clock = {}, 0, 0
+local MAX_BYTES, MAX_ENTRIES = 2 * 1024 * 1024, 64
+function M.clear_cache()
+  cache, bytes, clock = {}, 0, 0
+  M.generation = M.generation + 1
+end
+vim.api.nvim_create_autocmd("ColorScheme", {
+  group = vim.api.nvim_create_augroup("AcpCodeCache", { clear = true }),
+  callback = M.clear_cache,
+})
 
 -- Fence languages whose treesitter parser name differs from what people type.
 local ALIASES = {
@@ -59,9 +73,14 @@ end
 ---@param lang string
 ---@return {row: integer, s: integer, e: integer, group: string}[]|nil
 ---@return boolean ok false when no parser is available
-function M.highlight(code, lang)
+local function compute(code, lang)
   if code == "" or lang == "" then
     return nil, false
+  end
+  -- Huge code remains readable as plain text; syntax decoration must not turn
+  -- a single tool output into hundreds of thousands of capture tables.
+  if #code > 256 * 1024 then
+    return {}, true
   end
   local resolved = M.resolve_language(lang)
   local parse_ok, parser = pcall(vim.treesitter.get_string_parser, code, resolved)
@@ -84,6 +103,9 @@ function M.highlight(code, lang)
   local captures = {}
   local iter_ok = pcall(function()
     for id, node, metadata in query:iter_captures(tree:root(), code) do
+      if #captures >= 20000 then
+        return
+      end
       local name = query.captures[id]
       local srow, scol, erow, ecol = node:range()
       captures[#captures + 1] = {
@@ -140,6 +162,42 @@ function M.highlight(code, lang)
     end
   end
   return out, true
+end
+
+---Return immutable syntax ranges, reused across stream ticks and resizes.
+function M.highlight(code, lang)
+  local key = M.resolve_language(lang) .. "\0" .. code
+  clock = clock + 1
+  if cache[key] then
+    cache[key].used = clock
+    return cache[key].ranges, true
+  end
+  local ranges, ok = compute(code, lang)
+  -- Do not cache missing parsers/queries: installing them should work without
+  -- requiring a restart.
+  if not ok then
+    return ranges, ok
+  end
+  local cost = #key + #ranges * 96
+  if cost <= MAX_BYTES then
+    local count = vim.tbl_count(cache)
+    while bytes + cost > MAX_BYTES or count >= MAX_ENTRIES do
+      local oldest, used
+      for k, entry in pairs(cache) do
+        if not used or entry.used < used then
+          oldest, used = k, entry.used
+        end
+      end
+      if not oldest then
+        break
+      end
+      bytes, count = bytes - cache[oldest].cost, count - 1
+      cache[oldest] = nil
+    end
+    cache[key] = { ranges = ranges, used = clock, cost = cost }
+    bytes = bytes + cost
+  end
+  return ranges, true
 end
 
 ---Map a treesitter capture to a highlight group.

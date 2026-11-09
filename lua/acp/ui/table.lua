@@ -266,20 +266,37 @@ function M.render(table_spec, base_hl, width)
     total = total + widths[c]
   end
   if total > available then
-    -- Shrink the widest columns first until the table fits. Cells wrap rather
-    -- than truncate, so this only decides where the line breaks fall.
-    while total > available do
-      local widest, index = -1, 1
+    -- Water-fill by a common ceiling, instead of shrinking a megabyte-long
+    -- cell one display cell at a time. O(columns * log(max natural width)).
+    local natural = vim.list_slice(widths)
+    local lo, hi, cap = 4, 4, 4
+    for c = 1, columns do
+      hi = math.max(hi, widths[c])
+    end
+    while lo <= hi do
+      local mid, sum = math.floor((lo + hi) / 2), 0
       for c = 1, columns do
-        if widths[c] > widest then
-          widest, index = widths[c], c
-        end
+        sum = sum + math.min(natural[c], mid)
       end
-      if widest <= 4 then
+      if sum <= available then
+        cap, lo = mid, mid + 1
+      else
+        hi = mid - 1
+      end
+    end
+    total = 0
+    for c = 1, columns do
+      widths[c] = math.min(natural[c], cap)
+      total = total + widths[c]
+    end
+    -- Match the original tie break: later columns keep the spare cells.
+    for c = columns, 1, -1 do
+      if total >= available then
         break
       end
-      widths[index] = widest - 1
-      total = total - 1
+      if widths[c] < natural[c] then
+        widths[c], total = widths[c] + 1, total + 1
+      end
     end
   end
 

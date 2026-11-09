@@ -29,6 +29,7 @@ return function(t)
     end)
 
     t.it("survives a corrupt file", function()
+      t.truthy(drafts.flush())
       local fh = io.open(drafts.path(), "wb")
       fh:write("{not json")
       fh:close()

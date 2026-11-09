@@ -11,6 +11,17 @@ local Icons = require("acp.ui.icons")
 
 local M = {}
 
+---Neovim 0.12 adds inheriting statusline highlights. Older releases only
+---understand %#group#; their window-local WinBar mapping supplies the surface.
+---@param group string
+---@return string
+function M.highlight(group)
+  if vim.fn.has("nvim-0.12") == 1 then
+    return "%$" .. group .. "$"
+  end
+  return "%#" .. group .. "#"
+end
+
 ---Escape agent supplied text for use inside a winbar.
 ---@param s string
 ---@return string
@@ -95,7 +106,7 @@ local function hl(text, hl_group)
   if not hl_group then
     return escaped
   end
-  return "%$" .. hl_group .. "$" .. escaped .. "%$AcpToolbar$"
+  return M.highlight(hl_group) .. escaped .. M.highlight("AcpToolbar")
 end
 
 ---Render a clickable region.
@@ -128,7 +139,7 @@ function M.mode_text(mode, ic)
   if key and ic[key] then
     return ic[key]
   end
-  return M.escape(mode)
+  return mode
 end
 
 ---Highlight group for the mode region, so plan and build read differently.
@@ -242,7 +253,7 @@ function M.render(info, width)
 
   -- The status side always wins: drop the left side entirely when needed.
   if right_w + badge_width >= width_ok then
-    return badge .. "%#AcpToolbar# " .. hl(M.truncate(right_text, width_ok - 1), nil) .. " "
+    return "%#AcpToolbar#" .. hl(M.truncate(right_text, math.max(1, width)), nil)
   end
 
   local budget = width_ok - right_w - badge_width - 2
@@ -292,11 +303,18 @@ function M.chat_title(opts, width)
   -- colour: it is the transcript's header, not a separate strip. `AcpNormal`
   -- opens that background and every region inherits it with `%$...$`, so a
   -- layout manager remapping `WinBar` cannot repaint any of them.
-  return "%#AcpNormal#%$AcpTitle$"
+  return "%#AcpNormal#"
+    .. M.highlight("AcpTitle")
     .. M.escape(opts.agent)
-    .. "%$AcpNormal$%$AcpMuted$·%$AcpNormal$ "
+    .. M.highlight("AcpNormal")
+    .. M.highlight("AcpMuted")
+    .. "·"
+    .. M.highlight("AcpNormal")
+    .. " "
     .. M.escape(M.truncate(title, available))
-    .. (opts.pending_new and ("  %$AcpStreaming$" .. M.escape(suffix) .. "%$AcpNormal$") or "")
+    .. (
+      opts.pending_new and ("  " .. M.highlight("AcpStreaming") .. M.escape(suffix) .. M.highlight("AcpNormal")) or ""
+    )
 end
 
 return M

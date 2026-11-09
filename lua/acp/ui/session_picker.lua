@@ -229,6 +229,8 @@ function M.open(opts)
     local target_id = item.sessionId
     local target_title = label_of(item)
 
+    -- Keep the browser alive while an asynchronous confirmation owns focus.
+    busy = true
     vim.ui.select({ "Delete", "Cancel" }, {
       prompt = string.format('Delete "%s"?', target_title),
       kind = "acp_confirm_delete",
@@ -237,6 +239,7 @@ function M.open(opts)
         if not vim.api.nvim_win_is_valid(win) then
           return
         end
+        busy = false
         pcall(vim.api.nvim_set_current_win, win)
         if choice ~= "Delete" then
           status_message = ""
@@ -270,6 +273,19 @@ function M.open(opts)
         end)
       end)
     end)
+  end
+
+  -- Install text mappings first so navigation/close bindings below win.
+  -- Uppercase letters also filter (e.g. J searches for j, which is otherwise
+  -- reserved for navigation).
+  for _, char in ipairs(vim.fn.split("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789/-_.@", "\\zs")) do
+    vim.keymap.set("n", char, function()
+      if busy then
+        return
+      end
+      query = query .. char:lower()
+      refilter()
+    end, { buffer = buf, nowait = char ~= "g", silent = true })
   end
 
   local map = function(lhs, rhs, desc)
@@ -328,20 +344,14 @@ function M.open(opts)
     refilter()
   end, "clear filter")
 
-  for _, char in ipairs(vim.fn.split("abcdefghijklmnopqrstuvwxyz0123456789/-_.@", "\\zs")) do
-    vim.keymap.set("n", char, function()
-      query = query .. char
-      refilter()
-    end, { buffer = buf, nowait = true, silent = true })
-  end
-
   render()
 
   vim.api.nvim_create_autocmd("BufLeave", {
     buffer = buf,
-    once = true,
     callback = function()
-      finish(nil)
+      if not busy then
+        finish(nil)
+      end
     end,
   })
 

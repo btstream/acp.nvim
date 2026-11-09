@@ -9,8 +9,35 @@ local on_error = nil
 -- which yield point it failed, which is what a `finally` would do. Using pcall
 -- for this is not an option: Lua cannot yield across a pcall boundary.
 local finalizers = setmetatable({}, { __mode = "k" })
+local handlers = setmetatable({}, { __mode = "k" })
+local cancelled = setmetatable({}, { __mode = "k" })
+M.CANCELLED = {} -- private sentinel; cancellation is not an asynchronous error
 
 local run_finalizers
+
+local function failed(co, err)
+  local handler = handlers[co]
+  handlers[co] = nil
+  if err ~= M.CANCELLED and not cancelled[co] then
+    M.fail(err)
+    if handler then
+      local ok, handler_err = pcall(handler, err)
+      if not ok then
+        Log.error("async error handler failed: %s", tostring(handler_err))
+      end
+    end
+  end
+  run_finalizers(co)
+end
+
+function M.cancel(co)
+  if not co or cancelled[co] or coroutine.status(co) == "dead" then
+    return false
+  end
+  cancelled[co], handlers[co] = true, nil
+  run_finalizers(co)
+  return true
+end
 
 ---@param fn fun(err: any)
 function M.set_error_handler(fn)
@@ -21,6 +48,9 @@ end
 ---@param co thread
 ---@param ... any
 function M.resume(co, ...)
+  if cancelled[co] then
+    return
+  end
   local status = coroutine.status(co)
   if status == "dead" then
     Log.warn("ignoring resume of a dead coroutine")
@@ -33,17 +63,17 @@ function M.resume(co, ...)
   local n = select("#", ...)
   local args = { ... }
   vim.schedule(function()
-    if coroutine.status(co) ~= "suspended" then
+    if cancelled[co] or coroutine.status(co) ~= "suspended" then
       return
     end
     local ok, err = coroutine.resume(co, unpack(args, 1, n))
     if not ok then
-      run_finalizers(co)
-      M.fail(err)
+      failed(co, err)
       return
     end
     -- A resumed coroutine that has finished is done; run its cleanup.
     if coroutine.status(co) == "dead" then
+      handlers[co] = nil
       run_finalizers(co)
     end
   end)
@@ -96,18 +126,16 @@ end
 
 ---Run an asynchronous function in a new coroutine.
 ---@param fn fun()
----@param on_error fun(err: any)|nil invoked when the first resume raises
+---@param on_error fun(err: any)|nil invoked for errors across all resumes
 ---@return thread
 function M.run(fn, on_error)
   local co = coroutine.create(fn)
+  handlers[co] = on_error
   local ok, err = coroutine.resume(co)
   if not ok then
-    run_finalizers(co)
-    M.fail(err)
-    if on_error then
-      pcall(on_error, err)
-    end
+    failed(co, err)
   elseif coroutine.status(co) == "dead" then
+    handlers[co] = nil
     run_finalizers(co)
   end
   return co
@@ -124,7 +152,7 @@ function M.await(register)
   local settled = false
   local yielded = false
   local result
-  register(function(ok, value)
+  local cleanup = register(function(ok, value)
     if settled then
       return
     end
@@ -138,6 +166,14 @@ function M.await(register)
     end
     M.resume(co, ok, value)
   end)
+  if type(cleanup) == "function" then
+    M.finally(function()
+      if not settled then
+        settled = true
+        cleanup()
+      end
+    end)
+  end
   if result then
     return result.ok, result.value
   end
@@ -158,9 +194,15 @@ end
 ---@param ms integer
 function M.sleep(ms)
   M.await(function(done)
-    vim.defer_fn(function()
+    local timer = vim.defer_fn(function()
       done(true, nil)
     end, ms)
+    return function()
+      if not timer:is_closing() then
+        timer:stop()
+        timer:close()
+      end
+    end
   end)
 end
 

@@ -222,6 +222,7 @@ function M.create_panel(chat_buf, input_buf)
 
   local ok_input = pcall(vim.cmd, "belowright split")
   if not ok_input then
+    pcall(vim.api.nvim_win_close, chat, true)
     vim.o.equalalways = equalalways
     return nil, nil
   end
@@ -256,12 +257,19 @@ end
 ---Only the transcript window is created; the composer is left alone so
 ---restoring one view cannot leave a stray window (and buffer) behind.
 ---@param buf integer
+---@param input_win integer|nil
 ---@return integer|nil win
-function M.create_chat_win(buf)
+function M.create_chat_win(buf, input_win)
   local total = vim.o.columns
   local width = require("acp.config").panel_width(state.config, total)
   local horizontal = state.position == "left" and "topleft " or "botright "
   local cmd = state.backend == "native" and (horizontal .. width .. "vsplit") or (horizontal .. "vsplit")
+  local input_height
+  if input_win and vim.api.nvim_win_is_valid(input_win) then
+    input_height = vim.api.nvim_win_get_height(input_win)
+    vim.api.nvim_set_current_win(input_win)
+    cmd = "aboveleft split"
+  end
 
   local equalalways = vim.o.equalalways
   vim.o.equalalways = false
@@ -278,6 +286,11 @@ function M.create_chat_win(buf)
   M.lock_window(win)
   if state.backend == "native" then
     pcall(vim.api.nvim_win_set_width, win, width)
+    if input_height then
+      local height = math.max(state.config.layout.min_input_height, state.config.layout.input_height)
+      height = math.min(height, state.config.layout.max_input_height)
+      pcall(vim.api.nvim_win_set_height, input_win, height)
+    end
   end
   return win
 end
@@ -291,7 +304,10 @@ function M.create_input_win(buf, chat_win)
   if chat_win and vim.api.nvim_win_is_valid(chat_win) then
     vim.api.nvim_set_current_win(chat_win)
   end
+  local equalalways = vim.o.equalalways
+  vim.o.equalalways = false
   local ok = pcall(vim.cmd, "belowright split")
+  vim.o.equalalways = equalalways
   if not ok then
     return nil
   end
@@ -301,6 +317,8 @@ function M.create_input_win(buf, chat_win)
   M.apply_window_options(win, "input")
   M.lock_window(win)
   if state.backend == "native" then
+    local width = require("acp.config").panel_width(state.config, vim.o.columns)
+    pcall(vim.api.nvim_win_set_width, win, width)
     local height = math.max(state.config.layout.min_input_height, state.config.layout.input_height)
     height = math.min(height, state.config.layout.max_input_height)
     pcall(vim.api.nvim_win_set_height, win, height)

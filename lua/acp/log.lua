@@ -2,6 +2,7 @@
 local M = {}
 
 local LEVELS = { trace = 1, debug = 2, info = 3, warn = 4, error = 5 }
+local lines_since_check = 0
 
 local state = {
   level = LEVELS.warn,
@@ -76,7 +77,6 @@ end
 -- previous implementation `fs_stat`ed (and sometimes read the whole file) on
 -- every single log line.
 local ROTATE_CHECK_INTERVAL = 200
-local lines_since_check = 0
 
 local function truncate_file(path, max_bytes)
   local ok, stat = pcall(vim.uv.fs_stat, path)
@@ -122,7 +122,6 @@ function M.log(level, fmt, ...)
     end
     message = tostring(fmt) .. " " .. table.concat(args, " ")
   end
-  -- `%f` keeps sub-second ordering for bursts of events in the same second.
   local line = string.format("[%s] [%s] %s\n", os.date("%Y-%m-%d %H:%M:%S"), level:upper(), M.redact(message))
   local path = M.path()
   local fh = io.open(path, "ab")

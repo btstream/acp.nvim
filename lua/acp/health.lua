@@ -52,7 +52,7 @@ function M.check()
     health.info([[
 
 Add to your edgy config:
-  right = require("acp.integrations.edgy").views()]])
+  require("acp.integrations.edgy").extend(opts)]])
   else
     health.info("edgy.nvim not installed (optional)")
   end

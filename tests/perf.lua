@@ -9,6 +9,7 @@ local chat = Chat.new({ config = cfg })
 chat.width = 80
 
 local session = state.new("perf", "/tmp")
+session:track_changes()
 
 local function ms(fn)
   local t0 = vim.uv.hrtime()
@@ -52,11 +53,11 @@ end)
 all_ok = check("initial render of 1000 blocks", elapsed, 1500) and all_ok
 
 -- 2. Streaming: append a chunk 200 times; only the last block must re-render.
-session:append({ id = "stream", kind = "agent", text = "" })
+session:append_text("agent", "", "stream")
 chat:render()
 elapsed = ms(function()
   for i = 1, 200 do
-    session.blocks[#session.blocks].text = session.blocks[#session.blocks].text .. "chunk " .. i .. " "
+    session:append_text("agent", "chunk " .. i .. " ", "stream")
     chat:render()
   end
 end)
@@ -66,6 +67,7 @@ all_ok = check("200 streaming updates with 1000 blocks", elapsed, 1500) and all_
 local target = session.blocks[500]
 elapsed = ms(function()
   target.expanded = true
+  session:touch(target, false)
   chat:render()
 end)
 all_ok = check("expand one block in a long transcript", elapsed, 300) and all_ok
@@ -85,6 +87,33 @@ elapsed = ms(function()
   end
 end)
 all_ok = check("1000 toolbar renders", elapsed, 300) and all_ok
+
+-- 6. Long history: use many lines per block, not only thousands of short rows.
+local long = state.new("long-perf", "/tmp")
+long:track_changes()
+for i = 1, 1000 do
+  long:append({ id = "long" .. i, kind = "agent", text = string.rep("History line.\n", 20) })
+end
+local long_chat = Chat.new({ config = cfg })
+long_chat:set_session(long)
+elapsed = ms(function()
+  for _ = 1, 100 do
+    long_chat:render()
+  end
+end)
+all_ok = check("100 unchanged renders / 21000 history lines", elapsed, 100) and all_ok
+long:append_text("agent", "", "tail")
+local frames = {}
+for i = 1, 100 do
+  frames[i] = ms(function()
+    long:append_text("agent", "new tail line\n", "tail")
+    long_chat:render()
+  end)
+end
+table.sort(frames)
+all_ok = check("P95 tail update / 21000 history lines", frames[95], 40) and all_ok
+report[#report + 1] = string.format("info   maximum tail frame: %.2fms", frames[100])
+long_chat:destroy()
 
 -- 6. Buffer line count sanity: the transcript should be complete.
 local line_count = vim.api.nvim_buf_line_count(chat.buf)

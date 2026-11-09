@@ -207,12 +207,14 @@ function M.render_text(text, base_hl, width, cache)
   local lines
   local pos = 1
   local mark = { in_fence = false, fence_lang = nil, fence_code = nil, fence_start = nil }
+  local previous_fences = cache and cache.code_fences or {}
+  local fences = {}
 
   local resume = not has_fence
     and cache ~= nil
     and type(cache.text) == "string"
     and #text >= #cache.text
-    and text:sub(1, #cache.text) == cache.text
+    and (cache.append_base == cache.text or text:sub(1, #cache.text) == cache.text)
 
   if resume then
     lines = cache.lines
@@ -239,7 +241,15 @@ function M.render_text(text, base_hl, width, cache)
     if not lang or not body or not start or #body == 0 then
       return
     end
-    local ranges, ok = CodeHL.highlight(table.concat(body, "\n"), lang)
+    local code = table.concat(body, "\n")
+    local saved = previous_fences[#fences + 1]
+    local ranges, ok
+    if saved and saved.code == code and saved.lang == lang and saved.ok and saved.generation == CodeHL.generation then
+      ranges, ok = saved.ranges, true
+    else
+      ranges, ok = CodeHL.highlight(code, lang)
+    end
+    fences[#fences + 1] = { code = code, lang = lang, ranges = ranges, ok = ok, generation = CodeHL.generation }
     if not ok or not ranges then
       return
     end
@@ -353,6 +363,8 @@ function M.render_text(text, base_hl, width, cache)
     -- Snapshot the state *before* the trailing fragment, which is rendered
     -- again from scratch once more text arrives.
     cache.text = text
+    cache.append_base = nil
+    cache.code_fences = fences
     cache.lines = lines
     cache.in_fence = mark.in_fence
     cache.fence_lang = mark.fence_lang
@@ -924,10 +936,23 @@ end
 ---@param block AcpBlock
 ---@param ctx {icons: table, width: integer, cwd: string|nil, show_thoughts: boolean}
 ---@return AcpRenderedLine[]
-function M.render_block(block, ctx)
+local function render_block(block, ctx)
   -- Streaming text is buffered in chunks; join it so reads through
   -- `block.text` see the complete message.
   session_state.block_text(block)
+  for _, key in ipairs({
+    "_md_user",
+    "_md_agent",
+    "_md_thought",
+    "_md_detail",
+    "_md_compaction",
+    "_md_error",
+    "_md_system",
+  }) do
+    if block[key] then
+      block[key].append_base = block._append_base
+    end
+  end
   -- Markdown caches are width-dependent (icon and truncation decisions differ
   -- per width) and must be dropped when the panel is resized.
   if block._md_width ~= ctx.width then
@@ -989,6 +1014,22 @@ function M.render_block(block, ctx)
     return out
   end
   return {}
+end
+
+function M.render_block(block, ctx)
+  local lines = render_block(block, ctx)
+  if block.truncated and #lines > 0 then
+    for _, line in ipairs(lines) do
+      if (line.text or ""):find("Truncated by local memory limit", 1, true) then
+        return lines
+      end
+    end
+    -- The underlying Markdown lines may be cached; never append to that array.
+    lines = vim.list_slice(lines)
+    lines[#lines + 1] =
+      { text = "[Truncated by local memory limit]", segments = { { s = 0, e = -1, group = "AcpNoticeWarn" } } }
+  end
+  return lines
 end
 
 return M

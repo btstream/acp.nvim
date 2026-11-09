@@ -37,5 +37,8 @@ require("tests.spec_thoughts")(t)
 require("tests.spec_tables")(t)
 require("tests.spec_separator")(t)
 require("tests.spec_subagent")(t)
+require("tests.spec_audit")(t)
+require("tests.spec_performance")(t)
+require("tests.spec_lifecycle")(t)
 
 t.run()

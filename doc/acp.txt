@@ -12,6 +12,10 @@ acp.nvim 是一个 Neovim 原生的 Agent Client Protocol 客户端。
     :!opencode auth login
     :Acp
 
+默认布局为原生左右分屏；edgy.nvim 是可选依赖，使用时显式配置 external。
+需要 Neovim 0.10+，推荐 0.12+。代码块语法高亮需对应语言的 Tree-sitter parser
+与 highlights query；缺失时保留纯文本。界面文字为英文，默认使用 Nerd Font 图标。
+
 ==============================================================================
 2. 命令                                                      *acp-commands*
 
@@ -22,7 +26,7 @@ acp.nvim 是一个 Neovim 原生的 Agent Client Protocol 客户端。
     new          新建会话
     stop         中止当前回合
     sessions     打开会话浏览器（<CR> 切换，<C-d> 删除，输入即过滤）
-    delete       同 sessions，直接进入删除流程
+    delete       同 sessions，在浏览器内用 <C-d> 删除
     model        切换模型
     mode         切换模式
     reconnect    重连并恢复当前会话
@@ -41,15 +45,18 @@ acp.nvim 是一个 Neovim 原生的 Agent Client Protocol 客户端。
 3. 输入区                                                    *acp-composer*
 
 <C-s>          发送；回合进行中且输入为空时改为中止
-q              隐藏面板
+<C-c>          中止当前回合（普通模式）
+q              隐藏面板（普通模式）
+L              历史会话（普通模式）
 <C-x><C-u>     补全 /命令 与 @文件
 @path/to/file  发送时自动展开为附件
 <M-m>          切换模型（输入模式）
 <M-b>          切换模式（输入模式）
 M / m          切换模型 / 模式（普通模式）
 
-模型和模式也可以直接点击 winbar 上带 ▾ 的名称。选择器支持输入关键字
-模糊过滤，适用于模型数量很多的 Agent。
+winbar 左侧显示模式徽标、模型名与可选用量；右侧显示状态图标/动画与队列数量。
+模型名不显示 provider 前缀，选择器仍保留完整名称。模式徽标和模型名可以点击。
+普通选择器默认调用 vim.ui.select；过滤能力取决于用户接管它的 UI。
 
 每个会话有独立的草稿和附件。面板隐藏后草稿仍保留。
 
@@ -58,7 +65,7 @@ M / m          切换模型 / 模式（普通模式）
 
 i / <C-s>      聚焦输入区
 <CR>           打开光标所在位置的文件
-<Tab>          展开或折叠工具调用
+<Tab>          展开或折叠工具/思考块；不可折叠时聚焦输入区
 [b / ]b        上一个 / 下一个消息块
 G / gg         最新 / 最早
 S              附加当前选区
@@ -87,6 +94,8 @@ q              隐藏面板
         min_width = 42,
         max_width = 120,
         input_height = 8,
+        min_input_height = 4,
+        max_input_height = 24,
         lock_buffer = true,   -- 用 'winfixbuf' 锁定 ACP 窗口
       },
       ui = {
@@ -114,6 +123,16 @@ q              隐藏面板
         toggle_block = "<Tab>",
       },
       permissions = { prompt = "select" },
+      notices = true,
+      memory = {
+        max_block_bytes = 1024 * 1024,
+        max_session_bytes = 16 * 1024 * 1024,
+        max_cached_sessions = 8,
+        max_total_bytes = 64 * 1024 * 1024,
+        max_queued_messages = 16,
+        max_queue_bytes = 4 * 1024 * 1024,
+        max_drafts = 20,
+      },
       log = { level = "warn", protocol = false },
     })
 
@@ -134,8 +153,9 @@ ipairs(views)，具名字段会被完全忽略，导致输入框脱离 edgebar�
 
     -- 正确
     right = {
-      { ft = "acp_chat",  title = "Agent" },
-      { ft = "acp_input", title = "Message", size = { height = 0.2 } },
+      { ft = "acp_chat", title = "Agent", wo = { winbar = false } },
+      { ft = "acp_input", title = "Message", size = { height = 8 },
+        wo = { winbar = false } },
     }
 
     -- 错误
@@ -156,7 +176,15 @@ acp 创建两个普通视图：
 
 默认 acp 拥有两个 winbar。若想让 edgy 显示标题栏：
 
-    require("acp.integrations.edgy").views({ title_winbar = true })
+    require("acp.integrations.edgy").extend(opts, {
+      title_winbar = true,
+      toolbar_winbar = false,
+    })
+
+并将 ACP 的 ui.title.placement 与 ui.toolbar.placement 设为 "off"。
+views() 返回 { chat = ..., input = ... }，不能直接赋给 opts.right；使用 extend()
+或手动将两项作为数组元素插入。左侧布局显式传 position = "left"，并同步 ACP
+的 layout.position。
 
 ==============================================================================
 7. 状态栏                                                  *acp-statusline*
@@ -181,11 +209,13 @@ ACP 的两个窗口默认锁定到自己的 buffer（'winfixbuf'），:edit、:b
 
     require("acp").setup({ layout = { lock_buffer = false } })
 
-所有选择器（模型、模式、会话、权限确认）默认通过 vim.ui.select 实现，
+普通选择器（模型、模式、权限确认）默认通过 vim.ui.select 实现，
 因此 telescope、fzf-lua、snacks.nvim 等插件会自动接管。需要改用内置浮动
 选择器时：
 
     require("acp").setup({ ui = { picker = "internal" } })
+
+会话浏览器独立使用 ui.session_picker，默认 snacks，不可用时回退到内置窗口。
 
 ==============================================================================
 9. 工作目录                                                  *acp-cwd*
@@ -197,22 +227,28 @@ ACP 的两个窗口默认锁定到自己的 buffer（'winfixbuf'），:edit、:b
 切换历史会话时使用该会话自己的目录发起 session/load，因为 ACP 规范要求 cwd 与
 会话一致，不匹配时 Agent 会拒绝。
 
+==============================================================================
 10. 面板尺寸                                                    *acp-sizing*
 
-layout.width 为 0~1 时按编辑器宽度取比例，>1 时为绝对列数，受 min_width /
-max_width 约束，且不超过编辑器宽度 60%。
+原生布局中 layout.width 为 0.05~1 时按编辑器宽度取比例，>1 时为绝对列数。
+先应用 min_width / max_width，再限制为编辑器宽度的 60%；空间不足时可能小于
+min_width。输入高度受 min_input_height / max_input_height 约束。external 模式
+由布局管理器设置尺寸。两个窗口的局部 statuscolumn 均设为一个空格 " "。
 
 构建面板时临时关闭 'equalalways'，两个窗口创建完并设置好尺寸后再恢复；否则
 第二次 split 会立即重排，覆盖配置的宽度。
 
-winbar 上的模型/模式点击区域需要 'mouse' 含 a（Neovim 默认 "nvi" 不含 a）。
-无法点击时使用 <M-m> / <M-b>，acp.nvim 会在启动时提示一次。
+鼠标需在当前模式启用：默认 'mouse' 为 "nvi"，已支持普通、可视和插入模式，
+并不要求包含 a。设为空字符串会关闭鼠标支持。无法点击时也可用 <M-m>/<M-b>。
 
+==============================================================================
 11. 会话标题与删除                                      *acp-session-titles*
 
-标题显示在对话记录窗口的 winbar 中。OpenCode 不会主动推送 session_info_update，
-标题只出现在 session/list 结果里。acp.nvim 在会话创建后、切换会话后、以及每回合
-结束后各查询一次列表来同步，并用 session id 做缓存，因此切换后标题立即更新。
+标题显示在对话记录窗口的 winbar 中。为兼容未推送 session_info_update 的 Agent，
+acp.nvim 在会话创建后、切换会话后及每回合结束后查询 session/list 来同步标题，
+并按 session id 缓存；同时支持 Agent 推送的标题更新。
+历史先重放到暂存对象，成功后提交；失败不覆盖旧历史与队列。同一时间只执行一次重放。
+选择运行中的缓存会话时直接查看，不重新加载；旧加载结果不会覆盖较新的选择意图。
 
 :Acp sessions 默认使用 snacks.nvim 的 picker：自带 fuzzy 搜索、实时预览，并沿用
 用户已有的 snacks 主题。未安装 snacks 时自动回退到内置窗口。
@@ -230,18 +266,46 @@ winbar 上的模型/模式点击区域需要 'mouse' 含 a（Neovim 默认 "nvi"
     require("acp").setup({ ui = { session_picker = "internal" } })
 
 内置窗口（回退时）支持 j/k 移动与 <BS>/<C-u> 编辑过滤。
+q 关闭，gg/G 跳到首项/末项；需要搜索保留字母 j/k/q 时用大写 J/K/Q。
 
 删除非当前会话不影响当前对话；删除当前会话会自动新建一个。Agent 未声明
 sessionCapabilities.delete 时给出提示，不弹出无法兑现的确认框。
 
+==============================================================================
 12. 行为细节                                                *acp-behavior*
 
 同一会话同时只运行一个 prompt；生成中提交的消息本地排队。
+默认最多排队 16 条、估算载荷 4 MiB，超过时拒绝入队并保留输入。
+队列属于会话运行时，切换窗口不暂停后台队列；历史替换共享 outbox，不丢失待发送消息。
+队列仅保存在当前 Neovim 进程，退出或崩溃后不恢复。
+
+重新 setup() 会取消旧环境任务；待发送队列非空时默认拒绝重新配置。确实需要丢弃时：
+
+    require("acp").setup({}, { discard_queued = true })
 
 Agent 崩溃后使用 :Acp reconnect。重连会通过 session/load 重放 Agent 侧
 历史，但不会自动重发上一条 prompt。
+断连暂停队列；恢复当前会话后继续尚未开始的消息，其他会话在选中并恢复后继续。
+已发请求不自动重试，避免重复工具操作；这不是远端执行 exactly-once 保证。
 
 未发送的草稿保存在 stdpath("state")/acp/drafts.json，重启后自动恢复。
+磁盘草稿最多 50 条，内存历史草稿默认最多 20 条。磁盘保存合并 150ms 后异步写入，
+退出时 flush；崩溃可能丢失尚未持久化的最近修改。
+草稿保存显式绑定项目与会话，切换或重入不会误写另一个会话；仅附件的草稿也会保留。
+
+控制器使用 block 版本和变更日志，仅重建变化块及受影响的后缀。窗口宽度变化、主题
+切换或变更日志落后时使用完整渲染。代码语法缓存跨宽度复用，最多 64 项/约 2 MiB；
+超过 256 KiB 的单个代码块显示纯文本，单块最多保留 20,000 个语法捕获。
+
+memory.* 限制本地保留载荷，不是 Lua/Neovim RSS 硬上限。超大 block 显示截断标记，
+会话超预算会移除最旧记录，不修改 Agent 侧历史；重新加载仍应用同样预算。
+闲置会话按 LRU 淘汰，当前、运行中、有队列或权限请求的会话受保护，可暂时超过
+缓存数量/总载荷预算。渲染缓存和 Neovim 对象仍有额外开销。
+
+transport.max_pending_bytes 默认 16 MiB，限制协议待分发队列的估算开销；超出时
+断开连接。dispatch_budget_ms 默认 4ms，每批按顺序分发后让出主循环，但不能抢占
+单条 JSON 解码或单块排版。
+通知归约在该预算内执行；权限 UI 单独调度，旧连接的模型/权限选择器不会影响新状态。
 
 权限选择器按 Esc 或 q 关闭视为拒绝；若 Agent 没有提供 reject 选项，则返回
 cancelled。
@@ -269,10 +333,11 @@ ui.separator.form 控制样式：
 ==============================================================================
 14. 高亮                                                    *acp-highlights*
 
-所有样式都是**静态定义**：每个组直接链接到 Neovim 自己的组，插件不会在运行时
-读取或混合主题颜色。正文里的 Markdown（粗体、斜体、删除线、标题、引用、链接）链接
+样式为静态定义，多数组链接到 Neovim / Tree-sitter 组；模式徽标默认使用固定颜色，
+可通过 ui.highlights 覆盖。插件不会在运行时混合主题颜色。
+正文里的 Markdown（粗体、斜体、删除线、标题、引用、链接）链接
 到 treesitter 的 @markup.* 捕获组，所以在对话记录里的呈现和普通 Markdown buffer
-完全一致。
+遵循相应主题样式，但并非完整的 Markdown 实现。
 
 两处例外，都是为了让表格读起来安静一些：
 
@@ -293,7 +358,7 @@ acp_chat 的标题栏（winbar）与正文共用同一个背景（AcpNormal）�
 它是工具栏而非页眉。
 
 对话记录的标题行拆成图标和文字两组。默认 AcpUserTitle 链接到
-AcpUserIcon、AcpAssistantTitle 链接到 AcpAssistantIcon，即同色；想区分时
+AcpUserIcon；助手的两组均链接到 Keyword。想区分时
 单独覆盖即可。助手回合开头的 Markdown 标题会用 AcpAssistantTitle，正文中间
 的标题仍保留各自的 AcpH1-AcpH4 级别。
 
@@ -312,7 +377,10 @@ AcpUserIcon、AcpAssistantTitle 链接到 AcpAssistantIcon，即同色；想区�
 
     vim.api.nvim_set_hl(0, "AcpUser", { link = "Function" })
 
-切换 colorscheme 后会自动重新应用，配置里的覆盖也会一并恢复。
+切换 colorscheme 后会重新应用内置定义和 ui.highlights 配置；直接 nvim_set_hl 的
+临时覆盖不保证保留，需要持久化时使用配置或自己的 ColorScheme 回调。
+工具栏在 Neovim 0.12+ 使用继承背景的高亮语法；0.10/0.11 使用兼容语法，外部布局
+插件重映射 WinBar 时颜色可能有所不同。
 
 ui.icons = false 会改用 ASCII 图标。
 

@@ -1,0 +1,115 @@
+-- Scoped asynchronous operations. A task owns its client/session identities;
+-- changing configuration or connection cancels it before replacing that state.
+local async = require("acp.async")
+local M = {}
+local Scope, Task = {}, {}
+Scope.__index, Task.__index = Scope, Task
+
+function M.new(state)
+  return setmetatable({ state = state, generation = 0, sequence = 0, active = {} }, Scope)
+end
+
+function Task:context_current()
+  local state = self.scope.state()
+  return self.generation == self.scope.generation
+    and self.scope.active[self.key] == self
+    and state.client == self.client
+    and (not self.client or self.client.generation == self.client_generation)
+end
+
+function Task:current()
+  local state = self.scope.state()
+  return self:context_current()
+    and (
+      not self.session
+      or (state.runtime and state.runtime:owns(self.session))
+      or state.sessions[self.session.id] == self.session
+    )
+end
+
+function Task:check()
+  if self.status ~= "running" or not self:current() then
+    self:cancel()
+    error(async.CANCELLED, 0)
+  end
+end
+
+function Task:call(method, ...)
+  self:check()
+  local ok, result = self.client[method](self.client, ...)
+  self:check() -- every asynchronous boundary has the same identity fence
+  return ok, result
+end
+
+function Task:cancel()
+  if self.status ~= "running" then
+    return
+  end
+  self.status = "cancelled"
+  async.cancel(self.co or coroutine.running())
+end
+
+function Scope:run(key, client, session, fn, on_error, on_finally)
+  self.sequence = self.sequence + 1
+  local task = setmetatable({
+    scope = self,
+    key = key,
+    client = client,
+    client_generation = client and client.generation,
+    session = session,
+    generation = self.generation,
+    id = self.sequence,
+    status = "running",
+  }, Task)
+  local previous = self.active[key]
+  self.active[key] = task
+  if previous then
+    previous:cancel()
+  end
+  task.co = async.run(function()
+    task.co = coroutine.running() -- available even during a reentrant send
+    async.finally(function()
+      local current = task:context_current()
+      if task.status == "running" then
+        task.status = "succeeded"
+      end
+      if self.active[key] == task then
+        self.active[key] = nil
+      end
+      if on_finally then
+        on_finally(task, current)
+      end
+    end)
+    task:check()
+    fn(task)
+  end, function(err)
+    task.status = "failed"
+    if task:context_current() and on_error then
+      on_error(err, task)
+    end
+  end)
+  return task
+end
+
+function Scope:reset()
+  self.generation = self.generation + 1
+  local previous = self.active
+  self.active = {}
+  for _, task in pairs(previous) do
+    task:cancel()
+  end
+end
+
+function Scope:cancel_session(session, except)
+  local matches = {}
+  for _, task in pairs(self.active) do
+    if task.session and task.session.id == session.id and task ~= except then
+      matches[#matches + 1] = task
+    end
+  end
+  for _, task in ipairs(matches) do
+    task:cancel()
+  end
+end
+
+return M

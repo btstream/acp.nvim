@@ -33,7 +33,12 @@ local function background_runs(meta)
     local bg = meta[row + 1] and meta[row + 1].bg
     if bg then
       local stop = row
-      while stop + 1 < #meta and meta[stop + 2] and meta[stop + 2].bg == bg do
+      while
+        stop + 1 < #meta
+        and meta[stop + 2]
+        and meta[stop + 2].bg == bg
+        and meta[stop + 2].block_id == meta[row + 1].block_id
+      do
         stop = stop + 1
       end
       runs[#runs + 1] = { s = row, e = stop + 1, group = bg }
@@ -63,6 +68,7 @@ local function paint_backgrounds(buf, runs)
       hl_eol = true,
       hl_mode = "combine",
       priority = 50,
+      end_right_gravity = false,
     })
   end
 end
@@ -132,6 +138,13 @@ function M.new(opts)
       self:schedule_render()
     end,
   })
+  vim.api.nvim_create_autocmd("ColorScheme", {
+    group = group,
+    callback = function()
+      self.needs_force = true
+      self:schedule_render()
+    end,
+  })
 
   return self
 end
@@ -142,6 +155,8 @@ function Chat:set_session(session)
     return
   end
   self.session = session
+  self.render_version = nil
+  self.row_starts, self.turn_counts, self.render_order = {}, {}, {}
   self.cache = {}
   self.line_starts = {}
   self.meta = {}
@@ -155,6 +170,148 @@ function Chat:set_session(session)
   self.pending_new = false
   self.follow = self.config.ui.follow_output
   self:render()
+end
+
+---Update only the dirty block and the suffix whose row coordinates may move.
+---Stable prefixes keep their strings, metadata tables and extmarks unchanged.
+function Chat:render_dirty(first_block)
+  local session = self.session
+  local offset = first_block == 1 and 0 or ((self.row_starts[first_block] or (#self.lines_cache + 1)) - 1)
+  local lines, meta, present = {}, {}, {}
+  local turn = first_block == 1 and 0 or (self.turn_counts[first_block] or self.render_turns or 0)
+  if first_block == 1 and session.trimmed then
+    lines[1] = "Earlier messages omitted by local memory limits."
+    meta[1] = { kind = "notice", segments = { { s = 0, e = -1, group = "AcpMuted" } } }
+  end
+  local ctx = {
+    icons = self.icons,
+    width = self.width,
+    cwd = session.cwd,
+    show_thoughts = self.show_thoughts,
+    thoughts = self.thoughts,
+  }
+  local separator = self.config.ui.separator or {}
+  local removed = {}
+  for i = first_block, #self.render_order do
+    removed[#removed + 1] = self.render_order[i]
+  end
+  for i = first_block, #session.blocks do
+    local block = session.blocks[i]
+    present[block.id] = true
+    self.row_starts[i], self.turn_counts[i], self.render_order[i] = offset + #lines + 1, turn, block.id
+    if block.kind == "user" then
+      turn = turn + 1
+      if separator.form ~= "off" and turn > 1 then
+        for _, line in ipairs(blocks.render_separator(ctx, { form = separator.form, turn = turn })) do
+          lines[#lines + 1] = line.text or ""
+          meta[#meta + 1] = { kind = "separator", segments = line.segments, bg = line.bg }
+        end
+      end
+    end
+    local entry = self.cache[block.id]
+    if not entry or entry.block ~= block or entry.revision ~= block._revision then
+      session_state.block_text(block)
+      entry = { block = block, revision = block._revision, lines = blocks.render_block(block, ctx) }
+      self.cache[block.id] = entry
+    end
+    self.line_starts[block.id] = offset + #lines + 1
+    for _, line in ipairs(entry.lines) do
+      lines[#lines + 1] = (line.text or ""):gsub("[\r\n]", " ")
+      meta[#meta + 1] = {
+        block_id = block.id,
+        kind = block.kind,
+        status = block.status,
+        location = line.location,
+        segments = line.segments,
+        bg = line.bg,
+      }
+    end
+  end
+  for _, id in ipairs(removed) do
+    if not present[id] then
+      self.cache[id], self.line_starts[id] = nil, nil
+    end
+  end
+  for i = #self.render_order, #session.blocks + 1, -1 do
+    self.render_order[i], self.row_starts[i], self.turn_counts[i] = nil, nil, nil
+  end
+  -- A zero-line thought-only session uses the normal empty hint path.
+  if offset == 0 and #lines == 0 then
+    lines, meta = { "Start a conversation with the agent." }, { { kind = "empty" } }
+  end
+  local old_count = #self.lines_cache
+  local prefix, suffix = 0, 0
+  local old_size = old_count - offset
+  local function equal(old_row, new_row)
+    return self.lines_cache[old_row] == lines[new_row]
+      and vim.deep_equal(self.meta[old_row] and self.meta[old_row].segments, meta[new_row] and meta[new_row].segments)
+  end
+  while prefix < math.min(old_size, #lines) and equal(offset + prefix + 1, prefix + 1) do
+    prefix = prefix + 1
+  end
+  while suffix < math.min(old_size, #lines) - prefix and equal(old_count - suffix, #lines - suffix) do
+    suffix = suffix + 1
+  end
+  local last = #lines - suffix
+  if prefix < last or old_size ~= #lines then
+    vim.bo[self.buf].modifiable = true
+    vim.api.nvim_buf_set_lines(
+      self.buf,
+      offset + prefix,
+      old_count - suffix,
+      false,
+      vim.list_slice(lines, prefix + 1, last)
+    )
+    vim.bo[self.buf].modifiable = false
+    vim.api.nvim_buf_clear_namespace(self.buf, ns, offset + prefix, offset + last)
+    for i = prefix + 1, last do
+      if meta[i].segments then
+        self:apply_line_highlights(offset + i, meta[i].segments, lines[i])
+      end
+    end
+  end
+  for i, text in ipairs(lines) do
+    self.lines_cache[offset + i], self.meta[offset + i] = text, meta[i]
+  end
+  for i = old_count, offset + #lines + 1, -1 do
+    self.lines_cache[i], self.meta[i] = nil, nil
+  end
+  local runs, actual = background_runs(meta), {}
+  -- Extmarks already move with edits. Reuse them when their actual post-edit
+  -- geometry matches the new layout (e.g. prose streaming after a code fence).
+  for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(self.buf, ns_bg, { offset, 0 }, -1, { details = true })) do
+    actual[#actual + 1] = { s = mark[2] - offset, e = mark[4].end_row - offset, group = mark[4].hl_group }
+  end
+  if not runs_equal(actual, runs) then
+    vim.api.nvim_buf_clear_namespace(self.buf, ns_bg, offset, -1)
+    for _, run in ipairs(runs) do
+      vim.api.nvim_buf_set_extmark(self.buf, ns_bg, offset + run.s, 0, {
+        end_row = offset + run.e,
+        end_col = 0,
+        hl_group = run.group,
+        hl_eol = true,
+        hl_mode = "combine",
+        priority = 50,
+        end_right_gravity = false,
+      })
+    end
+  end
+  self.render_version, self.render_turns = session.version, turn
+  self.bg_runs = nil -- rebuilt if a full/fallback render is requested
+  if self.keep_block then
+    local row = self.line_starts[self.keep_block]
+    self.keep_block = nil
+    if row and self:is_visible() then
+      pcall(vim.api.nvim_win_set_cursor, self.win, { row, 0 })
+    end
+  elseif self.follow then
+    self:scroll_to_bottom()
+  elseif self:is_visible() and not self.pending_new then
+    self.pending_new = true
+    if self.on_pending_new then
+      self.on_pending_new(true)
+    end
+  end
 end
 
 function Chat:on_enter()
@@ -245,6 +402,8 @@ function Chat:render(force)
     return
   end
   self.needs_render = false
+  force = force or self.needs_force
+  self.needs_force = false
   if not self.session then
     -- No session: clear the transcript instead of leaving the previous
     -- conversation on screen (e.g. right after deleting the active session).
@@ -277,6 +436,14 @@ function Chat:render(force)
     end
   end
 
+  if self.session.tracked and self.render_version ~= nil and not force and not self.full_rewrite then
+    local first = self.session:changed_since(self.render_version)
+    if not first then
+      return
+    end
+    return self:render_dirty(first)
+  end
+
   local ctx = {
     icons = self.icons,
     width = self.width,
@@ -291,6 +458,10 @@ function Chat:render(force)
 
   local lines = {}
   local meta = {}
+  if self.session.trimmed then
+    lines[1] = "Earlier messages omitted by local memory limits."
+    meta[1] = { kind = "notice", segments = { { s = 0, e = -1, group = "AcpMuted" } } }
+  end
   local starts = {}
   local seen = {}
   local new_cache = {}
@@ -300,7 +471,9 @@ function Chat:render(force)
   -- replayed session, where no `begin_turn` ran for the replayed messages.
   local turn = 0
 
-  for _, block in ipairs(self.session.blocks) do
+  self.row_starts, self.turn_counts, self.render_order = {}, {}, {}
+  for index, block in ipairs(self.session.blocks) do
+    self.row_starts[index], self.turn_counts[index], self.render_order[index] = #lines + 1, turn, block.id
     seen[block.id] = true
     -- The divider belongs to the transcript, not to any block: it is inserted
     -- between two turns rather than appended to one of them, so it never shows
@@ -318,8 +491,13 @@ function Chat:render(force)
     session_state.block_text(block)
     local sig = block_signature(block)
     local entry = self.cache[block.id]
-    if not entry or not signature_equal(entry.sig, sig) then
-      entry = { sig = sig, lines = blocks.render_block(block, ctx) }
+    if
+      not entry
+      or entry.block ~= block
+      or (self.session.tracked and entry.revision ~= block._revision)
+      or not signature_equal(entry.sig, sig)
+    then
+      entry = { block = block, sig = sig, revision = block._revision, lines = blocks.render_block(block, ctx) }
       -- A buffer line cannot contain a newline. Agent supplied text may, so
       -- fold it once here; cached lines are already clean.
       for _, line in ipairs(entry.lines) do
@@ -424,6 +602,7 @@ function Chat:render(force)
   self.meta = meta
   self.lines_cache = lines
   self.line_starts = starts
+  self.render_version, self.render_turns = self.session.version, turn
 
   -- A block that was just toggled keeps the cursor: expanding or collapsing it
   -- is a deliberate action, not new output to follow.
@@ -535,7 +714,7 @@ function Chat:toggle_current()
     return false
   end
   if block.kind == "tool" or block.kind == "compaction" or block.kind == "thought" then
-    block.expanded = not block.expanded
+    self.session:toggle(block)
     -- Expanding changes the transcript height. Without this the renderer would
     -- treat the view as "following output" and jump the cursor to the end of the
     -- buffer, which is disorienting when the user just opened a block to read it.

@@ -18,8 +18,18 @@ M.defaults = {
     },
   },
 
-  -- Working directory for sessions. Defaults to the current project root (see cwd resolution).
+  -- Working directory for sessions. Defaults to vim.fn.getcwd().
   cwd = nil,
+
+  memory = {
+    max_block_bytes = 1024 * 1024,
+    max_session_bytes = 16 * 1024 * 1024,
+    max_cached_sessions = 8,
+    max_total_bytes = 64 * 1024 * 1024,
+    max_queued_messages = 16,
+    max_queue_bytes = 4 * 1024 * 1024,
+    max_drafts = 20,
+  },
 
   log = {
     level = "warn",
@@ -41,6 +51,9 @@ M.defaults = {
     -- minutes, so this is deliberately generous; it exists only so a wedged
     -- agent cannot hang the turn forever. 0 disables it.
     prompt_timeout = 600000,
+    -- Bound queued decoded-line payloads and yield between dispatch batches.
+    max_pending_bytes = 16 * 1024 * 1024,
+    dispatch_budget_ms = 4,
   },
 
   layout = {
@@ -234,6 +247,15 @@ end
 ---@param cfg table
 ---@return table
 function M.validate(cfg)
+  for _, key in ipairs({ "max_block_bytes", "max_session_bytes", "max_total_bytes", "max_queue_bytes" }) do
+    check_number(cfg.memory[key], 1024, 1024 * 1024 * 1024, "memory." .. key)
+  end
+  for _, key in ipairs({ "max_cached_sessions", "max_queued_messages", "max_drafts" }) do
+    check_number(cfg.memory[key], 1, 10000, "memory." .. key)
+  end
+  if cfg.memory.max_block_bytes > cfg.memory.max_session_bytes then
+    fail("memory.max_block_bytes must not exceed memory.max_session_bytes")
+  end
   check_enum(cfg.agent, vim.tbl_keys(cfg.agents), "agent")
   check_enum(cfg.layout.backend, { "native", "external" }, "layout.backend")
   check_enum(cfg.layout.position, { "right", "left" }, "layout.position")
@@ -260,11 +282,11 @@ function M.validate(cfg)
     fail("ui.thoughts.show_collapsed_header must be a boolean")
   end
 
+  check_number(cfg.layout.min_width, 1, 10000, "layout.min_width")
+  check_number(cfg.layout.max_width, 1, 10000, "layout.max_width")
   if cfg.layout.min_width > cfg.layout.max_width then
     fail("layout.min_width must not exceed layout.max_width")
   end
-  check_number(cfg.layout.min_width, 1, cfg.layout.max_width, "layout.min_width")
-  check_number(cfg.layout.max_width, 1, 10000, "layout.max_width")
   check_number(cfg.layout.min_input_height, 1, 200, "layout.min_input_height")
   check_number(cfg.layout.max_input_height, 1, 200, "layout.max_input_height")
   if cfg.layout.min_input_height > cfg.layout.max_input_height then
@@ -278,6 +300,8 @@ function M.validate(cfg)
   check_number(cfg.transport.shutdown_timeout, 0, 600000, "transport.shutdown_timeout")
   check_number(cfg.transport.request_timeout, 0, 3600000, "transport.request_timeout")
   check_number(cfg.transport.prompt_timeout, 0, 24 * 3600 * 1000, "transport.prompt_timeout")
+  check_number(cfg.transport.max_pending_bytes, 1024, 1024 * 1024 * 1024, "transport.max_pending_bytes")
+  check_number(cfg.transport.dispatch_budget_ms, 1, 100, "transport.dispatch_budget_ms")
 
   check_enum(cfg.log.level, { "trace", "debug", "info", "warn", "error" }, "log.level")
   check_number(cfg.log.max_bytes, 0, 1024 * 1024 * 1024, "log.max_bytes")
@@ -330,7 +354,7 @@ function M.panel_width(cfg, total)
   local cols = (w <= 1) and math.floor(total * w + 0.5) or math.floor(w)
   cols = math.max(cols, cfg.layout.min_width)
   cols = math.min(cols, cfg.layout.max_width)
-  -- Never take more than half the screen.
+  -- Never take more than 60% of the screen.
   cols = math.min(cols, math.max(1, math.floor(total * 0.6)))
   return cols
 end

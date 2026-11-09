@@ -59,7 +59,7 @@ end
 ---@param session AcpSessionState
 ---@param update table
 ---@return boolean changed
-function M.apply(session, update)
+local function reduce(session, update)
   if type(update) ~= "table" or type(update.sessionUpdate) ~= "string" then
     Log.warn("ignoring malformed session update")
     return false
@@ -127,7 +127,9 @@ function M.apply(session, update)
     block.content = merge_list(block.content, update.content)
     block.raw_input = merge_list(block.raw_input, update.rawInput)
     block.raw_output = merge_list(block.raw_output, update.rawOutput)
-    block.detail = tool_content_text(block.content)
+    if update.content ~= nil or block.detail == nil then
+      block.detail = tool_content_text(block.content)
+    end
     return true
   end
 
@@ -168,7 +170,9 @@ function M.apply(session, update)
     block.content = merge_list(block.content, update.content)
     block.raw_input = merge_list(block.raw_input, update.rawInput)
     block.raw_output = merge_list(block.raw_output, update.rawOutput)
-    block.detail = tool_content_text(block.content)
+    if update.content ~= nil or block.detail == nil then
+      block.detail = tool_content_text(block.content)
+    end
     return true
   end
 
@@ -342,6 +346,43 @@ function M.apply(session, update)
 
   Log.debug("unhandled session update kind: %s", kind)
   return false
+end
+
+function M.apply(session, update)
+  local changed = reduce(session, update)
+  if not changed then
+    return false
+  end
+  local kind = update.sessionUpdate
+  if kind == "tool_call" or kind == "tool_call_update" then
+    session:touch(
+      session.tools[update.toolCallId],
+      update.content ~= nil
+        or update.rawInput ~= nil
+        or update.rawOutput ~= nil
+        or update.title ~= nil
+        or update.name ~= nil
+        or update.locations ~= nil
+    )
+  elseif kind == "plan" or kind == "compaction_update" or kind == "compaction_summary_chunk" then
+    for i = #session.blocks, 1, -1 do
+      local block = session.blocks[i]
+      if
+        (kind == "plan" and block.kind == "plan")
+        or (block.kind == "compaction" and block.compaction_id == update.compactionId)
+      then
+        session:touch(block)
+        break
+      end
+    end
+  elseif kind == "session_info_update" and update._meta and update._meta["opencode/compaction"] then
+    for _, block in ipairs(session.blocks) do
+      if block.kind == "compaction" then
+        session:touch(block, false)
+      end
+    end
+  end
+  return true
 end
 
 ---Strip the provider prefix from a model name.

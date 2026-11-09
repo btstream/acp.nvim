@@ -73,7 +73,15 @@ function Rpc:request(method, params, cb)
   if cb then
     self.pending[id] = { method = method, cb = cb }
   end
-  self:write({ jsonrpc = "2.0", id = id, method = method, params = params })
+  local ok, sent = pcall(self.write, self, { jsonrpc = "2.0", id = id, method = method, params = params })
+  if not ok or not sent then
+    local entry = self.pending[id]
+    self.pending[id] = nil
+    if entry and entry.cb then
+      entry.cb(false, { code = -32000, message = "failed to send request: " .. method })
+    end
+    return nil
+  end
   return id
 end
 

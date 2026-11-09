@@ -1,7 +1,6 @@
 -- Application controller: wires protocol, session state, layout and UI.
 local config_mod = require("acp.config")
 local log = require("acp.log")
-local async = require("acp.async")
 local client_mod = require("acp.protocol.client")
 local session_mod = require("acp.session.state")
 local reducer = require("acp.session.reducer")
@@ -16,6 +15,8 @@ local highlights = require("acp.ui.highlights")
 local complete = require("acp.ui.complete")
 local drafts = require("acp.storage.drafts")
 local layout = require("acp.layout")
+local Runtime = require("acp.session.runtime")
+local Tasks = require("acp.tasks")
 local context = require("acp.context")
 
 local M = {}
@@ -42,6 +43,9 @@ local S = {
   spinner_index = 1,
   augroup = nil,
 }
+local operations = Tasks.new(function()
+  return S
+end)
 
 local SPINNER = { "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" }
 local SPINNER_ASCII = { "|", "/", "-", "\\" }
@@ -52,6 +56,48 @@ local SPINNER_ASCII = { "|", "/", "-", "\\" }
 
 local function cfg()
   return S.config
+end
+
+local function new_local_session(id, cwd, result)
+  return S.runtime:create(id, cwd, result)
+end
+
+local function prune_sessions()
+  S.runtime:prune(S.session, S.pending_permissions)
+end
+
+local function dispatch_queued(session)
+  if S.connection ~= "ready" or not S.runtime:owns(session) then
+    return
+  end
+  local runtime = S.runtime
+  local item = runtime:next_message(session)
+  if item then
+    if M.send_now(item.text, item.attachments, session) then
+      runtime:ack_message(session, item)
+      if session.status == "idle" then
+        dispatch_queued(session)
+      end
+    else
+      runtime:restore_message(session, item)
+      local replacement = runtime.sessions[session.id]
+      if replacement and replacement ~= session and replacement.outbox == session.outbox then
+        dispatch_queued(replacement)
+      end
+    end
+  end
+end
+
+local function ui_current(client, generation, session)
+  return S.client == client
+    and operations.generation == generation
+    and (not session or (S.session == session and S.runtime:owns(session)))
+end
+
+local function invalidate_operations()
+  operations:reset()
+  S.replaying, S.creating_session, S.title_refreshing = false, false, false
+  S.title_pending, S.title_pending_session = false, nil
 end
 
 ---Resolve the session working directory.
@@ -203,7 +249,9 @@ local function update_chat_title()
     return
   end
   -- Set once; the expression re-renders with the real width on every redraw.
-  pcall(vim.api.nvim_set_option_value, "winbar", "%{%v:lua.AcpTranscriptBar()%}", { win = win })
+  if vim.api.nvim_get_option_value("winbar", { win = win }) ~= "%{%v:lua.AcpTranscriptBar()%}" then
+    pcall(vim.api.nvim_set_option_value, "winbar", "%{%v:lua.AcpTranscriptBar()%}", { win = win })
+  end
 end
 
 ---Build the composer winbar for the window currently being drawn.
@@ -283,8 +331,16 @@ local function update_input_toolbar()
 end
 
 local function refresh_chrome()
-  update_chat_title()
-  update_input_toolbar()
+  if S.chrome_pending then
+    return
+  end
+  S.chrome_pending = true
+  vim.schedule(function()
+    S.chrome_pending = false
+    update_chat_title()
+    update_input_toolbar()
+    pcall(vim.cmd, "redrawstatus")
+  end)
 end
 
 ---Remember an agent-provided title, ignoring JSON null and empty strings.
@@ -353,36 +409,41 @@ local function refresh_session_title(session, cb)
     return
   end
   S.title_refreshing = true
-  async.run(function()
-    local ok, result = S.client:list_sessions(session.cwd)
-    -- Reset the guard before anything else can raise: an error used to leave
-    -- `title_refreshing` stuck true, disabling title refresh for the session.
-    S.title_refreshing = false
-    if ok and type(result) == "table" then
-      for _, info in ipairs(result.sessions or {}) do
-        cache_title(info.sessionId, info.title)
+  operations:run(
+    "title",
+    S.client,
+    session,
+    function(task)
+      local ok, result = task:call("list_sessions", session.cwd)
+      if ok and type(result) == "table" then
+        for _, info in ipairs(result.sessions or {}) do
+          cache_title(info.sessionId, info.title)
+        end
+        if apply_cached_title(session) then
+          refresh_chrome()
+        end
       end
-      if apply_cached_title(session) then
-        refresh_chrome()
+      if not ok then
+        task.status = "failed"
+      end
+    end,
+    nil,
+    function(_, owned)
+      if not owned then
+        return
+      end
+      S.title_refreshing = false
+      if cb then
+        cb()
+      end
+      if S.title_pending then
+        local pending_session = S.title_pending_session or session
+        S.title_pending = false
+        S.title_pending_session = nil
+        refresh_session_title(pending_session)
       end
     end
-    if cb then
-      cb()
-    end
-    if S.title_pending then
-      local pending_session = S.title_pending_session or session
-      S.title_pending = false
-      S.title_pending_session = nil
-      refresh_session_title(pending_session)
-    end
-  end, function()
-    -- The coroutine died before the reset above ran; clear the guard so a
-    -- later switch can still fetch the title.
-    S.title_refreshing = false
-    if cb then
-      cb()
-    end
-  end)
+  )
 end
 
 ---------------------------------------------------------------------------
@@ -415,7 +476,7 @@ local function start_spinner()
     end
     S.spinner_index = (S.spinner_index % #frames) + 1
     S.spinner = frames[S.spinner_index]
-    update_input_toolbar()
+    refresh_chrome()
   end, { ["repeat"] = -1 })
 end
 
@@ -426,15 +487,22 @@ end
 ---@param session AcpSessionState
 local function activate_session(session)
   S.session = session
+  S.runtime:select(session)
+  if session and session.status ~= "idle" then
+    start_spinner()
+  else
+    stop_spinner()
+  end
   if S.chat then
     S.chat:set_session(session)
     S.chat.pending_new = false
   end
   if S.input then
     local restored = session and drafts.get(session.cwd, session.id) or nil
-    S.input:switch_session(session and session.id or nil, restored)
+    S.input:switch_session(session and session.id or nil, restored, session)
   end
   refresh_chrome()
+  prune_sessions()
 end
 
 ---------------------------------------------------------------------------
@@ -491,6 +559,7 @@ local function setup_window_events()
       if S.input then
         pcall(S.input.save_draft, S.input)
       end
+      pcall(drafts.flush)
       if S.client then
         -- Do not let a stray agent process outlive the editor.
         S.client:shutdown(true)
@@ -521,7 +590,7 @@ local function set_input_keymaps()
   map("n", km.cancel, function()
     M.cancel()
   end, "cancel")
-  map("n", "q", function()
+  map("n", km.close_panel, function()
     M.hide()
   end, "hide panel")
   map("n", "<C-]>", function()
@@ -639,7 +708,7 @@ local function ensure_windows()
     S.chat.win = chat
     S.input.win = input
   elseif not chat_visible then
-    local win = layout.create_chat_win(S.chat.buf)
+    local win = layout.create_chat_win(S.chat.buf, S.input.win)
     if not win then
       notify("unable to create the chat window", vim.log.levels.ERROR)
       return
@@ -656,6 +725,8 @@ local function ensure_windows()
 
   set_input_keymaps()
   set_chat_keymaps()
+  update_chat_title()
+  update_input_toolbar()
   refresh_chrome()
   if S.chat then
     S.chat:render(true)
@@ -769,25 +840,39 @@ function M.connect()
   if S.connection == "starting" then
     return
   end
+  -- A stopped client carries old event bindings and an old RPC generation.
+  -- Reopening after a crash uses a fresh client just like explicit reconnect.
+  if S.client and not S.client:is_ready() then
+    local previous = S.client
+    invalidate_operations()
+    S.runtime:connection_lost()
+    S.pending_permissions, S.client = {}, nil
+    previous:shutdown(true)
+  end
   S.connection = "starting"
   refresh_chrome()
 
   if not S.client then
     local client
+    local generation = operations.generation
     client = client_mod.new({
       agent = cfg().agents[cfg().agent],
       cwd = resolve_cwd(),
       client_capabilities = build_client_capabilities(),
       limits = cfg().transport,
       on_event = function(name, payload)
-        vim.schedule(function()
-          -- Ignore late events from a client we already replaced, otherwise a
-          -- shutdown "exit" could clobber a fresh connection.
-          if S.client ~= client then
-            return
+        local function dispatch()
+          if S.client == client and operations.generation == generation then
+            M.on_client_event(name, payload)
           end
-          M.on_client_event(name, payload)
-        end)
+        end
+        -- Notifications reduce state within the transport's dispatch budget.
+        -- Exit is deferred once so already-settled RPC continuations run first.
+        if name == "exit" then
+          vim.schedule(dispatch)
+        else
+          dispatch()
+        end
       end,
     })
     S.client = client
@@ -795,11 +880,12 @@ function M.connect()
 
   if not S.client:is_ready() then
     local client = S.client
+    local generation = operations.generation
     S.client:start(function(ok, err)
       vim.schedule(function()
         -- The connection may have been replaced or torn down between `start`
         -- and this callback; adopt the result only for the live client.
-        if S.client ~= client then
+        if S.client ~= client or operations.generation ~= generation then
           return
         end
         if ok then
@@ -809,6 +895,8 @@ function M.connect()
           S.pending_reload = nil
           if reload_id then
             M.reload_session(reload_id)
+          elseif S.session and S.session.needs_load then
+            M.reload_session(S.session.id)
           elseif not S.session then
             M.new_session()
           end
@@ -830,19 +918,28 @@ function M.connect()
   else
     S.connection = "ready"
     refresh_chrome()
-    if not S.session then
+    if S.session and S.session.needs_load then
+      M.reload_session(S.session.id)
+    elseif not S.session then
       M.new_session()
     end
   end
 end
 
 function M.disconnect()
-  if S.client then
-    S.client:shutdown()
-    S.client = nil
+  invalidate_operations()
+  S.runtime:connection_lost()
+  S.pending_permissions = {}
+  local client = S.client
+  S.client = nil
+  if client then
+    client:shutdown()
   end
   S.connection = "stopped"
   stop_spinner()
+  if S.chat then
+    S.chat:schedule_render()
+  end
   refresh_chrome()
 end
 
@@ -852,6 +949,9 @@ function M.reconnect()
     return
   end
   local previous = current()
+  invalidate_operations()
+  S.runtime:connection_lost()
+  S.pending_permissions = {}
   S.pending_reload = previous and previous.id or nil
   if S.client then
     S.client:shutdown(true)
@@ -870,26 +970,15 @@ end
 ---@param opts {fresh: boolean|nil, kind: string|nil}
 local function replay_session(session_id, opts)
   local cwd = session_cwd(session_id, S.session_cwds)
-  local entry
-  if opts.fresh then
-    entry = session_mod.new(session_id, cwd)
-    S.sessions[session_id] = entry
-  else
-    entry = S.sessions[session_id]
-    if not entry then
-      entry = session_mod.new(session_id, cwd)
-      S.sessions[session_id] = entry
-    end
-  end
-  activate_session(entry)
-
+  local entry = S.runtime:stage(session_id, cwd)
+  local intent = opts.intent or S.runtime:intend()
+  local client = S.client
   S.replaying = true
-  async.run(function()
-    async.finally(function()
-      S.replaying = false
-    end)
-    local ok, result = S.client:load_session(session_id, cwd)
+  operations:run("replay", client, entry, function(task)
+    local ok, result = task:call("load_session", session_id, cwd)
     if not ok then
+      task.status = "failed"
+      S.runtime:rollback(entry)
       local message = type(result) == "table" and (result.message or vim.inspect(result)) or tostring(result)
       if opts.kind == "restore" and tostring(message):lower():match("shutdown") then
         -- Expected during teardown; do not alarm the user.
@@ -906,19 +995,38 @@ local function replay_session(session_id, opts)
       return
     end
 
-    if result.configOptions then
-      entry.config_options = result.configOptions
+    if type(result) ~= "table" then
+      error("invalid session/load response")
     end
+    entry:configure(result)
     entry:finish_turn("end_turn")
+    if not S.runtime:commit(entry) then
+      return
+    end
     if apply_cached_title(entry) then
       refresh_chrome()
     end
-    if S.chat then
-      S.chat:set_session(entry)
-      S.chat:render(true)
+    if S.runtime.selection == intent then
+      activate_session(entry)
+      if S.chat then
+        S.chat:render(true)
+      end
     end
+    prune_sessions()
     refresh_chrome()
     refresh_session_title(entry)
+  end, function(err)
+    S.runtime:rollback(entry)
+    notify("unable to load the session: " .. tostring(err), vim.log.levels.ERROR)
+  end, function(_, owned)
+    if not owned then
+      return
+    end
+    S.runtime:rollback(entry)
+    S.replaying = false
+    if S.sessions[entry.id] == entry then
+      dispatch_queued(entry)
+    end
   end)
 end
 
@@ -926,6 +1034,9 @@ end
 ---@param session_id string
 function M.reload_session(session_id)
   if S.connection ~= "ready" or not S.client then
+    return
+  end
+  if S.replaying then
     return
   end
   if not S.client:agent_capabilities().loadSession then
@@ -949,32 +1060,35 @@ function M.new_session()
     return
   end
   S.creating_session = true
-  async.run(function()
-    async.finally(function()
-      S.creating_session = false
-    end)
-    local ok, result = S.client:new_session(cwd)
+  local intent, client = S.runtime:intend(), S.client
+  operations:run("create", client, nil, function(task)
+    local ok, result = task:call("new_session", cwd)
     if not ok then
+      task.status = "failed"
       local message = type(result) == "table" and (result.message or vim.inspect(result)) or tostring(result)
       notify("unable to create a session: " .. message, vim.log.levels.ERROR)
       return
     end
-    local session = session_mod.new(result.sessionId, cwd)
-    if result.configOptions then
-      session.config_options = result.configOptions
+    if type(result) ~= "table" or type(result.sessionId) ~= "string" or result.sessionId == "" then
+      error("invalid session/new response")
     end
-    if result.modes then
-      session.modes = result.modes
-      session.current_mode = result.currentModeId
-    end
+    local session = new_local_session(result.sessionId, cwd, result)
     S.sessions[session.id] = session
     S.session_cwds[session.id] = cwd
-    activate_session(session)
-    if S.chat then
-      S.chat:render(true)
+    if S.runtime.selection == intent then
+      activate_session(session)
+      if S.chat then
+        S.chat:render(true)
+      end
     end
     notify("Session started", vim.log.levels.INFO)
     refresh_session_title(session)
+  end, function(err)
+    notify("unable to create a session: " .. tostring(err), vim.log.levels.ERROR)
+  end, function(_, owned)
+    if owned then
+      S.creating_session = false
+    end
   end)
 end
 
@@ -985,8 +1099,21 @@ function M.load_session(session_id)
     notify("No agent process is running", vim.log.levels.WARN)
     return
   end
+  local cached = S.sessions[session_id]
+  if cached and not cached.needs_load and (cached.status ~= "idle" or #cached.queue > 0) then
+    S.runtime:intend()
+    activate_session(cached)
+    dispatch_queued(cached)
+    return
+  end
+  if S.replaying then
+    notify("Wait for the session to finish before loading its history", vim.log.levels.WARN)
+    return
+  end
   -- Agents reject session/load when the cwd does not match the session.
-  replay_session(session_id, { kind = "load" })
+  -- Loading replays authoritative history, even for a cached session; appending
+  -- to the cached object would duplicate every message on subsequent visits.
+  replay_session(session_id, { fresh = true, kind = "load" })
 end
 
 ---Delete a session through the agent and drop it from local state.
@@ -997,15 +1124,26 @@ local function delete_session(session_id, done)
     done(false)
     return
   end
-  async.run(function()
-    local ok, result = S.client:delete_session(session_id)
-    if not ok then
-      local message = type(result) == "table" and (result.message or vim.inspect(result)) or tostring(result)
-      notify(string.format("Unable to delete the session: %s", message), vim.log.levels.ERROR)
-      done(false)
+  local settled = false
+  local function finish(ok)
+    if settled then
       return
     end
-    S.sessions[session_id] = nil
+    settled = true
+    done(ok)
+  end
+  local session = S.sessions[session_id]
+  operations:run("delete:" .. session_id, S.client, session, function(task)
+    local ok, result = task:call("delete_session", session_id)
+    if not ok then
+      task.status = "failed"
+      local message = type(result) == "table" and (result.message or vim.inspect(result)) or tostring(result)
+      notify(string.format("Unable to delete the session: %s", message), vim.log.levels.ERROR)
+      finish(false)
+      return
+    end
+    S.runtime:remove(session_id)
+    operations:cancel_session(session or { id = session_id }, task)
     S.titles[session_id] = nil
     if S.session and S.session.id == session_id then
       -- The active conversation is gone; start a fresh one.
@@ -1022,15 +1160,19 @@ local function delete_session(session_id, done)
       refresh_chrome()
     end
     notify("Session deleted", vim.log.levels.INFO)
-    done(true)
+    finish(true)
+  end, function(err)
+    notify("Unable to delete the session: " .. tostring(err), vim.log.levels.ERROR)
+    finish(false)
+  end, function()
+    finish(false) -- cancelled picker operations also have a terminal outcome
   end)
 end
 
 ---Fetch the session list, calling `cb(ok, sessions)`.
 ---
----The directory used for the query is the active session's cwd when one exists,
----falling back to the resolved editor cwd. Those can differ (the session may
----have been created elsewhere), and agents such as OpenCode filter strictly by
+---The query uses the resolved editor cwd, not a historical session's cwd.
+---Agents such as OpenCode filter strictly by
 ---`cwd`, so an empty filtered result is retried without the filter rather than
 ---reporting that no sessions exist.
 ---@param cb fun(ok: boolean, sessions: table[])
@@ -1039,21 +1181,30 @@ local function fetch_sessions(cb)
     notify("No agent process is running", vim.log.levels.WARN)
     return
   end
-  async.run(function()
+  local settled = false
+  local function finish(ok, sessions)
+    if settled then
+      return
+    end
+    settled = true
+    cb(ok, sessions)
+  end
+  operations:run("list", S.client, nil, function(task)
     -- Scope the listing to the editor's working directory.
     local scoped_cwd = resolve_cwd()
 
     local function to_error(result)
+      task.status = "failed"
       if type(result) == "table" and (result.code == -32601 or result.code == -32602) then
         notify("This agent does not support listing sessions", vim.log.levels.WARN)
       else
         local message = type(result) == "table" and (result.message or vim.inspect(result)) or tostring(result)
         notify(string.format("Unable to list sessions: %s", message), vim.log.levels.ERROR)
       end
-      cb(false, {})
+      finish(false, {})
     end
 
-    local ok, result = S.client:list_sessions(scoped_cwd)
+    local ok, result = task:call("list_sessions", scoped_cwd)
     if not ok then
       to_error(result)
       return
@@ -1062,7 +1213,7 @@ local function fetch_sessions(cb)
     local sessions = result.sessions or {}
     if #sessions == 0 then
       -- Nothing in this directory: show every session the agent knows about.
-      local all_ok, all_result = S.client:list_sessions(nil)
+      local all_ok, all_result = task:call("list_sessions", nil)
       if all_ok and type(all_result) == "table" then
         sessions = all_result.sessions or {}
       end
@@ -1076,7 +1227,12 @@ local function fetch_sessions(cb)
         S.session_cwds[info.sessionId] = info.cwd
       end
     end
-    cb(true, sessions)
+    finish(true, sessions)
+  end, function(err)
+    notify("Unable to list sessions: " .. tostring(err), vim.log.levels.ERROR)
+    finish(false, {})
+  end, function()
+    finish(false, {})
   end)
 end
 
@@ -1086,6 +1242,7 @@ function M.pick_session()
     notify("No agent process is running", vim.log.levels.WARN)
     return
   end
+  local client, generation = S.client, operations.generation
   fetch_sessions(function(ok, sessions)
     if not ok then
       return
@@ -1100,10 +1257,16 @@ function M.pick_session()
       can_delete = S.client:has_session_capability("delete"),
       use_icons = cfg().ui.icons,
       on_open = function(session_id)
-        M.load_session(session_id)
+        if ui_current(client, generation) then
+          M.load_session(session_id)
+        end
       end,
       on_delete = function(session_id, done)
-        delete_session(session_id, done)
+        if ui_current(client, generation) then
+          delete_session(session_id, done)
+        else
+          done(false)
+        end
       end,
     }
 
@@ -1125,19 +1288,21 @@ end
 -- prompts
 ---------------------------------------------------------------------------
 
-local function add_system_block(text, kind)
-  if not S.session then
+local function add_system_block(text, kind, target)
+  local session = target or S.session
+  if not session then
     return
   end
-  S.session:append({ id = "sys:" .. tostring(#S.session.blocks), kind = kind or "error", text = text })
-  if S.chat then
+  session:append({ id = "sys:" .. tostring(#session.blocks), kind = kind or "error", text = text })
+  if S.chat and S.session == session then
     S.chat:schedule_render()
   end
 end
 
 ---Send the composer contents.
-function M.send_now(text, attachments)
-  if not S.session then
+function M.send_now(text, attachments, target)
+  local session = target or S.session
+  if not session then
     notify("No active session", vim.log.levels.WARN)
     return false
   end
@@ -1145,10 +1310,17 @@ function M.send_now(text, attachments)
     notify("No agent process is running", vim.log.levels.WARN)
     return false
   end
+  if S.client.is_ready and not S.client:is_ready() then
+    return false
+  end
+  if session.needs_load or S.runtime.replays[session.id] then
+    notify("Wait for this session's history to load before sending", vim.log.levels.WARN)
+    return false
+  end
 
   -- Expand @file mentions into attachments before queueing.
   if text and text:find("@", 1, true) then
-    local mentioned = context.mentions(text, cfg(), S.session.cwd)
+    local mentioned = context.mentions(text, cfg(), session.cwd)
     if #mentioned > 0 then
       local merged = vim.deepcopy(attachments or {})
       for _, att in ipairs(mentioned) do
@@ -1167,10 +1339,13 @@ function M.send_now(text, attachments)
     end
   end
 
-  if S.session.status == "running" or S.session.status == "cancelling" then
+  if session.status == "running" or session.status == "cancelling" then
     -- Session already has an active turn (or one being cancelled): queue
     -- locally instead of starting a second overlapping prompt.
-    S.session.queue[#S.session.queue + 1] = { text = text, attachments = attachments }
+    if not S.runtime:enqueue(session, text, attachments) then
+      notify("Message queue memory limit reached; keep this draft until a turn finishes", vim.log.levels.WARN)
+      return false
+    end
     refresh_chrome()
     return true
   end
@@ -1180,28 +1355,37 @@ function M.send_now(text, attachments)
     return false
   end
 
-  local session = S.session
-  local turn = session:begin_turn()
-  session:add_local_user(text, attachments)
-  if S.chat then
+  local turn = S.runtime:begin_turn(session, text, attachments)
+  if S.chat and S.session == session then
     S.chat.follow = true
     S.chat:schedule_render()
   end
-  start_spinner()
+  if S.session == session then
+    start_spinner()
+  end
   refresh_chrome()
 
-  async.run(function()
-    local ok, result = S.client:prompt(session.id, blocks, turn)
+  local client = S.client
+  local operation = operations:run("prompt:" .. session.id, client, session, function(task)
+    session.prompt_task = task
+    local function add_error(message)
+      add_system_block(message, "error", session)
+    end
+    local ok, result = task:call("prompt", session.id, blocks, turn)
+    if session.turn ~= turn then
+      return
+    end
     if not ok then
+      task.status = "failed"
       local raw = type(result) == "table" and (result.message or vim.inspect(result)) or tostring(result)
       local lowered = tostring(raw):lower()
       if lowered:match("auth") then
-        add_system_block("OpenCode requires authentication. Run `opencode auth login` in a terminal, then reconnect.")
+        add_error("OpenCode requires authentication. Run `opencode auth login` in a terminal, then reconnect.")
       elseif lowered:match("already has an active") then
         -- The agent still has a turn running that this client does not know
         -- about (for example another editor sharing the session). Do not
         -- silently swallow it: explain the state and how to recover.
-        add_system_block(
+        add_error(
           raw
             .. "\n\n"
             .. "The agent still considers a turn active for this session. "
@@ -1210,37 +1394,56 @@ function M.send_now(text, attachments)
       elseif lowered:match("limit") or lowered:match("quota") or lowered:match("rate") then
         -- Provider-side quota problems are not plugin errors; give the user
         -- the one action that actually helps.
-        add_system_block(
+        add_error(
           raw
             .. "\n\n"
             .. "This is a provider-side limit, not an acp.nvim error. Click the model name in the toolbar, press <M-m> while typing, or run :Acp model."
         )
       else
-        add_system_block("prompt failed: " .. raw)
+        add_error("prompt failed: " .. raw)
       end
-      session:finish_turn("error")
+      S.runtime:finish_turn(session, turn, "error")
     else
-      session:finish_turn(result and result.stopReason or "end_turn")
+      S.runtime:finish_turn(session, turn, result and result.stopReason or "end_turn")
     end
-    stop_spinner()
+    prune_sessions()
+    if S.session == session then
+      stop_spinner()
+    end
     refresh_chrome()
-    if S.chat then
+    if S.chat and S.session == session then
       S.chat:schedule_render()
     end
     -- The agent auto-generates a title from the first exchange, and it is only
     -- exposed through session/list, so refresh once the turn has settled.
     refresh_session_title(session)
-    -- Dispatch the next queued message only if this turn is still the current
-    -- one. `send_now` starts it immediately, so the `prompt_finished` event for
-    -- *this* turn must not settle the newly started turn when it arrives later.
-    if S.session == session and session.turn == turn then
-      local next_item = table.remove(session.queue, 1)
-      if next_item then
-        M.send_now(next_item.text, next_item.attachments)
+  end, function(err, task)
+    if task:current() then
+      add_system_block("prompt failed: " .. tostring(err), "error", session)
+      S.runtime:finish_turn(session, turn, "error")
+    end
+  end, function(task, owned)
+    if session.prompt_task == task then
+      session.prompt_task = nil
+    end
+    if not owned or not S.runtime:owns(session) or session.turn ~= turn then
+      return
+    end
+    if session.status ~= "idle" then
+      S.runtime:finish_turn(session, turn, "error")
+    end
+    if S.session == session then
+      stop_spinner()
+      refresh_chrome()
+      if S.chat then
+        S.chat:schedule_render()
       end
     end
+    -- Only this task owns turn settlement and queue advancement. Selection is
+    -- irrelevant, and the old operation is gone before a queued turn starts.
+    dispatch_queued(session)
   end)
-  return true
+  return operation.status == "running" or operation.status == "succeeded"
 end
 
 ---Submit from the composer.
@@ -1253,9 +1456,14 @@ function M.submit(text, attachments)
   end
   -- Only clear the composer when the message was actually accepted; clearing
   -- after a no-op send silently discarded what the user typed.
+  local session, input = S.session, S.input
   local accepted = M.send_now(text, attachments)
-  if accepted and S.input then
-    S.input:clear()
+  if accepted and input then
+    if S.input == input and S.session == session then
+      input:clear()
+    else
+      input:discard_draft(session)
+    end
   end
   refresh_chrome()
 end
@@ -1266,14 +1474,8 @@ function M.cancel()
   if not session then
     return
   end
-  if session.status ~= "running" then
+  if not session:cancel_turn() then
     return
-  end
-  session.status = "cancelling"
-  for _, block in ipairs(session.blocks) do
-    if block.kind == "tool" and (block.status == "pending" or block.status == "in_progress") then
-      block.status = "cancelled"
-    end
   end
   if S.client then
     S.client:cancel(session.id)
@@ -1305,16 +1507,14 @@ function M.on_client_event(name, payload)
 
   if name == "session_update" then
     local update = payload.update or {}
-    -- Known sessions keep their state even when they are not visible.
-    local session = S.sessions[payload.sessionId]
-    if not session and S.session and S.session.id == payload.sessionId then
-      session = S.session
-    end
+    local session, changed = S.runtime:apply(payload.sessionId, update)
     if not session then
       log.debug("dropping update for unknown session %s", tostring(payload.sessionId))
       return
     end
-    local changed = reducer.apply(session, update)
+    if changed then
+      prune_sessions()
+    end
     if changed and S.session == session and S.chat then
       S.chat:schedule_render()
       if not S.replaying then
@@ -1347,7 +1547,12 @@ function M.on_client_event(name, payload)
     end
 
     if cfg().permissions.prompt == "select" then
-      M.show_permission(payload)
+      local client, generation, entry = S.client, operations.generation, S.pending_permissions[payload.key]
+      vim.schedule(function()
+        if ui_current(client, generation) and S.pending_permissions[payload.key] == entry then
+          M.show_permission(payload)
+        end
+      end)
     else
       notify(
         "Permission required" .. ": " .. (payload.tool_call and payload.tool_call.title or ""),
@@ -1365,6 +1570,9 @@ function M.on_client_event(name, payload)
 
   if name == "prompt_finished" then
     local session = S.sessions[payload.session_id]
+    if session and session.prompt_task then
+      return
+    end -- its scoped task owns settlement
     -- `send_now` settles the turn itself and may already have started the next
     -- queued turn. This event is delivered asynchronously, so only act when it
     -- still refers to the turn that is currently running: otherwise it used to
@@ -1381,14 +1589,16 @@ function M.on_client_event(name, payload)
   end
 
   if name == "exit" then
+    local session = current()
+    local interrupted = session and session.status ~= "idle"
+    invalidate_operations()
+    S.runtime:connection_lost()
     S.connection = "disconnected"
     stop_spinner()
     -- The agent is gone: its pending permission prompts can never be answered,
     -- so clear them instead of leaving the picker (and the toolbar badge) up.
     S.pending_permissions = {}
-    local session = current()
-    if session and session.status == "running" then
-      session:finish_turn("error")
+    if interrupted then
       add_system_block("Agent disconnected" .. "  :Acp reconnect", "error")
     end
     local detail = payload and payload.stderr or ""
@@ -1413,6 +1623,10 @@ end
 ---Open the permission picker for a pending request.
 ---@param payload table
 function M.show_permission(payload)
+  local client, generation, entry = S.client, operations.generation, S.pending_permissions[payload.key]
+  local function valid()
+    return entry and ui_current(client, generation) and S.pending_permissions[payload.key] == entry
+  end
   local tool = payload.tool_call or {}
   local title = tool.title or tool.kind or "tool"
   local items = {}
@@ -1426,6 +1640,9 @@ function M.show_permission(payload)
 
   if #items == 0 then
     notify("the agent sent a permission request without options", vim.log.levels.WARN)
+    if valid() then
+      M.resolve_permission(payload.key, nil, true)
+    end
     return
   end
 
@@ -1442,11 +1659,15 @@ function M.show_permission(payload)
     items = items,
     width = math.min(90, math.max(50, vim.o.columns - 20)),
     on_choice = function(value)
-      M.resolve_permission(payload.key, value and value.id or nil)
+      if valid() then
+        M.resolve_permission(payload.key, value and value.id or nil)
+      end
     end,
     -- Dismissing the dialog must never leave the turn blocked forever.
     on_cancel = function()
-      M.resolve_permission(payload.key, nil, true)
+      if valid() then
+        M.resolve_permission(payload.key, nil, true)
+      end
     end,
   })
 end
@@ -1587,6 +1808,7 @@ function M.pick_option(category, title)
     return
   end
   local option = session:option_by_category(category)
+  local client, generation = S.client, operations.generation
   if not option then
     notify("this agent does not offer a " .. category .. " option", vim.log.levels.INFO)
     return
@@ -1607,8 +1829,7 @@ function M.pick_option(category, title)
     on_choice = function(value)
       -- The agent may have gone away (crash, explicit disconnect) while the
       -- picker was open.
-      if not S.client then
-        notify("no agent connection", vim.log.levels.WARN)
+      if not ui_current(client, generation, session) then
         return
       end
       -- The session may also have been switched; do not apply the choice to a
@@ -1616,19 +1837,18 @@ function M.pick_option(category, title)
       if S.session ~= session then
         return
       end
-      async.run(function()
-        local ok, result = S.client:set_config_option(session.id, option.id, value)
+      operations:run("option:" .. session.id .. ":" .. option.id, client, session, function(task)
+        local ok, result = task:call("set_config_option", session.id, option.id, value)
         if not ok then
+          task.status = "failed"
           local message = type(result) == "table" and (result.message or vim.inspect(result)) or tostring(result)
           notify("unable to change option: " .. message, vim.log.levels.ERROR)
           return
         end
-        if result and result.configOptions then
-          session.config_options = result.configOptions
-        else
-          option.currentValue = value
-        end
+        session:set_option(option, value, result)
         refresh_chrome()
+      end, function(err)
+        notify("unable to change option: " .. tostring(err), vim.log.levels.ERROR)
       end)
     end,
   })
@@ -1647,6 +1867,7 @@ function M.pick_config()
   if not session then
     return
   end
+  local client, generation = S.client, operations.generation
   local items = {}
   for _, option in ipairs(session.config_options or {}) do
     if option.category ~= "model" and option.category ~= "mode" then
@@ -1666,6 +1887,9 @@ function M.pick_config()
     title = "Configure",
     items = items,
     on_choice = function(id)
+      if not ui_current(client, generation, session) then
+        return
+      end
       local option = nil
       for _, opt in ipairs(session.config_options) do
         if opt.id == id then
@@ -1777,12 +2001,26 @@ end
 -- setup
 ---------------------------------------------------------------------------
 
-function M.setup(opts)
+function M.setup(opts, action)
   local merged = config_mod.merge(config_mod.defaults, opts or {})
   local ok, err = pcall(config_mod.validate, merged)
   if not ok then
     error(err, 0)
   end
+  if not (action and action.discard_queued == true) then
+    for _, session in pairs(S.sessions) do
+      if #session.queue > 0 or (session.outbox and session.outbox.reserved) then
+        error(
+          "acp.nvim: cannot reconfigure with queued messages; drain them first or explicitly pass { discard_queued = true } as the second setup argument",
+          0
+        )
+      end
+    end
+  end
+  if S.input then
+    pcall(S.input.save_draft, S.input)
+  end
+  invalidate_operations()
   S.config = merged
 
   log.setup(merged.log)
@@ -1835,6 +2073,7 @@ function M.setup(opts)
   end
   S.session = nil
   S.sessions = {}
+  S.runtime = Runtime.new(merged.memory, S.sessions)
   S.titles = {}
   S.session_cwds = {}
   S.pending_permissions = {}
@@ -1862,8 +2101,8 @@ function M.setup(opts)
   S.input.on_refresh = function()
     update_input_toolbar()
   end
-  S.input.on_draft = function(_, text, attachments)
-    local session = S.session
+  S.input.on_draft = function(key, text, attachments, owner)
+    local session = owner or S.sessions[key]
     if not session then
       return
     end
@@ -1873,7 +2112,7 @@ function M.setup(opts)
   -- Re-attach the active session to the freshly created views.
   if S.session then
     S.chat:set_session(S.session)
-    S.input:switch_session(S.session.id)
+    S.input:switch_session(S.session.id, nil, S.session)
   end
 
   setup_window_events()
@@ -1884,11 +2123,11 @@ function M.setup(opts)
   if merged.ui.toolbar.placement ~= "off" and not S.click_hint_shown then
     S.click_hint_shown = true
     vim.schedule(function()
-      if vim.o.mouse == "" or not vim.o.mouse:find("a") then
+      if not vim.o.mouse:find("[anvi]") then
         vim.notify(
           string.format(
             "acp.nvim: 'mouse' is %q, so the model/mode toolbar is not clickable. "
-              .. "Add 'a' to 'mouse' (e.g. set mouse=a) or use <M-m> / <M-b>.",
+              .. "Enable mouse support (e.g. set mouse=nvi) or use <M-m> / <M-b>.",
             vim.o.mouse
           ),
           vim.log.levels.INFO

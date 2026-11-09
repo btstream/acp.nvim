@@ -1,5 +1,6 @@
 -- Session data model and update reduction.
 local M = {}
+local memory = require("acp.session.memory")
 
 ---@class AcpBlock
 ---@field id string
@@ -53,6 +54,7 @@ local block_mt = {
     -- An explicit assignment supersedes any buffered chunks.
     if key == "text" then
       rawset(tbl, "_parts", nil)
+      rawset(tbl, "_append_base", nil)
     end
     rawset(tbl, key, value)
   end,
@@ -65,12 +67,26 @@ function M.append_block_text(block, text)
   if text == nil or text == "" then
     return
   end
+  if block._max_bytes then
+    local size = block._text_bytes or #(rawget(block, "text") or "")
+    local remaining = block._max_bytes - size
+    if remaining <= 0 then
+      block.truncated = true
+      return
+    end
+    if #text > remaining then
+      text = memory.clip(text, remaining)
+      block.truncated = true
+    end
+    block._text_bytes = size + #text
+  end
   if getmetatable(block) ~= block_mt then
     setmetatable(block, block_mt)
   end
   local parts = rawget(block, "_parts")
   if not parts then
     parts = { rawget(block, "text") or "" }
+    rawset(block, "_append_base", parts[1])
     rawset(block, "text", nil)
     rawset(block, "_parts", parts)
   end
@@ -108,7 +124,8 @@ Session.__index = Session
 ---@param id string
 ---@param cwd string
 ---@return AcpSessionState
-function M.new(id, cwd)
+function M.new(id, cwd, limits)
+  local queue = {}
   return setmetatable({
     id = id,
     cwd = cwd,
@@ -121,18 +138,114 @@ function M.new(id, cwd)
     current_mode = nil,
     commands = {},
     usage = nil,
-    queue = {},
+    queue = queue,
+    outbox = { messages = queue, bytes = 0 },
     started_at = os.time(),
     turn = 0,
     pending_user = nil,
     dirty = false,
+    limits = limits or require("acp.config").defaults.memory,
+    bytes = 0,
+    version = 0,
+    changes = {},
   }, Session)
 end
 
 function Session:append(block)
+  block._index = #self.blocks + 1
+  block._max_bytes = self.limits.max_block_bytes
   self.blocks[#self.blocks + 1] = block
-  self:trim()
+  self:touch(block)
   return block
+end
+
+---Record explicit model mutations so controller-owned views need not scan
+---stable history. Untracked standalone consumers retain the legacy diff path.
+function Session:track_changes()
+  self.tracked = true
+end
+
+---Mutation boundary for UI/controller changes; reducers remain model-internal.
+function Session:update(block, fields, payload_changed)
+  for key, value in pairs(fields) do
+    block[key] = value
+  end
+  self:touch(block, payload_changed)
+end
+
+function Session:toggle(block)
+  self:update(block, { expanded = not block.expanded }, false)
+end
+
+function Session:configure(result)
+  assert(type(result) == "table", "invalid session response")
+  for _, field in ipairs({ "configOptions", "modes" }) do
+    assert(result[field] == nil or type(result[field]) == "table", "invalid session " .. field)
+  end
+  if result.configOptions then
+    self.config_options = result.configOptions
+  end
+  if result.modes then
+    self.modes, self.current_mode = result.modes, result.currentModeId
+  end
+end
+
+function Session:set_option(option, value, result)
+  if result and result.configOptions then
+    self:configure(result)
+  else
+    option.currentValue = value
+  end
+end
+
+function Session:cancel_turn()
+  if self.status ~= "running" then
+    return false
+  end
+  self.status = "cancelling"
+  for _, block in ipairs(self.blocks) do
+    if block.kind == "tool" and (block.status == "pending" or block.status == "in_progress") then
+      self:update(block, { status = "cancelled" }, false)
+    end
+  end
+  return true
+end
+
+function Session:touch(block, payload_changed)
+  if not block then
+    return
+  end
+  if payload_changed ~= false then
+    if rawget(block, "text") ~= nil then
+      block._append_base = nil
+    end
+    local previous = block._bytes or 0
+    block._bytes = memory.bound_block(block, self.limits.max_block_bytes)
+    self.bytes = self.bytes + block._bytes - previous
+    block._text_bytes = rawget(block, "text") and #rawget(block, "text") or block._text_bytes
+  end
+  block._revision = (block._revision or 0) + 1
+  self.version = self.version + 1
+  self.changes[(self.version - 1) % 256 + 1] = { version = self.version, index = block._index or 1 }
+  self:trim()
+end
+
+function Session:changed_since(version)
+  if version == self.version then
+    return nil
+  end
+  if not version or self.version - version > 256 then
+    return 1
+  end
+  local first = #self.blocks + 1
+  for seq = version + 1, self.version do
+    local change = self.changes[(seq - 1) % 256 + 1]
+    if not change or change.version ~= seq then
+      return 1
+    end
+    first = math.min(first, change.index)
+  end
+  return first
 end
 
 ---Drop the oldest blocks once the transcript is over the cap.
@@ -141,10 +254,18 @@ end
 ---cost is amortised over many appends instead of running on every render tick.
 function Session:trim()
   local n = #self.blocks
-  if n <= MAX_BLOCKS then
+  if n <= MAX_BLOCKS and self.bytes <= self.limits.max_session_bytes then
     return
   end
-  local keep_from = n - math.floor(MAX_BLOCKS * 0.9) + 1
+  local keep_from = math.max(1, n - math.floor(MAX_BLOCKS * 0.9) + 1)
+  local retained = self.bytes
+  for i = 1, keep_from - 1 do
+    retained = retained - (self.blocks[i]._bytes or 0)
+  end
+  while keep_from < n and retained > self.limits.max_session_bytes * 0.9 do
+    retained = retained - (self.blocks[keep_from]._bytes or 0)
+    keep_from = keep_from + 1
+  end
   local kept = {}
   local removed = {}
   for i = 1, keep_from - 1 do
@@ -154,6 +275,12 @@ function Session:trim()
     kept[#kept + 1] = self.blocks[i]
   end
   self.blocks = kept
+  self.bytes = retained
+  for index, block in ipairs(kept) do
+    block._index = index
+  end
+  self.version = self.version + 1
+  self.changes[(self.version - 1) % 256 + 1] = { version = self.version, index = 1 }
   -- Drop tool mappings whose block was trimmed; otherwise `session.tools`
   -- would keep resurrecting removed entries on the next tool_call_update.
   for id, tool in pairs(self.tools) do
@@ -170,6 +297,7 @@ function Session:append_text(kind, text, message_id)
     if not message_id or last.message_id == nil or last.message_id == message_id then
       last.message_id = last.message_id or message_id
       M.append_block_text(last, text)
+      self:touch(last)
       return last
     end
   end
@@ -190,6 +318,8 @@ function Session:begin_turn()
   for _, block in ipairs(self.blocks) do
     if block.status == "streaming" then
       block.status = nil
+      block._append_base = nil
+      self:touch(block, false)
     end
   end
   self.pending_user = nil
@@ -220,6 +350,7 @@ function Session:user_chunk(text, message_id)
     pending.text = text
     pending.message_id = message_id
     pending.status = "streaming"
+    self:touch(pending)
     return pending
   end
   return self:append_text("user", text, message_id)
@@ -232,13 +363,18 @@ function Session:finish_turn(stop_reason)
   -- they must not keep showing as "running" forever.
   local interrupted = stop_reason == "cancelled" or stop_reason == "error"
   for _, block in ipairs(self.blocks) do
+    local previous = block.status
     if block.status == "streaming" then
       block.status = nil
+      block._append_base = nil
     end
     if block.kind == "tool" and (block.status == "pending" or block.status == "in_progress") then
       if interrupted then
         block.status = stop_reason == "cancelled" and "cancelled" or "failed"
       end
+    end
+    if previous ~= block.status then
+      self:touch(block, false)
     end
   end
   self.status = "idle"

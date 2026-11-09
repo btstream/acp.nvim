@@ -1,5 +1,6 @@
 -- The composer window: editable buffer, winbar toolbar, per-session drafts.
 local log = require("acp.log")
+local memory = require("acp.session.memory")
 
 local M = {}
 
@@ -84,7 +85,9 @@ function Input:apply_winbar()
   end
   -- Set once: the expression re-renders on every redraw with the real window
   -- width, so resizes and layout managers can never leave a stale bar behind.
-  pcall(vim.api.nvim_set_option_value, "winbar", "%{%v:lua.AcpComposerBar()%}", { win = win })
+  if vim.api.nvim_get_option_value("winbar", { win = win }) ~= "%{%v:lua.AcpComposerBar()%}" then
+    pcall(vim.api.nvim_set_option_value, "winbar", "%{%v:lua.AcpComposerBar()%}", { win = win })
+  end
 end
 
 ---@param parts string[]
@@ -103,25 +106,37 @@ function Input:save_draft()
   end
   local lines = vim.api.nvim_buf_get_lines(self.buf, 0, -1, false)
   local empty = #lines == 0 or (#lines == 1 and lines[1] == "")
-  self.drafts[self.session_key] = {
-    text = empty and nil or lines,
-    attachments = #self.attachments > 0 and vim.deepcopy(self.attachments) or nil,
-  }
+  local draft = { text = empty and nil or table.concat(lines, "\n"), attachments = self.attachments }
+  memory.bound_block(draft, self.config.memory.max_block_bytes)
+  draft.used = vim.uv.hrtime()
+  self.drafts[self.draft_slot or self.session_key] = draft
+  local keys = vim.tbl_keys(self.drafts)
+  if #keys > self.config.memory.max_drafts then
+    table.sort(keys, function(a, b)
+      return self.drafts[a].used < self.drafts[b].used
+    end)
+    for i = 1, #keys - self.config.memory.max_drafts do
+      self.drafts[keys[i]] = nil
+    end
+  end
   if self.on_draft then
-    self.on_draft(self.session_key, empty and "" or table.concat(lines, "\n"), self.attachments)
+    self.on_draft(self.session_key, empty and "" or table.concat(lines, "\n"), self.attachments, self.draft_owner)
   end
 end
 
 ---Switch drafts when the active session changes.
 ---@param key string|nil
 ---@param restored {text: string, attachments: table[]}|nil
-function Input:switch_session(key, restored)
-  if self.session_key == key then
+function Input:switch_session(key, restored, owner)
+  local slot = owner and (owner.cwd .. "\0" .. tostring(key)) or key
+  if self.session_key == key and self.draft_slot == slot then
     return
   end
   self:save_draft()
   self.session_key = key
-  local draft = restored or (key and self.drafts[key] or nil)
+  self.draft_slot = slot
+  self.draft_owner = owner and { id = owner.id or key, cwd = owner.cwd } or nil
+  local draft = restored or (slot and self.drafts[slot] or nil)
   self.attachments = draft and draft.attachments or {}
   local lines = draft and draft.text or { "" }
   if type(lines) == "string" then
@@ -151,7 +166,19 @@ function Input:clear()
   vim.api.nvim_buf_set_lines(self.buf, 0, -1, false, { "" })
   self.attachments = {}
   if self.session_key then
-    self.drafts[self.session_key] = nil
+    self.drafts[self.draft_slot or self.session_key] = nil
+    if self.on_draft then
+      self.on_draft(self.session_key, "", {}, self.draft_owner)
+    end
+  end
+end
+
+---Clear the originating draft without touching a newly selected composer.
+function Input:discard_draft(owner)
+  self.drafts[owner.cwd .. "\0" .. owner.id] = nil
+  self.drafts[owner.id] = nil -- compatibility for callers without explicit owners
+  if self.on_draft then
+    self.on_draft(owner.id, "", {}, owner)
   end
 end
 

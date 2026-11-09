@@ -2,7 +2,8 @@
 
 Neovim 原生的 [Agent Client Protocol](https://agentclientprotocol.com) 客户端，界面参照
 [Zed 的 Agent Panel](https://zed.dev/docs/ai/agent-panel)，默认连接
-[OpenCode](https://opencode.ai)，并把布局交给 [edgy.nvim](https://github.com/folke/edgy.nvim) 管理。
+[OpenCode](https://opencode.ai)。默认使用原生分屏布局，也可交给
+[edgy.nvim](https://github.com/folke/edgy.nvim) 等外部布局管理器。
 
 不是把 OpenCode 的 TUI 塞进终端窗口，而是用 Neovim 的 buffer、split 和 extmark 自己渲染
 对话记录、工具调用和输入框。
@@ -34,17 +35,18 @@ Neovim 原生的 [Agent Client Protocol](https://agentclientprotocol.com) 客户
 
 - **Zed 风格转录**：消息卡片、Markdown、代码块、可折叠工具调用、计划清单、压缩分隔线。
 - **独立的输入区**：多行编辑、每个会话独立草稿、上下文附件、消息队列。
-- **桌面级工具栏**：模式 / 模型 / 用量在左侧（模型和模式可直接点击切换），运行状态与待确认提示在右侧，窄窗口自动降级。
+- **工具栏**：左侧是模式徽标、模型名与可选用量，右侧是状态图标 / 动画与队列数量；模式和模型可点击，窄窗口优先保留状态。
 - **随窗口实时重排**：winbar 由表达式在每次重绘时按真实窗口宽度计算，resize、拆分或布局插件调整后不会出现截断标记或错位。
 - **全局状态栏友好**：所有操作信息走 winbar，`laststatus=0/2/3` 都能正常工作；
   不修改 `statusline` 或 `laststatus`，另外提供可选的状态栏组件。
 - **edgy 兼容**：两个普通视图（`acp_chat` / `acp_input`），由 edgy 决定位置与尺寸。
 - **纯 Lua，零运行时依赖**：不强制依赖补全框架、UI 框架或图标字体。
-- **优先适配 OpenCode**：模型 / 模式选择、slash 命令、子会话、重试、压缩、用量。
+- **优先适配 OpenCode**：模型 / 模式选择、slash 命令补全、历史会话与删除，渲染 Agent 提供的子代理、重试、压缩与用量信息。
 
 ## 依赖
 
-- Neovim 0.10 或更新（推荐 0.11+）
+- Neovim 0.10 或更新（推荐 0.12+；0.10/0.11 使用兼容高亮语法）
+- 代码块语法高亮可选依赖对应语言的 Tree-sitter parser 与 highlights query；缺失时显示纯文本，不影响对话。
 - 一个已登录的 ACP Agent。默认是 OpenCode：
 
 ```bash
@@ -79,7 +81,7 @@ require("acp").setup({})
 | `:Acp new` | 新建会话 |
 | `:Acp stop` | 中止当前回合 |
 | `:Acp sessions` | 打开会话浏览器：`<CR>` 切换、`<C-d>` 删除、输入即过滤 |
-| `:Acp delete` | 同 `:Acp sessions`，直接进入删除流程 |
+| `:Acp delete` | 打开同一个会话浏览器，用 `<C-d>` 删除选中会话 |
 | `:Acp model` / `:Acp mode` | 切换模型 / 模式 |
 | `:Acp reconnect` | Agent 崩溃后重连并恢复当前会话 |
 | `:Acp disconnect` | 停止 Agent 进程（保留面板） |
@@ -94,7 +96,9 @@ require("acp").setup({})
 | 按键 | 说明 |
 |---|---|
 | `<C-s>` | 发送；回合进行中且输入框为空时改为中止 |
-| `q` | 隐藏面板（不中断会话） |
+| `<C-c>`（普通模式） | 中止当前回合 |
+| `q`（普通模式） | 隐藏面板（不中断会话） |
+| `L`（普通模式） | 历史会话 |
 | `<C-x><C-u>` | 补全 `/命令` 或 `@文件` |
 | `@path/to/file` | 发送时自动作为附件 |
 | 点击 winbar 的模型 / 模式 | 打开选择器 |
@@ -107,7 +111,7 @@ require("acp").setup({})
 |---|---|
 | `i` / `<C-s>` | 聚焦输入框 |
 | `<CR>` | 打开光标所在位置的文件 |
-| `<Tab>` | 展开 / 折叠工具调用 |
+| `<Tab>` | 展开 / 折叠工具调用或思考块；不可折叠时聚焦输入框 |
 | `[b` / `]b` | 上一个 / 下一个消息块 |
 | `G` / `gg` | 最新 / 最早 |
 | `S` | 附加当前选区 |
@@ -135,13 +139,26 @@ require("acp").setup({
   -- 会话的工作目录。默认与 Neovim 的 cwd 一致（vim.fn.getcwd()）。
   cwd = nil,
 
+  -- 本地保留的载荷预算，不是 Lua/Neovim RSS 的硬上限。
+  memory = {
+    max_block_bytes = 1024 * 1024,
+    max_session_bytes = 16 * 1024 * 1024,
+    max_cached_sessions = 8,
+    max_total_bytes = 64 * 1024 * 1024,
+    max_queued_messages = 16,
+    max_queue_bytes = 4 * 1024 * 1024,
+    max_drafts = 20,
+  },
+
   layout = {
     backend = "native",   -- "native" | "external"（edgy 等布局管理器）
     position = "right",
-    width = 0.38,         -- 0~1 为比例，>1 为绝对列数
+    width = 0.38,         -- 0.05~1 为比例，>1 为绝对列数
     min_width = 42,
     max_width = 120,
     input_height = 8,
+    min_input_height = 4,
+    max_input_height = 24,
     focus_input_on_open = true,
     restore_focus = true,
     -- 锁定 ACP 窗口，阻止其它 buffer 占用（winfixbuf）
@@ -195,6 +212,8 @@ require("acp").setup({
     max_selection_lines = 2000,
   },
 
+  notices = true,         -- 显示 Agent 的时间线通知
+
   transport = {
     -- 单条 JSON 消息的字节上限；超过会断开连接
     max_line_bytes = 8 * 1024 * 1024,
@@ -206,6 +225,8 @@ require("acp").setup({
     request_timeout = 30000,
     -- 单轮对话的绝对上限（毫秒，0 表示不限制）；默认 10 分钟
     prompt_timeout = 600000,
+    max_pending_bytes = 16 * 1024 * 1024, -- 待分发消息及队列开销的估算预算
+    dispatch_budget_ms = 4,               -- 每批处理后让出主循环；无法抢占单条请求
   },
 
   log = {
@@ -251,8 +272,8 @@ require("acp").setup({
 ```lua
 -- 正确
 right = {
-  { ft = "acp_chat",  title = "Agent" },
-  { ft = "acp_input", title = "Message", size = { height = 0.2 } },
+  { ft = "acp_chat",  title = "Agent", wo = { winbar = false } },
+  { ft = "acp_input", title = "Message", size = { height = 8 }, wo = { winbar = false } },
 }
 
 -- 错误：acp_input 是具名字段，edgy 不会管理它
@@ -279,6 +300,7 @@ right = {
 ```lua
 require("acp.integrations.edgy").views({
   title_winbar = true,  -- chat 视图交给 edgy
+  toolbar_winbar = false, -- input 视图也交给 edgy
 })
 -- 再配合：
 require("acp").setup({
@@ -286,6 +308,10 @@ require("acp").setup({
   ui = { title = { placement = "off" }, toolbar = { placement = "off" } },
 })
 ```
+
+`views()` 返回 `{ chat = ..., input = ... }`，不是数组；须把两项放入 edgy 的视图列表，
+或直接在配置函数中调用 `extend(opts, { title_winbar = true, toolbar_winbar = false })`。
+左侧布局使用 `extend(opts, { position = "left" })`，并同步设置 ACP 的 `layout.position`。
 
 ### 布局语义
 
@@ -361,17 +387,18 @@ require("acp").setup({
 
 ## 外观
 
-所有样式都是**静态定义**：每个组直接链接到 Neovim 自己的组，插件不会在运行时
-读取或混合主题颜色。正文里的 Markdown（粗体、斜体、删除线、标题、引用、链接）链接
+样式使用**静态定义**，多数链接到 Neovim / Tree-sitter 高亮组；模式徽标默认使用固定
+前景和背景色，可通过 `ui.highlights` 覆盖。插件不在运行时混合主题颜色。
+正文里的 Markdown（粗体、斜体、删除线、标题、引用、链接）链接
 到 treesitter 的 `@markup.*` 捕获组，所以在对话记录里的呈现和普通 Markdown buffer
-完全一致。
+遵循主题的相应样式，但渲染器并非完整的 Markdown 实现。
 
 `acp_chat` 的标题栏（winbar）与正文共用同一个背景（`AcpNormal`），读起来是对话
 记录的页眉，而不是一条独立的色带。`acp_input` 的工具栏仍然用 `StatusLine` 的颜色，
 因为它是工具栏而非页眉。
 
 对话记录的标题行拆成了图标和文字两组：`AcpUserIcon` / `AcpUserTitle`、
-`AcpAssistantIcon` / `AcpAssistantTitle`。默认 `Title` 链接到 `Icon`，两者同色；
+`AcpAssistantIcon` / `AcpAssistantTitle`。用户标题默认链接到用户图标；助手两组默认均链接到 `Keyword`；
 想区分时单独覆盖即可。助手回合开头的 Markdown 标题会用 `AcpAssistantTitle`，
 正文中间的标题仍保留各自的 `AcpH1`–`AcpH4` 级别。
 
@@ -401,7 +428,9 @@ require("acp").setup({
 vim.api.nvim_set_hl(0, "AcpSeparator", { fg = "#3b4261" })
 ```
 
-切换 colorscheme 后会自动重新应用，配置里的覆盖也会一并恢复。
+切换 colorscheme 后会重新应用内置定义与 `ui.highlights` 配置。
+直接 `nvim_set_hl` 的临时覆盖不保证跨主题保留；需持久化时使用配置或自己的 `ColorScheme` 回调。
+Neovim 0.12+ 的工具栏区域继承背景；旧版本使用兼容语法，外部插件重映射 `WinBar` 时颜色可能不同。
 
 可用的组：`AcpNormal` `AcpMuted` `AcpBorder` `AcpTitle` `AcpToolbar` `AcpToolbarAccent`
 `AcpToolbarModePlan` `AcpToolbarModeBuild` `AcpToolbarIdle` `AcpToolbarRunning`
@@ -443,8 +472,12 @@ require("acp").setup({ cwd = "/home/user/projects/my-app" })
 
 ### 面板尺寸
 
-`layout.width` 为 `0~1` 时按编辑器宽度取比例，`>1` 时为绝对列数，最终都会受
-`min_width` / `max_width` 约束，且不会超过编辑器宽度的 60%。
+原生布局的 `layout.width` 为 `0.05~1` 时按编辑器宽度取比例，`>1` 时为绝对列数。
+先应用 `min_width` / `max_width`，再限制为编辑器宽度的 60%；窄屏或窗口空间不足时，
+实际宽度可能小于 `min_width`。输入高度受 `min_input_height` / `max_input_height` 约束。
+外部布局模式下由布局管理器决定这些尺寸。
+
+两个面板窗口均设置 `statuscolumn = " "`，不覆盖用户全局的行号栏配置。
 
 构建面板时会临时关闭 `'equalalways'`，等两个窗口都创建完、尺寸设置好之后再恢复。
 否则第二次 split 会立刻重排，把配置的宽度覆盖掉。
@@ -453,11 +486,14 @@ require("acp").setup({ cwd = "/home/user/projects/my-app" })
 
 标题显示在对话记录窗口的标题栏（winbar）里，未生成时回退为会话 ID 短码。
 
-OpenCode 不会主动推送 `session_info_update`，标题只出现在 `session/list` 的结果中。
-acp.nvim 在**会话创建后、切换会话后、以及每回合结束后**各查询一次列表，并用
+为兼容未推送 `session_info_update` 的 OpenCode 版本，
+acp.nvim 在**会话创建后、切换会话后、以及每回合结束后**查询列表，并用
 session id 做缓存，因此切换后标题立即更新。
 
 若 Agent 主动推送 `session_info_update`，该路径同样生效，两边不冲突。
+历史先重放到暂存对象，成功后提交；失败保留旧会话与队列，不会先清空界面。
+同一时间只执行一次历史重放。选择仍在运行的缓存会话时直接查看，不重复加载它的历史；
+较早的加载结果也不会抢走后来新建/选择会话的焦点。
 
 ### 会话浏览器
 
@@ -481,6 +517,8 @@ require("acp").setup({ ui = { session_picker = "internal" } })
 ```
 
 内置窗口（回退时）支持 `j`/`k` 移动与 `<BS>`/`<C-u>` 编辑过滤。
+`q` 关闭、`gg`/`G` 跳转；这些按键对应的字母可用大写 `Q`/`J`/`K` 输入过滤，
+`g` 用于过滤（`gg` 仍可跳到首项）。
 
 - 删除非当前会话：当前对话不受影响。
 - 删除当前会话：确认后自动新建一个会话。
@@ -505,35 +543,70 @@ require("acp").setup({ layout = { lock_buffer = false } })
 
 同一会话同时只运行一个 prompt。生成中提交的消息会本地排队，
 当前回合结束后依次发送，工具栏显示 `+N queued`。
+队列默认最多 16 条、估算载荷 4 MiB；超过限制时拒绝入队并保留输入草稿。
+队列属于会话运行时，不属于当前窗口：切换到 B 不会停止 A 的队列，也不会把 A 的错误
+显示到 B。历史替换复用同一个 outbox，待发送消息不会被重放覆盖。
+
+再次 `setup()` 会建立新的运行环境并取消旧任务。存在待发送消息时默认拒绝重新配置，
+避免静默丢弃；先等待队列清空，或者**明确同意丢弃后**调用：
+
+```lua
+require("acp").setup({ layout = { backend = "native" } }, { discard_queued = true })
+```
+
+队列目前只保存在本次 Neovim 进程内，不是持久化 outbox；正常退出或崩溃不会恢复它。
 
 ### 中断与恢复
 
 Agent 崩溃或退出时，正在运行的工具会被标记为失败，并提示 `:Acp reconnect`。
 重连会调用 `session/load` 重放 Agent 侧历史，不会自动重发上一条 prompt。
+断连会暂停各会话队列、取消旧请求并使旧选择器失效。当前会话恢复成功后继续发送尚未开始
+的排队消息；其他会话在选中并恢复后继续。已发出的 prompt 不自动重试，避免重复执行工具。
+任务的单次结算保证不等于 Agent 操作的 exactly-once 执行保证。
 
 ### 草稿持久化
 
 未发送的输入和附件按「项目 + 会话」保存在
 `stdpath("state")/acp/drafts.json`，重启后自动恢复。空草稿会被清除，
 最多保留 50 条。
+内存中的历史草稿默认最多 20 条（`memory.max_drafts`），当前输入框不受淘汰影响。
+磁盘读写有缓存与 150ms 合并窗口，普通保存异步写入，退出时执行最终 flush；
+崩溃可能丢失尚未完成持久化的最近修改。
+保存始终使用输入框原本的项目/会话身份，不依赖保存时哪个会话可见；消息接受后清理对应
+草稿，即使发送过程切换了会话，也不会清空新会话的输入框。仅附件的草稿同样会保留。
+
+### 长会话与性能边界
+
+- 控制器维护 block 变更版本与有限变更日志，渲染只重建变化块及行坐标受影响的后缀；
+  稳定前缀保留文本、元数据与 extmark。窗口宽度变化、换主题或变更日志落后时走完整路径。
+  当前变化消息仍会物化完整文本；含代码的消息仍重新排版，但会复用语法分析结果，并非逐字符零复制。
+- 代码语法缓存与布局宽度分离，已闭合代码不会因后续文字追加而重新解析；缓存最多
+  64 项、约 2 MiB。单代码块超过 256 KiB 时降级为纯文本，语法捕获最多 20,000 项。
+- 每会话仍保留最多约 2,000 个 block，同时应用字节预算。超大 block 会显示截断标记，
+  会话超预算会批量移除最旧记录；这些限制不修改 Agent 侧历史，重新加载仍受本地预算限制。
+- 非活动、空闲会话按 LRU 淘汰；当前会话、运行中、有待发送消息或权限请求的会话不会
+  被淘汰。因此受保护会话可暂时超过缓存数量/总载荷预算，预算也不包括 Lua 对象、渲染缓存与 Neovim buffer 的全部开销。
+- 协议消息按时间预算有序分批处理，超出待分发队列预算时断开连接；单条 JSON 解码或单块排版仍不可抢占。
+  普通通知在该批次内直接归约，不再逐条投递第二个无预算队列；权限 UI 单独调度。
+- 独立使用 session/view 的代码可保留兼容渲染路径。启用 `session:track_changes()` 后，
+  直接修改 block 必须调用 `session:touch(block)`；仅状态/折叠变化可用 `touch(block, false)`。
 
 ### 切换模型与模式
 
 有三种方式，任选其一：
 
-1. **直接点击** winbar 上的 `模型名 ▾` 或 `模式名 ▾`。工具栏只显示模型名，
+1. **直接点击** winbar 上的模型名或模式徽标（不显示下拉箭头）。工具栏只显示模型名，
    例如 `DeepSeek V4.1 Flash` 而不是 `commandcode/DeepSeek V4.1 Flash`；
    选择器里仍保留完整名称，便于区分不同 provider 的同名模型。
 
-   > 点击区域需要鼠标启用：Neovim 默认 `mouse = "nvi"`，不含 `a`，
-   > 此时点击不会响应。设置 `vim.opt.mouse = "a"`（或至少包含 `a`）。
-   > 无法启用鼠标时，acp.nvim 会在启动时提示一次，并建议改用快捷键。
+   > 鼠标须在当前模式启用。默认 `mouse = "nvi"` 已覆盖普通、可视、插入模式，
+   > 不需要改为 `a`；`mouse = ""` 会关闭鼠标支持。终端也须正确转发鼠标事件。
 2. 输入时按 `<M-m>` 切换模型、`<M-b>` 切换模式。
 3. 普通模式按 `M` / `m`，或执行 `:Acp model` / `:Acp mode`。
 
-所有选择器（模型、模式、会话、权限确认）默认走 **`vim.ui.select`**，因此
+普通选择器（模型、模式、权限确认）默认走 **`vim.ui.select`**，因此
 telescope、fzf-lua、snacks.nvim、dressing 等插件会自动接管，无需额外配置。
-选中后立即生效，工具栏同步更新。
+选中后立即生效，工具栏同步更新。会话浏览器独立使用 `ui.session_picker`。
 
 想用插件自带的浮动选择器（带模糊过滤，适合上百个模型的场景）：
 
@@ -572,6 +645,10 @@ nvim --headless -u tests/minimal_init.lua -l tests/integration.lua
 # edgy 兼容性测试
 nvim --headless -u tests/minimal_init.lua -l tests/integration_edgy.lua
 
+# 重连与性能回归
+nvim --headless -u tests/minimal_init.lua -l tests/integration_reconnect.lua
+nvim --headless -u tests/minimal_init.lua -l tests/perf.lua
+
 # 布局预览
 nvim --headless -u tests/minimal_init.lua -l tests/render_preview.lua
 
@@ -580,6 +657,11 @@ nvim --headless -u tests/minimal_init.lua -l tests/manual_opencode.lua
 ```
 
 `:checkhealth acp` 会检查 Neovim 版本、Agent 可执行文件、edgy 与日志路径。
+
+可运行配置位于 `examples/minimal/init.lua` 和 `examples/edgy/init.lua`。
+后者需要事先把 edgy.nvim 加入 runtimepath；这些示例不会自动安装依赖。
+当前代码检查记录与验证边界见 [docs/status.md](docs/status.md)。
+运行时所有权、任务生命周期与模块边界见 [docs/architecture.md](docs/architecture.md)。
 
 ## 许可证
 

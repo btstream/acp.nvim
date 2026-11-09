@@ -15,6 +15,9 @@ local Process = {}
 Process.__index = Process
 
 local function trim_tail(text, limit)
+  if limit <= 0 then
+    return ""
+  end
   if #text <= limit then
     return text
   end
@@ -39,6 +42,47 @@ function M.spawn(opts)
   local cmd = { opts.command }
   vim.list_extend(cmd, opts.args or {})
 
+  local pending, head, tail, pending_bytes = {}, 1, 0, 0
+  local scheduled, exited, exit_sent, stopped = false, nil, false, false
+  local pending_limit = opts.max_pending_bytes or 16 * 1024 * 1024
+  local budget = (opts.dispatch_budget_ms or 4) * 1e6
+  local drain
+  local function schedule_drain()
+    if scheduled then
+      return
+    end
+    scheduled = true
+    vim.schedule(drain)
+  end
+  drain = function()
+    scheduled = false
+    local start = vim.uv.hrtime()
+    while head <= tail do
+      local line = pending[head]
+      pending[head], head, pending_bytes = nil, head + 1, pending_bytes - #line - 64
+      local ok, err = pcall(self.on_line, line)
+      if not ok then
+        framing.on_handler_error(err)
+      end
+      if vim.uv.hrtime() - start >= budget then
+        break
+      end
+    end
+    if head <= tail then
+      schedule_drain()
+    else
+      pending, head, tail = {}, 1, 0
+      if exited ~= nil and not exit_sent then
+        exit_sent = true
+        pcall(self.on_exit, exited, self.stderr_tail)
+      end
+    end
+  end
+  self.drop_pending = function()
+    stopped = true
+    pending, head, tail, pending_bytes = {}, 1, 0, 0
+  end
+
   local function handle_stdout(_, data)
     if not data or #data == 0 then
       return
@@ -49,7 +93,17 @@ function M.spawn(opts)
       chunk = chunk .. "\n" .. table.concat(data, "\n", 2)
     end
     local ok = self.decoder:feed(chunk, function(line)
-      self.on_line(line)
+      if stopped then
+        return
+      end
+      if pending_bytes + #line + 64 > pending_limit then
+        Log.error("agent dispatch queue exceeds max_pending_bytes")
+        self:stop(true)
+        return
+      end
+      tail = tail + 1
+      pending[tail], pending_bytes = line, pending_bytes + #line + 64
+      schedule_drain()
     end)
     if not ok then
       Log.error("protocol framing failed (message exceeds max_line_bytes)")
@@ -72,9 +126,11 @@ function M.spawn(opts)
 
   local function handle_exit(_, code)
     self.alive = false
-    local stderr = self.stderr_tail
+    exited = code
     Log.info("agent exited with code %d", code)
-    pcall(self.on_exit, code, stderr)
+    -- Deliver the final RPC response before the exit event, even when it was
+    -- received in the same burst. Otherwise shutdown races pending responses.
+    schedule_drain()
   end
 
   local job
@@ -111,7 +167,7 @@ end
 ---@param payload string
 ---@return boolean
 function Process:write(payload)
-  if not self.alive or not self.job then
+  if not self.alive or self.stopping or not self.job then
     return false
   end
   local offset = 1
@@ -121,12 +177,14 @@ function Process:write(payload)
     local ok, sent = pcall(vim.fn.chansend, self.job, payload:sub(offset))
     if not ok then
       Log.warn("failed to write to agent stdin: %s", tostring(sent))
+      self:stop(true)
       return false
     end
     if sent == 0 then
       attempts = attempts + 1
       if attempts > 100 or not self.alive then
         Log.warn("agent stdin stayed blocked; dropping %d bytes", len - offset + 1)
+        self:stop(true) -- a partial JSON line must never be followed by another request
         return false
       end
       -- Give the agent a moment to drain its stdin without freezing the loop.
@@ -149,6 +207,10 @@ end
 ---Terminate the process. `grace_ms` controls the delay before a hard kill.
 ---@param force boolean|nil
 function Process:stop(force)
+  self.stopping = true
+  if self.drop_pending then
+    self.drop_pending()
+  end
   if not self.job then
     return
   end
@@ -202,7 +264,7 @@ end
 
 ---@return boolean
 function Process:is_alive()
-  return self.alive
+  return self.alive and not self.stopping
 end
 
 ---@return string

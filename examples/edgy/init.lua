@@ -1,8 +1,8 @@
-# edgy.nvim layout integration.
-#
-#   nvim -u examples/edgy/init.lua
-#
-# Shows how edgy owns the panel position while acp.nvim owns the content.
+-- edgy.nvim layout integration.
+--
+--   nvim -u examples/edgy/init.lua
+--
+-- Shows how edgy owns the panel position while acp.nvim owns the content.
 
 local root = vim.fn.fnamemodify(debug.getinfo(1, "S").source:sub(2), ":h:h:h")
 vim.opt.runtimepath:append(root)

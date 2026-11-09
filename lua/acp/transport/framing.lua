@@ -77,6 +77,16 @@ function Decoder:feed(chunk, on_line)
     if not nl then
       break
     end
+    -- Check before allocating/decoding the complete line too, not only the
+    -- unterminated tail. A single read may contain an oversized whole message.
+    local size = nl - start
+    if pending:sub(nl - 1, nl - 1) == "\r" then
+      size = size - 1
+    end
+    if size > self.max then
+      self.failed, self.parts, self.buffered = true, {}, 0
+      return false
+    end
     local line = pending:sub(start, nl - 1)
     start = nl + 1
     if #line > 0 then

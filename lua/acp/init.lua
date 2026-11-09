@@ -7,8 +7,9 @@ local configured = false
 
 ---Configure acp.nvim. Safe to call multiple times.
 ---@param opts table|nil
-function M.setup(opts)
-  controller.setup(opts)
+---@param action {discard_queued?: boolean}|nil explicit consent to drop unsent messages
+function M.setup(opts, action)
+  controller.setup(opts, action)
   configured = true
 end
 

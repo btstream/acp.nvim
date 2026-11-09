@@ -14,10 +14,13 @@ local REQUEST_TIMEOUT = 30000
 ---Resolve the effective request timeout from the client's transport limits.
 ---@param self AcpClient
 ---@param fallback integer
----@return integer
+---@return integer|nil
 local function request_timeout(self, fallback)
   local limits = self.limits or {}
   local value = limits.request_timeout
+  if value == 0 then
+    return nil
+  end
   if type(value) == "number" and value > 0 then
     return math.floor(value)
   end
@@ -68,30 +71,41 @@ end
 ---Start the agent process and initialize the connection.
 ---@param cb fun(ok: boolean, err: any)
 function Client:start(cb)
-  if self.starting or self.initialized then
+  if self.initialized then
     if cb then
       cb(true, nil)
     end
+    return
+  end
+  self.start_waiters = self.start_waiters or {}
+  if cb then
+    self.start_waiters[#self.start_waiters + 1] = cb
+  end
+  if self.starting then
     return
   end
   self.starting = true
   local generation = self.generation + 1
   self.generation = generation
 
-  async.run(function()
+  self.start_co = async.run(function()
+    self.start_co = coroutine.running()
     local ok, err = self:do_start(generation)
-    self.starting = false
-    if cb then
-      cb(ok, err)
-    end
+    self:finish_start(ok, err)
   end, function(err)
     -- `do_start` raised before the line above ran; reset the guard so a later
     -- `start` is not silently swallowed.
-    self.starting = false
-    if cb then
-      cb(false, err)
-    end
+    self:shutdown(true, err)
   end)
+end
+
+function Client:finish_start(ok, err)
+  self.starting = false
+  local waiters = self.start_waiters or {}
+  self.start_waiters = {}
+  for _, cb in ipairs(waiters) do
+    pcall(cb, ok, err)
+  end
 end
 
 function Client:do_start(generation)
@@ -108,6 +122,8 @@ function Client:do_start(generation)
     max_line_bytes = max_line,
     stderr_keep_bytes = stderr_keep,
     shutdown_timeout = limits.shutdown_timeout,
+    max_pending_bytes = limits.max_pending_bytes,
+    dispatch_budget_ms = limits.dispatch_budget_ms,
     on_line = function(line)
       self:on_line(line)
     end,
@@ -138,18 +154,18 @@ function Client:do_start(generation)
 
   if not ok then
     self:emit("connection_error", result)
-    self:shutdown(true)
+    self:shutdown(true, result)
     return false, result
   end
   if type(result) ~= "table" then
     self:emit("connection_error", "invalid initialize response")
-    self:shutdown(true)
+    self:shutdown(true, "invalid initialize response")
     return false, "invalid initialize response"
   end
   if result.protocolVersion ~= PROTOCOL_VERSION then
     local msg = string.format("unsupported ACP protocol version: %s", tostring(result.protocolVersion))
     self:emit("connection_error", msg)
-    self:shutdown(true)
+    self:shutdown(true, msg)
     return false, msg
   end
 
@@ -173,12 +189,31 @@ end
 ---@return boolean ok, any value
 function Client:request(method, params, timeout)
   local settled = false
+  local yielded, immediate = false, nil
   local id
   local co = coroutine.running()
   if not co then
     return false, { message = "request() must run inside a coroutine" }
   end
   local timer
+  local rpc = self.rpc
+  if not rpc then
+    return false, { message = "connection closed" }
+  end
+  async.finally(function()
+    if settled then
+      return
+    end
+    settled = true
+    if timer then
+      timer:stop()
+      timer:close()
+      timer = nil
+    end
+    if id then
+      rpc:cancel(id)
+    end
+  end)
   local function settle(ok, value)
     if settled then
       return
@@ -189,14 +224,17 @@ function Client:request(method, params, timeout)
       timer:close()
       timer = nil
     end
-    async.resume(co, ok, value)
+    if yielded then
+      async.resume(co, ok, value)
+    else
+      immediate = { ok = ok, value = value }
+    end
   end
-  id = self.rpc:request(method, params, settle)
+  id = rpc:request(method, params, settle)
   if not id then
     settle(false, { message = "connection closed" })
-    return coroutine.yield()
   end
-  if timeout then
+  if timeout and timeout > 0 and not settled then
     timer = vim.uv.new_timer()
     timer:start(timeout, 0, function()
       vim.schedule(function()
@@ -204,11 +242,15 @@ function Client:request(method, params, timeout)
           return
         end
         Log.warn("request %s timed out after %dms", method, timeout)
-        self.rpc:cancel(id)
+        rpc:cancel(id)
         settle(false, { code = -32000, message = "request timed out: " .. method })
       end)
     end)
   end
+  if immediate then
+    return immediate.ok, immediate.value
+  end
+  yielded = true
   return coroutine.yield()
 end
 
@@ -426,7 +468,7 @@ function Client:handle_exit(code, stderr, generation)
     return
   end
   self.initialized = false
-  self.starting = false
+  self:finish_start(false, { message = "agent process exited" })
   -- Answer every pending permission request before dropping them: otherwise
   -- the agent side waits forever and the UI keeps showing a dead prompt.
   for key in pairs(self.permissions or {}) do
@@ -441,7 +483,11 @@ end
 
 ---Terminate the connection.
 ---@param force boolean|nil
-function Client:shutdown(force)
+function Client:shutdown(force, reason)
+  if self.start_co then
+    async.cancel(self.start_co)
+    self.start_co = nil
+  end
   for key in pairs(self.permissions or {}) do
     pcall(self.resolve_permission, self, key, nil)
   end
@@ -456,6 +502,7 @@ function Client:shutdown(force)
     self.proc = nil
   end
   self.rpc = nil
+  self:finish_start(false, reason or { message = "client shutdown" })
 end
 
 ---@return boolean
