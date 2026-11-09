@@ -126,9 +126,16 @@ return function(t)
       t.eq(nil, lines[1].bg, "the collapsed header is not part of the surface")
     end)
 
-    t.it("uses the search highlight for the icon and label only", function()
+    t.it("uses the search accent as text colour only", function()
       local highlights = require("acp.ui.highlights")
-      t.eq("IncSearch", highlights.groups.AcpThought.link)
+      highlights.setup(false)
+
+      -- The group must carry a foreground and *no* background: linking
+      -- `IncSearch` wholesale painted a solid block behind the label.
+      local hl = vim.api.nvim_get_hl(0, { name = "AcpThought" })
+      t.truthy(hl.fg ~= nil, "AcpThought should define a foreground")
+      t.eq(nil, hl.bg, "AcpThought must not paint a background")
+      t.eq(nil, hl.link, "AcpThought should resolve its colour, not link the whole group")
 
       local ic = blocks.icon_set(true)
       local lines = blocks.render_block(thought("x"), ctx())
@@ -137,7 +144,7 @@ return function(t)
       t.eq("AcpSeparator", header.segments[1].group, "the caret must keep its own colour")
       t.eq(0, header.segments[1].s)
       t.eq(caret_end, header.segments[1].e)
-      t.eq("AcpThought", header.segments[2].group, "icon and label take the search highlight")
+      t.eq("AcpThought", header.segments[2].group, "icon and label take the search accent")
       t.eq(caret_end + 1, header.segments[2].s)
     end)
 

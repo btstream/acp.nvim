@@ -11,7 +11,10 @@ M.groups = {
   AcpUser = { link = "Identifier" },
   AcpUserChip = { link = "Visual" },
   AcpAssistant = { link = "Normal" },
-  AcpThought = { link = "IncSearch" },
+  -- Thoughts borrow the search highlight's *foreground* only. Linking the group
+  -- wholesale would also take `IncSearch`'s background, painting a solid block
+  -- behind the label instead of colouring the text.
+  AcpThought = { link = "Comment" },
   -- Tool headers are deliberately quiet: they label a call, they are not the
   -- content. Linking `AcpToolTitle` to `Function` made long commands glare.
   AcpToolTitle = { link = "Comment" },
@@ -58,12 +61,63 @@ M.groups = {
 local zed_style = true
 local augroup = nil
 
+---Relative luminance of a `#rrggbb` colour, 0 (black) to 1 (white).
+---@param hex string
+---@return number|nil
+local function luminance(hex)
+  if type(hex) ~= "string" or #hex ~= 7 then
+    return nil
+  end
+  local r, g, b = tonumber(hex:sub(2, 3), 16), tonumber(hex:sub(4, 5), 16), tonumber(hex:sub(6, 7), 16)
+  if not (r and g and b) then
+    return nil
+  end
+  return (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255
+end
+
+---Take the colour a highlight group *looks* like and apply it as a foreground.
+---
+---A search highlight usually pairs a dark foreground with a bright background,
+---so copying `fg` alone would put near-black text on a dark transcript. The
+---pair is resolved to whichever of the two reads clearly against `bg`.
+---@param target string
+---@param source string
+---@param bg string current background, as `#rrggbb`
+local function set_accent_fg(target, source, bg)
+  local ok, hl = pcall(vim.api.nvim_get_hl, 0, { name = source, link = false })
+  if not ok or type(hl) ~= "table" then
+    return
+  end
+  local fg, source_bg = hl.fg, hl.bg
+  if type(fg) == "number" then
+    fg = string.format("#%06x", fg)
+  end
+  if type(source_bg) == "number" then
+    source_bg = string.format("#%06x", source_bg)
+  end
+
+  local base = luminance(bg) or 0
+  local function distance(hex)
+    local l = luminance(hex)
+    return l and math.abs(l - base) or -1
+  end
+  -- Prefer the pair member that is furthest from the background it will sit on.
+  local chosen
+  if fg and source_bg then
+    chosen = distance(fg) >= distance(source_bg) and fg or source_bg
+  else
+    chosen = fg or source_bg
+  end
+  if chosen and distance(chosen) > 0.15 then
+    vim.api.nvim_set_hl(0, target, { fg = chosen })
+  end
+end
+
 ---Shift `hex` away from `base` by `amount` (0 = unchanged, 1 = fully crossed).
 ---
----`base` is the surface the result sits on. Moving *away* from it is what makes
----a card distinguishable: mixing towards the background it already equals
----produces the same colour, which is how these surfaces previously ended up
----identical to `Normal`.
+---Moving *away* from the surface the value sits on is what makes a card
+---distinguishable: mixing towards a colour it already equals is a no-op, which
+---is how these surfaces once ended up identical to `Normal`.
 ---@param hex string
 ---@param base string
 ---@param amount number
@@ -83,11 +137,11 @@ local function mix(hex, base, amount)
   if not (hr and br) then
     return nil
   end
-  -- Pick the direction that has more headroom: light surfaces get lighter,
-  -- dark surfaces get lighter too (a card reads as a raised surface), but a
-  -- near-white background is darkened instead so the card stays visible.
-  local luminance = (0.2126 * br + 0.7152 * bg + 0.0722 * bb) / 255
-  local target = luminance > 0.5 and 0 or 255
+  -- Light surfaces get lighter, and so do dark ones (a card reads as a raised
+  -- surface); a near-white background is darkened instead so the card stays
+  -- visible.
+  local luma = (0.2126 * br + 0.7152 * bg + 0.0722 * bb) / 255
+  local target = luma > 0.5 and 0 or 255
   local function blend(a, t)
     local v = math.floor(a + (t - a) * amount + 0.5)
     return math.max(0, math.min(255, v))
@@ -120,10 +174,23 @@ local function set_surface(name, amount)
   end
 end
 
+---Copy the foreground of `source` onto `target`, ignoring its background.
 ---Define every group. Safe to call again after a colorscheme change.
 local function apply()
   for name, spec in pairs(M.groups) do
     vim.api.nvim_set_hl(0, name, spec)
+  end
+  -- Thoughts take the search highlight's text colour only.
+  -- Thoughts take the search highlight's accent colour as text colour. Which of
+  -- its two colours that is depends on the theme: some pair a dark foreground
+  -- with a bright background, so the pair member that reads against our own
+  -- background is chosen.
+  local normal_bg = vim.api.nvim_get_hl(0, { name = "Normal", link = false }).bg
+  if type(normal_bg) == "number" then
+    normal_bg = string.format("#%06x", normal_bg)
+  end
+  if type(normal_bg) == "string" then
+    set_accent_fg("AcpThought", "IncSearch", normal_bg)
   end
   -- Surfaces derived from the theme background so they work on light and dark
   -- themes. The card is the most prominent and the code block subtler so the
