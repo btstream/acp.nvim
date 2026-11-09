@@ -23,6 +23,17 @@ local BODY_INDENT = 2
 local CODE_GUTTER = "  "
 local CODE_GUTTER_LEN = #CODE_GUTTER
 
+---Heading groups produced by the Markdown scanner.
+---
+---A heading that opens an assistant turn names that turn, so it is restyled as
+---`AcpAssistantTitle`; headings later in the body keep their level.
+local HEADING_GROUPS = {
+  AcpH1 = true,
+  AcpH2 = true,
+  AcpH3 = true,
+  AcpH4 = true,
+}
+
 ---Resolve the icon set used for rendering.
 ---@param use_icons boolean
 ---@return table<string,string>
@@ -429,12 +440,23 @@ local function render_user(block, ctx)
       chips[#chips + 1] = "[" .. one_line(att.label or att.path or "?") .. "]"
     end
   end
-  local header = ic.user .. " " .. "You"
+  -- The glyph and the name are separate regions: the icon marks who is
+  -- speaking, the label names the turn, so they can be coloured apart.
+  local label = "You"
+  local header = ic.user .. " " .. label
   if #chips > 0 then
     header = header .. "  " .. table.concat(chips, " ")
   end
+  local segments = {
+    { s = 0, e = #ic.user, group = "AcpUserIcon" },
+    { s = #ic.user + 1, e = #ic.user + 1 + #label, group = "AcpUserTitle" },
+  }
+  if #chips > 0 then
+    -- Attachment chips keep the plain user colour rather than the title colour.
+    segments[#segments + 1] = { s = #ic.user + 1 + #label, e = -1, group = "AcpUser" }
+  end
   local out = {
-    { text = header, segments = { { s = 0, e = -1, group = "AcpUser" } } },
+    { text = header, segments = segments },
   }
   block._md_user = block._md_user or {}
   local body = M.indent_lines(M.render_text(block.text or "", "AcpUser", ctx.width, block._md_user), "  ")
@@ -462,7 +484,7 @@ local function render_assistant(block, ctx)
   local starts_with_table = body[1] and body[1].table
   local out = {}
   if starts_with_table then
-    out[1] = { text = prefix .. ic.assistant, segments = { { s = 0, e = -1, group = "AcpAssistant" } } }
+    out[1] = { text = prefix .. ic.assistant, segments = { { s = 0, e = -1, group = "AcpAssistantIcon" } } }
     for _, line in ipairs(M.indent_lines(body, string.rep(" ", BODY_INDENT))) do
       out[#out + 1] = line
     end
@@ -471,9 +493,17 @@ local function render_assistant(block, ctx)
     -- The header glyph belongs to the assistant highlight on the first line.
     if #out > 0 then
       out[1].segments =
-        vim.list_extend({ { s = 0, e = #prefix + #ic.assistant, group = "AcpAssistant" } }, out[1].segments)
+        vim.list_extend({ { s = 0, e = #prefix + #ic.assistant, group = "AcpAssistantIcon" } }, out[1].segments)
+      -- When the turn opens with a heading, that line names it: style it as the
+      -- block title instead of a generic heading, so it can be themed apart
+      -- from headings in the body.
+      for _, seg in ipairs(out[1].segments) do
+        if seg.group and HEADING_GROUPS[seg.group] then
+          seg.group = "AcpAssistantTitle"
+        end
+      end
     else
-      out[1] = { text = prefix .. ic.assistant, segments = { { s = 0, e = -1, group = "AcpAssistant" } } }
+      out[1] = { text = prefix .. ic.assistant, segments = { { s = 0, e = -1, group = "AcpAssistantIcon" } } }
     end
   end
   out[#out + 1] = { text = "", segments = nil }

@@ -126,6 +126,20 @@ return function(t)
       t.truthy(defined("AcpToolbarModePlan"), "a derived group was not defined")
     end)
 
+    t.it("gives each block header glyph and title their own group", function()
+      -- The four groups exist so an icon and its label can be coloured apart.
+      -- They default to the same colour, chained icon -> title.
+      local expected = {
+        AcpUserIcon = "AcpUser",
+        AcpUserTitle = "AcpUserIcon",
+        AcpAssistantIcon = "AcpAssistant",
+        AcpAssistantTitle = "AcpAssistantIcon",
+      }
+      for name, target in pairs(expected) do
+        t.eq(target, highlights.groups[name].link, name .. " should link to " .. target)
+      end
+    end)
+
     t.it("does not give card body text a background of its own", function()
       highlights.setup()
       -- No `AcpToolBody` group exists on purpose; body text inherits the card.

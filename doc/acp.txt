@@ -265,6 +265,12 @@ cancelled。
     AcpUser  AcpAssistant  AcpToolTitle  AcpToolRunning
     AcpToolSuccess  AcpToolError  AcpPlan  AcpSeparator
     AcpTitle  AcpToolbar  AcpPermission  AcpStreaming
+    AcpUserIcon  AcpUserTitle  AcpAssistantIcon  AcpAssistantTitle
+
+对话记录的标题行拆成图标和文字两组。默认 AcpUserTitle 链接到
+AcpUserIcon、AcpAssistantTitle 链接到 AcpAssistantIcon，即同色；想区分时
+单独覆盖即可。助手回合开头的 Markdown 标题会用 AcpAssistantTitle，正文中间
+的标题仍保留各自的 AcpH1-AcpH4 级别。
 
 两种覆盖方式，都会优先于内置定义。通过 setup 传入：
 

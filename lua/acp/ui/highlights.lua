@@ -46,8 +46,16 @@ M.groups = {
   AcpUser = { link = "Function" },
   AcpUserChip = { link = "Visual" },
   AcpAssistant = { link = "Normal" },
+  -- The block header is split in two so the glyph and the label can be coloured
+  -- independently: the icon marks who is speaking, the title names the turn.
+  -- Both default to the speaker's own colour, which keeps the header reading as
+  -- one unit until someone deliberately splits them.
+  AcpUserIcon = { link = "AcpUser" },
+  AcpUserTitle = { link = "AcpUserIcon" },
+  AcpAssistantIcon = { link = "AcpAssistant" },
+  AcpAssistantTitle = { link = "AcpAssistantIcon" },
   -- Thoughts are quiet reasoning text; there is no standard capture for them.
-  AcpThought = { link = "Comment" },
+  AcpThought = { link = "@markup.raw" },
   -- Tool headers label a call, they are not the content, so they stay quiet.
   AcpToolTitle = { link = "Comment" },
   AcpToolTag = { link = "Comment" },

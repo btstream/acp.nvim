@@ -338,6 +338,11 @@ heirline 同理，只需调用 `statusline()` 或读取 `status()`。
 到 treesitter 的 `@markup.*` 捕获组，所以在对话记录里的呈现和普通 Markdown buffer
 完全一致。
 
+对话记录的标题行拆成了图标和文字两组：`AcpUserIcon` / `AcpUserTitle`、
+`AcpAssistantIcon` / `AcpAssistantTitle`。默认 `Title` 链接到 `Icon`，两者同色；
+想区分时单独覆盖即可。助手回合开头的 Markdown 标题会用 `AcpAssistantTitle`，
+正文中间的标题仍保留各自的 `AcpH1`–`AcpH4` 级别。
+
 两处例外，都是为了让表格读起来安静一些：
 
 - 行内代码链接到 `String`。`@markup.raw` 在多数主题里是暖色强调色，放在正文中
@@ -369,6 +374,7 @@ vim.api.nvim_set_hl(0, "AcpSeparator", { fg = "#3b4261" })
 可用的组：`AcpNormal` `AcpMuted` `AcpBorder` `AcpTitle` `AcpToolbar` `AcpToolbarAccent`
 `AcpToolbarModePlan` `AcpToolbarModeBuild` `AcpToolbarIdle` `AcpToolbarRunning`
 `AcpToolbarWaiting` `AcpToolbarCancelling` `AcpUser` `AcpUserChip` `AcpAssistant`
+`AcpUserIcon` `AcpUserTitle` `AcpAssistantIcon` `AcpAssistantTitle`
 `AcpThought` `AcpToolTitle` `AcpToolTag` `AcpCardBg` `AcpCodeBlockBg` `AcpCodeLang`
 `AcpTableHead` `AcpTableBorder` `AcpToolRunning` `AcpToolSuccess` `AcpToolError`
 `AcpToolCancelled` `AcpMdCode` `AcpBold` `AcpItalic` `AcpStrike` `AcpMdLink` `AcpH1`

@@ -234,26 +234,68 @@ return function(t)
     local blocks = require("acp.ui.blocks")
     local state = require("acp.session.state")
 
-    t.it("maps levels to their own group", function()
+    t.it("gives a heading in the body its level group", function()
       local expected = { "AcpH1", "AcpH2", "AcpH3", "AcpH4" }
       for level = 1, 4 do
         local s = state.new("s", "/tmp")
-        s:append({ id = "a", kind = "agent", text = string.rep("#", level) .. " Title" })
+        -- A leading paragraph keeps the heading off the first line, so it stays
+        -- body content rather than the turn's title.
+        s:append({ id = "a", kind = "agent", text = "intro\n\n" .. string.rep("#", level) .. " Title" })
         local lines = blocks.render_block(s.blocks[1], {
           icons = blocks.icon_set(true),
           width = 80,
           cwd = "/tmp",
           show_thoughts = false,
         })
-        -- The heading marker is dropped from the text; the body keeps its level
-        -- group.
-        t.truthy(lines[1].text:find("Title", 1, true), "heading text missing")
+        local found = nil
+        for _, line in ipairs(lines) do
+          if line.text:find("Title", 1, true) then
+            found = line
+            break
+          end
+        end
+        t.truthy(found, "heading text missing")
         local groups = {}
-        for _, seg in ipairs(lines[1].segments or {}) do
+        for _, seg in ipairs(found.segments or {}) do
           groups[seg.group] = true
         end
         t.truthy(groups[expected[level]], "heading level " .. level .. " lost its group")
       end
+    end)
+
+    t.it("styles a heading that opens the turn as the block title", function()
+      local s = state.new("s", "/tmp")
+      s:append({ id = "a", kind = "agent", text = "## 总体结论\nbody" })
+      local lines = blocks.render_block(s.blocks[1], {
+        icons = blocks.icon_set(true),
+        width = 80,
+        cwd = "/tmp",
+        show_thoughts = false,
+      })
+      local groups = {}
+      for _, seg in ipairs(lines[1].segments or {}) do
+        groups[seg.group] = true
+      end
+      t.truthy(groups["AcpAssistantIcon"], "the glyph keeps its own group")
+      t.truthy(groups["AcpAssistantTitle"], "the opening heading should be the block title")
+      t.falsy(groups["AcpH2"], "the opening heading should not keep its body group")
+    end)
+
+    t.it("separates the user glyph from the user label", function()
+      local s = state.new("s", "/tmp")
+      s:append({ id = "u", kind = "user", text = "hello" })
+      local lines = blocks.render_block(s.blocks[1], {
+        icons = blocks.icon_set(true),
+        width = 80,
+        cwd = "/tmp",
+        show_thoughts = false,
+      })
+      local groups = {}
+      for _, seg in ipairs(lines[1].segments or {}) do
+        groups[seg.group] = true
+      end
+      t.truthy(groups["AcpUserIcon"], "the user glyph needs its own group")
+      t.truthy(groups["AcpUserTitle"], "the user label needs its own group")
     end)
   end)
 end
