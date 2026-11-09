@@ -12,6 +12,7 @@ local Icons = require("acp.ui.icons")
 local session_state = require("acp.session.state")
 local Markdown = require("acp.ui.markdown")
 local CodeHL = require("acp.ui.code_hl")
+local Table = require("acp.ui.table")
 
 -- Prefix drawn in front of every line inside a fenced block.
 -- Fenced code blocks are drawn as a background only: no border characters.
@@ -259,6 +260,35 @@ function M.render_text(text, base_hl, width, cache)
     end
   end
 
+  ---Draw the rows collected for a table (if it really is one) and reset state.
+  ---A lone line containing a pipe is prose, so it is rendered normally instead.
+  ---@param out AcpRenderedLine[]
+  ---@param st table
+  ---@param hl string|nil
+  ---@param w integer
+  local function flush_table(out, st, hl, w)
+    local rows = st.table_rows
+    st.table_rows = nil
+    if not rows or #rows == 0 then
+      return
+    end
+    if Table.is_table(rows) then
+      for _, line in ipairs(Table.render(Table.parse(rows), hl, w)) do
+        out[#out + 1] = line
+      end
+      return
+    end
+    -- Not a table after all: render the collected lines as ordinary text.
+    for _, raw in ipairs(rows) do
+      local line = render_line(raw, hl, st)
+      if line then
+        out[#out + 1] = line
+        line.code_open = nil
+        line.code = nil
+      end
+    end
+  end
+
   local search = pos
   while true do
     local nl = text:find("\n", search, true)
@@ -266,25 +296,43 @@ function M.render_text(text, base_hl, width, cache)
       break
     end
     local raw = text:sub(search, nl - 1)
-    local line, flag = render_line(raw, base_hl, mark)
-    if flag == "code_close" then
-      -- The closing fence emits no row of its own.
-      close_fence()
-      mark.fence_code = nil
-      mark.fence_lang = nil
-      mark.fence_start = nil
-    elseif line then
-      lines[#lines + 1] = line
-      if line.code_open then
-        -- The fence marker itself is the last pushed line; code starts after it.
-        mark.fence_start = #lines + 1
-      end
-      -- `code_open`/`code` are transient routing flags that must not leak into
-      -- the cached line table.
-      line.code_open = nil
-      line.code = nil
-    end
     search = nl + 1
+
+    -- Table rows are collected first and drawn once, because column widths
+    -- depend on every row.
+    if mark.table_rows then
+      if raw:find("|", 1, true) then
+        mark.table_rows[#mark.table_rows + 1] = raw
+        goto continue
+      end
+      flush_table(lines, mark, base_hl, width)
+    end
+    if not mark.in_fence and raw:find("|", 1, true) then
+      mark.table_rows = { raw }
+      goto continue
+    end
+
+    do
+      local line, flag = render_line(raw, base_hl, mark)
+      if flag == "code_close" then
+        -- The closing fence emits no row of its own.
+        close_fence()
+        mark.fence_code = nil
+        mark.fence_lang = nil
+        mark.fence_start = nil
+      elseif line then
+        lines[#lines + 1] = line
+        if line.code_open then
+          -- The fence marker itself is the last pushed line; code starts after it.
+          mark.fence_start = #lines + 1
+        end
+        -- `code_open`/`code` are transient routing flags that must not leak into
+        -- the cached line table.
+        line.code_open = nil
+        line.code = nil
+      end
+    end
+    ::continue::
   end
 
   if cache then
@@ -300,25 +348,39 @@ function M.render_text(text, base_hl, width, cache)
     cache.final = #lines
   end
 
+  -- The final fragment has no trailing newline. It still has to go through the
+  -- table collector: a table at the end of the text would otherwise render its
+  -- first rows and lose the last one.
   local tail = text:sub(search)
   if tail ~= "" then
-    local line, flag = render_line(tail, base_hl, mark)
-    -- The trailing fragment is re-rendered when more text arrives, so the fence
-    -- state it carries must not be committed to the cache. Highlighting it now
-    -- would duplicate segments on the next call.
-    if flag == "code_close" then
-      close_fence()
-      mark.fence_code = nil
-      mark.fence_lang = nil
-      mark.fence_start = nil
-    elseif line then
-      lines[#lines + 1] = line
-      if line.code_open then
-        mark.fence_start = #lines + 1
+    local in_table = mark.table_rows ~= nil or (not mark.in_fence and tail:find("|", 1, true) ~= nil)
+    if in_table then
+      if mark.table_rows then
+        mark.table_rows[#mark.table_rows + 1] = tail
+      else
+        mark.table_rows = { tail }
       end
-      line.code_open = nil
-      line.code = nil
+      flush_table(lines, mark, base_hl, width)
+    else
+      local line, flag = render_line(tail, base_hl, mark)
+      if flag == "code_close" then
+        close_fence()
+        mark.fence_code = nil
+        mark.fence_lang = nil
+        mark.fence_start = nil
+      elseif line then
+        lines[#lines + 1] = line
+        if line.code_open then
+          mark.fence_start = #lines + 1
+        end
+        line.code_open = nil
+        line.code = nil
+      end
     end
+  end
+  -- A table whose last row had no trailing newline is closed here.
+  if mark.table_rows then
+    flush_table(lines, mark, base_hl, width)
   end
 
   return lines
@@ -350,6 +412,7 @@ function M.indent_lines(lines, prefix, first_prefix)
       -- Background is line-wide, so it survives indentation unchanged.
       bg = line.bg,
       location = line.location,
+      table = line.table,
     }
   end
   return out
@@ -384,14 +447,30 @@ local function render_assistant(block, ctx)
   local prefix = block.child and (ic.child .. " ") or ""
   local head = prefix .. ic.assistant .. " "
   block._md_agent = block._md_agent or {}
-  local body = M.render_text(block.text or "", "AcpAssistant", ctx.width, block._md_agent)
-  local out = M.indent_lines(body, string.rep(" ", #head), head)
-  -- The header glyph belongs to the assistant highlight on the first line.
-  if #out > 0 then
-    out[1].segments =
-      vim.list_extend({ { s = 0, e = #prefix + #ic.assistant, group = "AcpAssistant" } }, out[1].segments)
-  else
+  -- `indent_lines` indents the body by `#head` spaces, so a table has to fit in
+  -- what remains after that indentation, not after the glyph's display width.
+  local body_width = math.max(20, ctx.width - #head)
+  local body = M.render_text(block.text or "", "AcpAssistant", body_width, block._md_agent)
+
+  -- A table cannot share a line with the header glyph: the icon would shift only
+  -- the first row and break the columns. In that case the glyph gets its own
+  -- line and the table starts below it.
+  local starts_with_table = body[1] and body[1].table
+  local out = {}
+  if starts_with_table then
     out[1] = { text = prefix .. ic.assistant, segments = { { s = 0, e = -1, group = "AcpAssistant" } } }
+    for _, line in ipairs(M.indent_lines(body, string.rep(" ", #head))) do
+      out[#out + 1] = line
+    end
+  else
+    out = M.indent_lines(body, string.rep(" ", #head), head)
+    -- The header glyph belongs to the assistant highlight on the first line.
+    if #out > 0 then
+      out[1].segments =
+        vim.list_extend({ { s = 0, e = #prefix + #ic.assistant, group = "AcpAssistant" } }, out[1].segments)
+    else
+      out[1] = { text = prefix .. ic.assistant, segments = { { s = 0, e = -1, group = "AcpAssistant" } } }
+    end
   end
   out[#out + 1] = { text = "", segments = nil }
   return out

@@ -25,6 +25,9 @@ M.groups = {
   -- over the card and split it into strips.
   AcpCardBg = { link = "NormalFloat" },
   AcpCodeBlockBg = { link = "NormalFloat" },
+  AcpCodeLang = { link = "Comment" },
+  AcpTableHead = { link = "Function", bold = true },
+  AcpTableRule = { link = "NonText" },
   AcpToolRunning = { link = "DiagnosticWarn" },
   AcpToolSuccess = { link = "DiagnosticOk" },
   AcpToolError = { link = "DiagnosticError" },

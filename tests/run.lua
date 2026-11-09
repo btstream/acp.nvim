@@ -34,5 +34,6 @@ require("tests.spec_markdown")(t)
 require("tests.spec_code_hl")(t)
 require("tests.spec_cards")(t)
 require("tests.spec_thoughts")(t)
+require("tests.spec_tables")(t)
 
 t.run()
