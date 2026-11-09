@@ -162,6 +162,70 @@ Chat:render()              nvim_buf_set_lines 增量写入 + 按行打 extmark
 
 ## 5. 实施计划
 
+### 阶段 0（共享前置）：行背景绘制机制
+
+代码块背景（阶段 2）与工具卡片（阶段 3）都需要「给一段连续行加背景」。
+先把这个机制单独做掉，后续两个阶段都复用它。
+
+**修改** `blocks.lua`：`AcpRenderedLine` 增加 `bg` 字段（见第 4 章）。
+
+**修改** `chat.lua`：新增背景合并绘制。
+
+```lua
+local ns_bg = vim.api.nvim_create_namespace("acp_chat_bg")
+
+---Paint contiguous runs of lines that share the same `bg` using one extmark.
+---@param meta table[] lines metadata produced by render()
+---@param prefix integer first rewritten row (0-based, inclusive)
+---@param end_line integer exclusive end row of the rewritten range (-1 for all)
+local function apply_backgrounds(buf, meta, prefix, end_line)
+  local last = end_line == -1 and #meta or end_line
+  local row = prefix
+  while row < last do
+    local bg = meta[row + 1] and meta[row + 1].bg
+    if bg then
+      local stop = row
+      while stop + 1 < last and meta[stop + 2] and meta[stop + 2].bg == bg do
+        stop = stop + 1
+      end
+      pcall(vim.api.nvim_buf_set_extmark, buf, ns_bg, row, 0, {
+        end_row = stop + 1,
+        end_col = 0,
+        hl_group = bg,
+        hl_eol = true,
+        hl_mode = "combine",
+        priority = 50,
+      })
+      row = stop + 1
+    else
+      row = row + 1
+    end
+  end
+end
+```
+
+要点：
+
+- 独立 namespace `ns_bg`，与行内高亮 `ns` 分开，增量更新互不干扰
+- 只在本次重写的区间内绘制：先 `nvim_buf_clear_namespace(buf, ns_bg, prefix, end_line)`，
+  再调用 `apply_backgrounds`
+- 优先级 50，低于行内段（100），保证文字颜色不被背景覆盖
+- `hl_eol = true` 让背景铺到窗口右边缘（已实测，换行续行也会继承）
+
+**修改** `chat.lua:meta`：每行增加 `bg` 字段。padding 行同样要写 `block_id`，
+否则光标停在 padding 上按 `<Tab>` 无法定位到块。
+
+**修改** `chat.lua:transcript()`：复制时 rstrip 掉卡片/代码块的尾部填充空格。
+
+**测试** `tests/spec_backgrounds.lua`（新增）
+
+- 连续同 `bg` 的行合并成一个 extmark（用 `nvim_buf_get_extmarks` 计数断言）
+- 相邻但 `bg` 不同的两段不会被合并
+- `bg` 为 nil 的行不产生 extmark
+- 增量渲染后旧背景不残留
+
+---
+
 ### 阶段 1：行内 Markdown 解析器
 
 **新增文件** `lua/acp/ui/markdown.lua`
@@ -261,12 +325,19 @@ AcpCodeBlockBg  -- 代码块背景（比卡片更淡）
 AcpCodeLang     -- fence 语言标签
 ```
 
+**代码块背景**（已确认要做）
+
+`render_text` 在 fence 内生成的行设 `bg = "AcpCodeBlockBg"`，覆盖范围包含
+fence 语言标签行与代码行。实际绘制复用第 5.0 节的背景合并机制——因此
+该机制必须在阶段 2 之前落地，不要等到阶段 3。
+
 **测试** `tests/spec_code_hl.lua`（新增）
 
 - 有 parser（lua）时产生预期数量区间
 - 无 parser（不存在的语言）时返回 nil 且不抛错
 - 语言别名解析
 - 多行代码的行号映射正确
+- fence 内行带 `AcpCodeBlockBg`，fence 外不带
 
 ---
 
@@ -297,47 +368,8 @@ AcpCodeLang     -- fence 语言标签
 | 背景组 | `AcpCardBg` |
 | locations | 展开时列在卡片下方，不放进卡片内 |
 
-**修改** `chat.lua:render()`
-
-在 `lines/meta` 生成后、写 buffer 前，插入背景合并逻辑：
-
-```lua
-local ns_bg = vim.api.nvim_create_namespace("acp_chat_bg")
-
-local function apply_backgrounds(buf, meta)
-  local row = 0
-  while row < #meta do
-    local bg = meta[row + 1] and meta[row + 1].bg
-    if bg then
-      local last = row
-      while last + 1 < #meta and meta[last + 2] and meta[last + 2].bg == bg do
-        last = last + 1
-      end
-      pcall(vim.api.nvim_buf_set_extmark, buf, ns_bg, row, 0, {
-        end_row = last + 1,
-        end_col = 0,
-        hl_group = bg,
-        hl_eol = true,
-        hl_mode = "combine",
-        priority = 50,
-      })
-      row = last + 1
-    else
-      row = row + 1
-    end
-  end
-end
-```
-
-要点：
-
-- 独立 namespace，与行内高亮 `ns` 分开，增量更新互不干扰
-- 只清理变化区间的背景：`nvim_buf_clear_namespace(buf, ns_bg, prefix, end_line)`
-- 优先级 50，低于行内段（100），保证文字颜色不被背景覆盖
-
-**修改** `chat.lua:meta` 结构
-
-每行 meta 增加 `bg` 字段，供背景合并使用；同时保留 `block_id`，确保光标停在 padding 行时 `<Tab>` 仍能定位到块。
+**背景绘制**：直接复用阶段 0 的 `apply_backgrounds()`，阶段 3 不需要再写绘制逻辑，
+只需在 `render_tool` 产出的卡片行上设置 `bg = "AcpCardBg"`。
 
 **修改** `chat.lua:transcript()`
 
@@ -391,14 +423,10 @@ if block.kind == "tool" or block.kind == "compaction" or block.kind == "thought"
 
 现有逻辑：`if not ctx.show_thoughts then return {} end`
 
-新逻辑：
-- 当 `ctx.show_thoughts == true` → 完全展开（兼容旧行为）
-- 当 `ctx.show_thoughts == false` → 输出折叠头部一行（可点击展开）
-- **不输出任何内容**作为可选项？—— 不采用，因为用户要求「可手动展开」
-
-需要 discussion：默认隐藏时是否显示 "▸ Thinking" 这一行？
-- 方案 A：显示折叠头（可发现、可展开）← 建议
-- 方案 B：完全不显示（最干净，但无法展开）
+新逻辑（已确认）：
+- `ctx.show_thoughts == true` → 完全展开（兼容旧行为）
+- `ctx.show_thoughts == false` → 输出一行折叠头部 `▸ Thinking`，可展开
+- 头部可见性由 `ui.thoughts.show_collapsed_header` 控制，默认 `true`
 
 **新增配置** `config.lua`
 
@@ -431,11 +459,11 @@ ui = {
 新增（`highlights.lua`）：
 
 ```lua
-AcpCardBg       = { link = "NormalFloat" }      -- 卡片背景
-AcpToolTag      = { link = "Comment" }          -- 工具标签
-AcpCodeBlockBg  = { link = "NormalFloat" }      -- 代码块背景
-AcpCodeLang     = { link = "Comment" }          -- fence 语言
-AcpMdCode       = { link = "String" }           -- 行内代码（带背景）
+AcpCardBg       = { link = "NormalFloat" }      -- 卡片背景（工具块）
+AcpToolTag      = { link = "Comment" }          -- 工具标签（Run Command / Write）
+AcpCodeBlockBg  = { link = "NormalFloat" }      -- 代码块背景（比 AcpCardBg 更淡）
+AcpCodeLang     = { link = "Comment" }          -- fence 语言标签
+AcpMdCode       = { link = "String" }           -- 行内代码（需带 bg）
 AcpBold         = { bold = true }
 AcpItalic       = { italic = true }
 AcpStrike       = { strikethrough = true }
@@ -446,7 +474,15 @@ AcpH3           = { link = "Function" }
 AcpH4           = { link = "Function" }
 ```
 
-`zed_style` 下额外调暗 `AcpCardBg` 与 `AcpCodeBlockBg`，保持低对比度。
+两种背景的区分：
+
+| 组 | 用途 | 视觉 |
+|---|---|---|
+| `AcpCardBg` | 工具卡片 | 较明显的背景块 |
+| `AcpCodeBlockBg` | 代码块 | 更淡，避免与卡片混淆 |
+
+`zed_style` 下把 `AcpCodeBlockBg` 调得比 `AcpCardBg` 更接近 `Normal`，并给
+`AcpMdCode` 一个轻微 `bg`（行内代码在 Zed/opencode 里都有底色）。
 
 现有 `AcpHeading` 保留（向后兼容），新标题按级别映射到 `AcpH1..H4`。
 
@@ -480,10 +516,11 @@ AcpH4           = { link = "Function" }
 ### 8.2 新增测试文件
 
 ```
-tests/spec_markdown.lua     行内解析
-tests/spec_code_hl.lua      代码高亮
-tests/spec_cards.lua        工具卡片
-tests/spec_thoughts.lua     thought 折叠
+tests/spec_backgrounds.lua  行背景绘制（阶段 0）
+tests/spec_markdown.lua     行内解析（阶段 1）
+tests/spec_code_hl.lua      代码高亮 + 代码块背景（阶段 2）
+tests/spec_cards.lua        工具卡片（阶段 3）
+tests/spec_thoughts.lua     thought 折叠（阶段 4）
 ```
 
 并在 `tests/run.lua` 注册。
@@ -527,27 +564,50 @@ nvim --headless -u tests/minimal_init.lua -l tests/render_preview.lua
 
 | 阶段 | 内容 | 风险 | 预期改动量 |
 |---|---|---|---|
+| 0 | 行背景绘制机制（共享前置） | 低（新增能力，不改现有输出） | 改 ~60 行 + 测试 |
 | 1 | 行内 Markdown | 低（纯文本层） | 新增 ~150 行 + 测试 |
-| 2 | 代码块高亮 | 中（依赖 treesitter） | 新增 ~100 行 + 测试 |
+| 2 | 代码块高亮 + 背景 | 中（依赖 treesitter） | 新增 ~100 行 + 测试 |
 | 3 | 工具卡片 | 中（改布局与 buffer 写入） | 改 ~120 行 + 测试 |
 | 4 | Thought 折叠 | 低 | 改 ~40 行 + 测试 |
 
 建议每阶段独立提交，跑完整测试后再进入下一阶段。
 
-阶段 1、2 可以并行开发但应顺序合并，因为都改 `render_line`/`render_text`。
+依赖关系：
+
+- **阶段 0 必须最先完成**：阶段 2（代码块背景）与阶段 3（工具卡片）都依赖它
+- 阶段 1、2 都改 `render_line` / `render_text`，应顺序合并而非并行
+- 阶段 3、4 互相独立，可与阶段 1 并行开发
 
 ---
 
-## 10. 待确认事项
+## 10. 已确认的设计决策
 
-1. **折叠状态的 thought 是否显示 "▸ Thinking" 头部？**
-   建议显示（否则用户无处可点）。若选择不显示，需要另设快捷键。
-2. **代码块是否也加背景？**
-   Zed 截图中命令块有背景。建议加（`AcpCodeBlockBg`，比卡片更淡），与工具卡片区分。
-3. **diff 内容是否渲染成真实 +/- 行？**
-   当前 `reducer.tool_content_text()` 把 `type=="diff"` 压成 `diff: path`。渲染真实 diff 是额外工作量，建议放到后续迭代，本次不做。
-4. **表格支持是否需要？**
-   建议本次不做。
+以下四点已与用户确认，实施时按此执行，不再需要二次询问。
+
+1. **折叠状态的 thought 显示 "▸ Thinking" 头部** —— 是。
+   折叠时输出一行头部，用户按 `<Tab>` 展开。对应配置
+   `ui.thoughts.show_collapsed_header = true`（默认开启）。
+
+2. **代码块加背景** —— 是。
+   使用 `AcpCodeBlockBg`，比工具卡片 `AcpCardBg` 更淡，以便区分「代码块」与
+   「工具卡片」两种语义。背景覆盖范围：fence 语言标签行 + 代码行，不含上下文。
+
+3. **diff 内容渲染成真实 +/- 行** —— 本次不做，留待后续迭代。
+   当前 `reducer.tool_content_text()` 把 `type=="diff"` 压成 `diff: path`，
+   行为保持不变。
+
+4. **表格支持** —— 本次不做，留待后续迭代。
+
+### 本次范围之外（记录备查）
+
+若后续要做，可参考以下切入点：
+
+- **diff 渲染**：`reducer.tool_content_text()` 目前丢弃 `item.type == "diff"` 的具体
+  内容。需要保留 `item.oldText` / `item.newText`，在 `render_tool` 里按行计算
+  `+` / `-` / 上下文前缀，并用 `AcpDiffAdd` / `AcpDiffDelete` / `AcpDiffContext`
+  三个高亮组着色。
+- **表格**：`render_line` 目前逐行处理，无法判断表格边界。需要在 `render_text`
+  里增加块级状态（识别 `|---|` 分隔行），并为每列计算宽度后补齐空格再渲染。
 
 ---
 
