@@ -175,6 +175,26 @@ return function(t)
       t.truthy(found.location, "location metadata must survive for jumping")
     end)
 
+    t.it("leaves card body text unhighlighted so the card shows through", function()
+      local s = state.new("s", "/proj")
+      s:append({
+        id = "t",
+        kind = "tool",
+        tool_kind = "execute",
+        status = "completed",
+        expanded = true,
+        detail = "plain body text",
+      })
+      local lines = render(s.blocks[1])
+      for _, line in ipairs(lines) do
+        if line.bg then
+          for _, seg in ipairs(line.segments or {}) do
+            t.falsy(seg.group, "card body text must not carry a highlight group: " .. line.text)
+          end
+        end
+      end
+    end)
+
     t.it("does not open a card with nothing to show", function()
       local s = state.new("s", "/proj")
       s:append({ id = "t", kind = "tool", tool_kind = "execute", status = "completed", expanded = true })

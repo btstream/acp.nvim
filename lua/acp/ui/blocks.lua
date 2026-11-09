@@ -559,7 +559,9 @@ local function render_tool(block, ctx)
   local body_lines = {}
   if block.detail and block.detail ~= "" then
     block._md_detail = block._md_detail or {}
-    for _, line in ipairs(M.render_text(block.detail, "AcpToolBody", ctx.width - 4, block._md_detail)) do
+    -- No base highlight group: card body text must inherit the card's own
+    -- background. Any group carrying a background would repaint over it.
+    for _, line in ipairs(M.render_text(block.detail, nil, ctx.width - 4, block._md_detail)) do
       body_lines[#body_lines + 1] = line
     end
   end

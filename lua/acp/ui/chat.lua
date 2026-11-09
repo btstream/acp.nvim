@@ -439,13 +439,15 @@ function Chat:apply_line_highlights(index, segments, text)
           end_col = e,
           conceal = "",
         })
-      else
+      elseif seg.group then
         pcall(vim.api.nvim_buf_set_extmark, self.buf, ns, index - 1, s, {
           end_col = e,
           hl_group = seg.group,
           priority = 100,
         })
       end
+      -- A segment without a group is intentionally left unhighlighted so it
+      -- inherits whatever background is behind it (e.g. a card).
     end
   end
 end

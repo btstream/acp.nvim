@@ -14,7 +14,10 @@ M.groups = {
   AcpThought = { link = "Comment", italic = true },
   AcpToolTitle = { link = "Function" },
   AcpToolTag = { link = "Comment" },
-  AcpToolBody = { link = "Normal" },
+  -- There is deliberately no `AcpToolBody` group: card body text must inherit
+  -- whatever is behind it so the card's background shows through. A group
+  -- linked to `Normal` (or any group carrying its own background) would repaint
+  -- over the card and split it into strips.
   AcpCardBg = { link = "NormalFloat" },
   AcpCodeBlockBg = { link = "NormalFloat" },
   AcpToolRunning = { link = "DiagnosticWarn" },
@@ -121,9 +124,9 @@ local function apply()
     vim.api.nvim_set_hl(0, name, spec)
   end
   -- Surfaces derived from the theme background so they work on light and dark
-  -- themes. The card is the most prominent, the code block subtler, and inline
-  -- code subtler still, so the three read as different things.
-  set_surface("AcpMdCode", 0.08)
+  -- themes. The card is the most prominent and the code block subtler so the
+  -- two read as different things. Inline code intentionally has no surface:
+  -- a background per word is noisy in prose and breaks up a card.
   set_surface("AcpCodeBlockBg", 0.11)
   set_surface("AcpCardBg", 0.15)
   if zed_style then

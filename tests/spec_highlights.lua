@@ -48,14 +48,12 @@ return function(t)
       local normal = bg("Normal")
       local card = bg("AcpCardBg")
       local code = bg("AcpCodeBlockBg")
-      local inline = bg("AcpMdCode")
 
       t.truthy(card and card ~= normal, "card background is indistinguishable from Normal")
       t.truthy(code and code ~= normal, "code block background is indistinguishable from Normal")
-      t.truthy(inline and inline ~= normal, "inline code background is indistinguishable from Normal")
-      -- The card must stand out more than the code block, which stands out
-      -- more than inline code.
-      t.truthy(card ~= code and code ~= inline, "surfaces should differ from each other")
+      t.truthy(card ~= code, "the card and the code block should differ")
+      -- Inline code is deliberately background-free.
+      t.eq(nil, bg("AcpMdCode"), "inline code should not paint a background")
 
       vim.api.nvim_set_hl(0, "Normal", saved)
       highlights.setup(true)
@@ -70,12 +68,19 @@ return function(t)
         return vim.api.nvim_get_hl(0, { name = name }).bg
       end
       local normal = bg("Normal")
-      for _, name in ipairs({ "AcpCardBg", "AcpCodeBlockBg", "AcpMdCode" }) do
+      for _, name in ipairs({ "AcpCardBg", "AcpCodeBlockBg" }) do
         t.truthy(bg(name) and bg(name) ~= normal, name .. " blends into a light background")
       end
+      t.eq(nil, bg("AcpMdCode"), "inline code should not paint a background")
 
       vim.api.nvim_set_hl(0, "Normal", saved)
       highlights.setup(true)
+    end)
+
+    t.it("does not give card body text a background of its own", function()
+      highlights.setup(false)
+      -- No `AcpToolBody` group exists on purpose; body text inherits the card.
+      t.eq(nil, highlights.groups["AcpToolBody"], "card body must not define a group")
     end)
 
     t.it("honours the zed palette", function()
