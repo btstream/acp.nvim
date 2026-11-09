@@ -5,6 +5,8 @@
 -- so a table has to be collected in full before any of it can be drawn. The
 -- state machine lives in `blocks.render_text`; this module only does the
 -- measuring and the drawing.
+local Markdown = require("acp.ui.markdown")
+
 local M = {}
 
 ---Split a table row into cells, honouring `\|` escapes.
@@ -286,7 +288,8 @@ function M.render(table_spec, base_hl, width)
   ---Pad `text` to `column`'s width, honouring its alignment.
   ---@param text string
   ---@param column integer
-  ---@return string
+  ---@return string padded
+  ---@return integer left_pad number of bytes of leading padding
   local function fit(text, column)
     local cell_width = widths[column]
     local shown = text
@@ -296,12 +299,79 @@ function M.render(table_spec, base_hl, width)
     local pad = cell_width - vim.api.nvim_strwidth(shown)
     local mode = align[column] or "left"
     if mode == "right" then
-      return string.rep(" ", pad) .. shown
+      return string.rep(" ", pad) .. shown, pad
     elseif mode == "center" then
       local left = math.floor(pad / 2)
-      return string.rep(" ", left) .. shown .. string.rep(" ", pad - left)
+      return string.rep(" ", left) .. shown .. string.rep(" ", pad - left), left
     end
-    return shown .. string.rep(" ", pad)
+    return shown .. string.rep(" ", pad), 0
+  end
+
+  ---Split a cell into one entry per wrapped line, with its inline segments.
+  ---
+  ---Markup is parsed *before* wrapping so a construct spanning a line break keeps
+  ---its styling. Wrapping then works on the visible text: the delimiters are
+  ---concealed, so counting them would break lines in the wrong place and leave
+  ---ragged columns.
+  ---@param text string
+  ---@param width integer
+  ---@param hl string|nil
+  ---@return {text: string, segments: {s: integer, e: integer, group: string, conceal: boolean|nil}[]}[]
+  local function wrap_with_markup(text, width, hl)
+    text = text or ""
+    local segments = Markdown.parse_inline(text, hl)
+
+    -- Visible bytes: every byte that is not part of a concealed delimiter, and
+    -- the byte offset it came from.
+    local source = {}
+    local hidden = {}
+    for _, seg in ipairs(segments) do
+      if seg.conceal then
+        local stop = seg.e >= 0 and seg.e or #text
+        for i = seg.s + 1, stop do
+          hidden[i] = true
+        end
+      end
+    end
+    for i = 1, #text do
+      if not hidden[i] then
+        source[#source + 1] = i
+      end
+    end
+    local visible = {}
+    for _, i in ipairs(source) do
+      visible[#visible + 1] = text:sub(i, i)
+    end
+
+    if #source == 0 then
+      return { { text = "", segments = {} } }
+    end
+    local wrapped = wrap_cell(table.concat(visible), width)
+    local lines = {}
+    local cursor = 1 -- index into `source`
+    for _, piece in ipairs(wrapped) do
+      -- Each visible character of `piece` occupies one entry of `source`.
+      local first_byte = source[cursor]
+      local last_byte = source[cursor + #piece - 1] or source[#source] or #text
+      local line_segments = {}
+      for _, seg in ipairs(segments) do
+        local seg_start = seg.s + 1
+        local seg_end = seg.e >= 0 and seg.e or #text
+        local from = math.max(seg_start, first_byte)
+        local to = math.min(seg_end, last_byte)
+        if to >= from and not (seg.conceal and to < from) then
+          line_segments[#line_segments + 1] = {
+            s = from - first_byte,
+            e = to - first_byte + (seg.conceal and 0 or 1),
+            group = seg.group,
+            conceal = seg.conceal,
+          }
+        end
+      end
+      lines[#lines + 1] = { text = piece, segments = line_segments }
+      cursor = cursor + #piece
+    end
+    return lines
   end
 
   ---Draw one logical row, wrapping each cell and emitting as many display lines
@@ -312,7 +382,7 @@ function M.render(table_spec, base_hl, width)
     local wrapped = {}
     local height = 1
     for c = 1, columns do
-      wrapped[c] = wrap_cell(cells[c] or "", widths[c])
+      wrapped[c] = wrap_with_markup(cells[c] or "", widths[c], hl)
       height = math.max(height, #wrapped[c])
     end
     for line_index = 1, height do
@@ -320,17 +390,24 @@ function M.render(table_spec, base_hl, width)
       local segments = {}
       local offset = 0
       for c = 1, columns do
-        local cell_text = fit(wrapped[c][line_index] or "", c)
+        local chunk = wrapped[c][line_index] or { text = "", segments = {} }
+        local cell_text, left_pad = fit(chunk.text, c)
         -- "│" is three bytes in UTF-8 plus the one-byte space before the cell.
         pieces[#pieces + 1] = "│ " .. cell_text .. " "
-        if hl and cell_text ~= "" then
-          segments[#segments + 1] = { s = offset + 4, e = offset + 4 + #cell_text, group = hl }
+        local cell_origin = offset + 4 + left_pad
+        for _, seg in ipairs(chunk.segments) do
+          segments[#segments + 1] = {
+            s = cell_origin + seg.s,
+            e = cell_origin + seg.e,
+            group = seg.group,
+            conceal = seg.conceal,
+          }
         end
         offset = offset + 4 + #cell_text + 1
       end
       pieces[#pieces + 1] = "│"
       local line_text = table.concat(pieces)
-      -- Borders first so a cell group drawn later wins where they meet.
+      -- Borders first so cell groups drawn later win where they meet.
       local line_segments = { { s = 0, e = #line_text, group = "AcpTableBorder" } }
       for _, seg in ipairs(segments) do
         line_segments[#line_segments + 1] = seg

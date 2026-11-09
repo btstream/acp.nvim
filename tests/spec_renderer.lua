@@ -14,6 +14,17 @@ return function(t)
       t.match("hello", lines[2].text)
     end)
 
+    t.it("indents continuation lines by two cells", function()
+      local s = state.new("s", "/tmp")
+      s:append({ id = "a", kind = "agent", text = "first\nsecond\n- bullet" })
+      local lines = blocks.render_block(s.blocks[1], ctx)
+      for _, line in ipairs(lines) do
+        if line.text ~= "" and not line.text:find("first", 1, true) then
+          t.match("^  ", line.text, "continuation line is not indented by two cells: " .. line.text)
+        end
+      end
+    end)
+
     t.it("renders fenced code blocks", function()
       local s = state.new("s", "/tmp")
       s:append({ id = "a", kind = "agent", text = "text\n```lua\nlocal x = 1\n```\n" })

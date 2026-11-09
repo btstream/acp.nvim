@@ -200,6 +200,58 @@ return function(t)
       end
     end)
 
+    t.it("renders inline markup inside cells", function()
+      local lines = render("| a | b |\n|---|---|\n| x | **bold** and *italic* and `code` |")
+      local groups = {}
+      for _, line in ipairs(lines) do
+        for _, seg in ipairs(line.segments or {}) do
+          if seg.group and seg.group ~= "AcpTableBorder" and seg.group ~= "AcpTableHead" then
+            groups[seg.group] = true
+          end
+        end
+      end
+      t.truthy(groups["AcpBold"], "bold missing in a cell")
+      t.truthy(groups["AcpItalic"], "italic missing in a cell")
+      t.truthy(groups["AcpMdCode"], "inline code missing in a cell")
+    end)
+
+    t.it("hides markup delimiters inside cells", function()
+      -- Cell text is rebuilt from the visible characters, so the delimiters do
+      -- not reach the buffer at all (unlike prose, which conceals them).
+      local lines = render("| a |\n|---|\n| **bold** and `code` |")
+      local joined = table.concat(texts(lines), "\n")
+      t.falsy(joined:find("**", 1, true), "bold delimiters leaked into the table")
+      t.falsy(joined:find("`", 1, true), "code delimiters leaked into the table")
+      t.truthy(joined:find("bold", 1, true))
+      t.truthy(joined:find("code", 1, true))
+    end)
+
+    t.it("does not count concealed delimiters when wrapping", function()
+      -- A bold word must stay on one line: only its visible width matters.
+      local lines = render("| a | b |\n|---|---|\n| x | " .. string.rep("**abcdefgh** ", 5) .. " |", 40)
+      local joined = table.concat(texts(lines), "\n")
+      t.truthy(joined:find("abcdefgh", 1, true), "bold word lost")
+      -- No row may exceed the panel width.
+      for _, line in ipairs(lines) do
+        if line.table then
+          t.truthy(vim.api.nvim_strwidth(line.text) <= 40, "row overflowed: " .. line.text)
+        end
+      end
+    end)
+
+    t.it("still aligns columns when cells carry markup", function()
+      local lines = render("| a | b |\n|---|---|\n| **long cell here** | x |")
+      local widths = {}
+      for _, line in ipairs(lines) do
+        if line.table then
+          widths[#widths + 1] = vim.api.nvim_strwidth(line.text)
+        end
+      end
+      for i = 2, #widths do
+        t.eq(widths[1], widths[i], "rows are not the same width")
+      end
+    end)
+
     t.it("keeps every row a single line", function()
       local lines = render("| a | b |\n|---|---|\n| 1 | 2 |")
       for _, line in ipairs(lines) do

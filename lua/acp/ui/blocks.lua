@@ -15,6 +15,9 @@ local CodeHL = require("acp.ui.code_hl")
 local Table = require("acp.ui.table")
 
 -- Prefix drawn in front of every line inside a fenced block.
+-- Markdown body lines are indented by this many cells under the message header.
+local BODY_INDENT = 2
+
 -- Fenced code blocks are drawn as a background only: no border characters.
 -- A small left gutter keeps the text off the surface's edge.
 local CODE_GUTTER = "  "
@@ -447,10 +450,10 @@ local function render_assistant(block, ctx)
   local prefix = block.child and (ic.child .. " ") or ""
   local head = prefix .. ic.assistant .. " "
   block._md_agent = block._md_agent or {}
-  -- `indent_lines` indents the body by `#head` spaces, so a table has to fit in
-  -- what remains after that indentation, not after the glyph's display width.
-  -- One cell is left spare so a full-width table does not sit against the edge.
-  local body_width = math.max(20, ctx.width - #head - 1)
+  -- Body lines are indented by two cells, so a table has to fit in what remains.
+  -- One extra cell is left spare so a full-width table does not sit against the
+  -- window edge.
+  local body_width = math.max(20, ctx.width - BODY_INDENT - 1)
   local body = M.render_text(block.text or "", "AcpAssistant", body_width, block._md_agent)
 
   -- A table cannot share a line with the header glyph: the icon would shift only
@@ -460,11 +463,11 @@ local function render_assistant(block, ctx)
   local out = {}
   if starts_with_table then
     out[1] = { text = prefix .. ic.assistant, segments = { { s = 0, e = -1, group = "AcpAssistant" } } }
-    for _, line in ipairs(M.indent_lines(body, string.rep(" ", #head))) do
+    for _, line in ipairs(M.indent_lines(body, string.rep(" ", BODY_INDENT))) do
       out[#out + 1] = line
     end
   else
-    out = M.indent_lines(body, string.rep(" ", #head), head)
+    out = M.indent_lines(body, string.rep(" ", BODY_INDENT), head)
     -- The header glyph belongs to the assistant highlight on the first line.
     if #out > 0 then
       out[1].segments =
