@@ -87,6 +87,47 @@ return function(t)
       end
     end)
 
+    t.it("keeps every toolbar glyph readable on the bar", function()
+      local highlights = require("acp.ui.highlights")
+      highlights.setup(false)
+
+      local function luminance(n)
+        local r = math.floor(n / 65536) % 256
+        local g = math.floor(n / 256) % 256
+        local b = n % 256
+        local function channel(c)
+          c = c / 255
+          return c <= 0.03928 and (c / 12.92) or (((c + 0.055) / 1.055) ^ 2.4)
+        end
+        return 0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b)
+      end
+      local function ratio(a, b)
+        local la, lb = luminance(a), luminance(b)
+        if la < lb then
+          la, lb = lb, la
+        end
+        return (la + 0.05) / (lb + 0.05)
+      end
+
+      local bar = vim.api.nvim_get_hl(0, { name = "AcpToolbar", link = false })
+      for _, name in ipairs({
+        "AcpToolbarAccent",
+        "AcpToolbarModePlan",
+        "AcpToolbarModeBuild",
+        "AcpToolbarIdle",
+        "AcpToolbarRunning",
+        "AcpToolbarWaiting",
+        "AcpToolbarCancelling",
+      }) do
+        local fg = vim.api.nvim_get_hl(0, { name = name }).fg
+        t.truthy(fg, name .. " has no foreground")
+        t.truthy(
+          ratio(fg, bar.bg) >= 4.5,
+          string.format("%s is too close to the bar (%.2f:1)", name, ratio(fg, bar.bg))
+        )
+      end
+    end)
+
     t.it("maps modes to their highlight group", function()
       t.eq("AcpToolbarModePlan", toolbar.mode_hl("plan"))
       t.eq("AcpToolbarModeBuild", toolbar.mode_hl("Build"))

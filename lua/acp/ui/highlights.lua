@@ -188,14 +188,82 @@ local function set_surface(name, amount)
 end
 
 ---Copy the foreground of `source` onto `target`, ignoring its background.
+---Relative luminance of a `#rrggbb` colour, 0 (black) to 1 (white).
+---@param hex string
+---@return number|nil
+local function relative_luminance(hex)
+  if type(hex) ~= "string" or #hex ~= 7 then
+    return nil
+  end
+  local r, g, b = tonumber(hex:sub(2, 3), 16), tonumber(hex:sub(4, 5), 16), tonumber(hex:sub(6, 7), 16)
+  if not (r and g and b) then
+    return nil
+  end
+  local function channel(c)
+    c = c / 255
+    return c <= 0.03928 and (c / 12.92) or (((c + 0.055) / 1.055) ^ 2.4)
+  end
+  return 0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b)
+end
+
+---Contrast ratio between two colours, per WCAG.
+---@param a string
+---@param b string
+---@return number|nil
+local function contrast_ratio(a, b)
+  local la, lb = relative_luminance(a), relative_luminance(b)
+  if not (la and lb) then
+    return nil
+  end
+  if la < lb then
+    la, lb = lb, la
+  end
+  return (la + 0.05) / (lb + 0.05)
+end
+
+---Lighten or darken `hex` until it reaches `target` contrast against `bg`.
+---
+---A theme's muted colour is often tuned for prose on `Normal`, not for a glyph
+---on a statusline bar; without this an idle marker can end up all but invisible.
+---@param hex string
+---@param bg string
+---@param target number|nil
+---@return string
+local function ensure_contrast(hex, bg, target)
+  local want = target or 4.5
+  local base = relative_luminance(bg)
+  if not base then
+    return hex
+  end
+  -- Move away from the background: brighten on dark bars, darken on light ones.
+  local step = base < 0.5 and 1 or -1
+  local r, g, b = tonumber(hex:sub(2, 3), 16), tonumber(hex:sub(4, 5), 16), tonumber(hex:sub(6, 7), 16)
+  if not (r and g and b) then
+    return hex
+  end
+  for _ = 1, 24 do
+    local current = string.format("#%02x%02x%02x", r, g, b)
+    local ratio = contrast_ratio(current, bg)
+    if ratio and ratio >= want then
+      return current
+    end
+    r = math.max(0, math.min(255, r + step * 6))
+    g = math.max(0, math.min(255, g + step * 6))
+    b = math.max(0, math.min(255, b + step * 6))
+  end
+  return string.format("#%02x%02x%02x", r, g, b)
+end
+
 ---Give `target` the foreground of `source` and the toolbar's background.
 ---
 ---Used for toolbar regions: they must all share one background, so a link to a
 ---group that carries its own (DiagnosticInfo, Visual, ...) would paint a block
----inside the bar instead of just colouring the glyph.
+---inside the bar instead of just colouring the glyph. The foreground is nudged
+---until it is readable on that background.
 ---@param target string
 ---@param source string
-local function set_toolbar_fg(target, source)
+---@param min_contrast number|nil defaults to 4.5 (WCAG AA for normal text)
+local function set_toolbar_fg(target, source, min_contrast)
   local ok, spec = pcall(vim.api.nvim_get_hl, 0, { name = source, link = false })
   if not ok or type(spec) ~= "table" or spec.fg == nil then
     return
@@ -208,6 +276,9 @@ local function set_toolbar_fg(target, source)
   local bg = bar and bar.bg
   if type(bg) == "number" then
     bg = string.format("#%06x", bg)
+  end
+  if type(fg) == "string" and type(bg) == "string" then
+    fg = ensure_contrast(fg, bg, min_contrast)
   end
   vim.api.nvim_set_hl(0, target, { fg = fg, bg = bg })
 end
@@ -241,13 +312,19 @@ local function apply()
   -- Colours come from the theme's semantic groups, which keeps them readable on
   -- light and dark schemes alike. Only the foreground is set; the background
   -- stays whatever `AcpToolbar` (StatusLine) provides.
-  set_toolbar_fg("AcpToolbarModePlan", "DiagnosticInfo")
+  -- Every foreground is picked to stand out from the bar itself. `Comment` is
+  -- deliberately not used: it sits at ~2.9:1 against a typical statusline
+  -- background, which reads as almost invisible for a small glyph.
+  --
+  -- Modes and statuses also have to differ from each other, so `plan` takes the
+  -- remaining accent rather than repeating the `running` colour.
+  set_toolbar_fg("AcpToolbarModePlan", "DiagnosticHint")
   set_toolbar_fg("AcpToolbarModeBuild", "DiagnosticOk")
   set_toolbar_fg("AcpToolbarIdle", "Comment")
   set_toolbar_fg("AcpToolbarRunning", "DiagnosticInfo")
   set_toolbar_fg("AcpToolbarWaiting", "DiagnosticWarn")
   set_toolbar_fg("AcpToolbarCancelling", "DiagnosticError")
-  set_toolbar_fg("AcpToolbarAccent", "DiagnosticInfo")
+  set_toolbar_fg("AcpToolbarAccent", "Normal")
   if zed_style then
     -- Low contrast surfaces: no hard borders, muted user text, quiet chrome.
     vim.api.nvim_set_hl(0, "AcpUser", { link = "Function" })
