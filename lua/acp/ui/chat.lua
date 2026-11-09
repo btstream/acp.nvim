@@ -380,9 +380,11 @@ function Chat:render(force)
     if full then
       vim.api.nvim_buf_clear_namespace(self.buf, ns, 0, -1)
     else
-      -- Only refresh highlights for the rewritten lines. Extmarks on unchanged
-      -- lines stay valid, and marks on deleted lines disappear with them.
-      vim.api.nvim_buf_clear_namespace(self.buf, ns, prefix, end_line)
+      -- Clear the rewritten range in *new* buffer coordinates. Using the old
+      -- end here was a bug: when a block changes height the buffer gets shorter
+      -- or longer, so the old offset reaches past the rewritten region and
+      -- wipes the extmarks of every line that shifted into it.
+      vim.api.nvim_buf_clear_namespace(self.buf, ns, prefix, last)
     end
     for i = first, last do
       local entry = meta[i]

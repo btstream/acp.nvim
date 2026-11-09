@@ -53,10 +53,12 @@ M.groups = {
 local zed_style = true
 local augroup = nil
 
----Blend `hex` towards `base` by `amount` (0 = hex, 1 = base).
+---Shift `hex` away from `base` by `amount` (0 = unchanged, 1 = fully crossed).
 ---
----Used to derive the code-block and inline-code surfaces from the theme's own
----background, so they stay readable on light and dark colourschemes alike.
+---`base` is the surface the result sits on. Moving *away* from it is what makes
+---a card distinguishable: mixing towards the background it already equals
+---produces the same colour, which is how these surfaces previously ended up
+---identical to `Normal`.
 ---@param hex string
 ---@param base string
 ---@param amount number
@@ -76,31 +78,36 @@ local function mix(hex, base, amount)
   if not (hr and br) then
     return nil
   end
-  local function blend(a, b)
-    return math.floor(a + (b - a) * amount + 0.5)
+  -- Pick the direction that has more headroom: light surfaces get lighter,
+  -- dark surfaces get lighter too (a card reads as a raised surface), but a
+  -- near-white background is darkened instead so the card stays visible.
+  local luminance = (0.2126 * br + 0.7152 * bg + 0.0722 * bb) / 255
+  local target = luminance > 0.5 and 0 or 255
+  local function blend(a, t)
+    local v = math.floor(a + (t - a) * amount + 0.5)
+    return math.max(0, math.min(255, v))
   end
-  return string.format("#%02x%02x%02x", blend(hr, br), blend(hg, bg), blend(hb, bb))
+  return string.format("#%02x%02x%02x", blend(hr, target), blend(hg, target), blend(hb, target))
 end
 
 ---Colour a subtle surface derived from the current theme background.
 ---@param name string
----@param amount number how far to move towards the background
+---@param amount number how far to move away from the background
 local function set_surface(name, amount)
   local normal = vim.api.nvim_get_hl(0, { name = "Normal", link = false })
   local bg = normal and normal.bg
   if type(bg) == "number" then
     bg = string.format("#%06x", bg)
   end
-  local spec = M.groups[name] or {}
-  local base = spec.bg or bg
-  if type(base) == "number" then
-    base = string.format("#%06x", base)
+  if type(bg) ~= "string" or #bg ~= 7 then
+    return
   end
+  local spec = M.groups[name] or {}
   local fg = spec.fg
   if type(fg) == "number" then
     fg = string.format("#%06x", fg)
   end
-  local blended = mix(base, bg, amount)
+  local blended = mix(bg, bg, amount)
   if blended then
     vim.api.nvim_set_hl(0, name, { fg = fg, bg = blended })
   elseif spec.link then
@@ -113,11 +120,12 @@ local function apply()
   for name, spec in pairs(M.groups) do
     vim.api.nvim_set_hl(0, name, spec)
   end
-  -- Surfaces derived from the theme so they work on light and dark themes.
-  -- The code block is lighter than the tool card so the two read differently.
-  set_surface("AcpMdCode", 0.15)
-  set_surface("AcpCodeBlockBg", 0.08)
-  set_surface("AcpCardBg", 0.16)
+  -- Surfaces derived from the theme background so they work on light and dark
+  -- themes. The card is the most prominent, the code block subtler, and inline
+  -- code subtler still, so the three read as different things.
+  set_surface("AcpMdCode", 0.08)
+  set_surface("AcpCodeBlockBg", 0.11)
+  set_surface("AcpCardBg", 0.15)
   if zed_style then
     -- Low contrast surfaces: no hard borders, muted user text, quiet chrome.
     vim.api.nvim_set_hl(0, "AcpUser", { link = "Function" })

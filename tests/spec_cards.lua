@@ -199,6 +199,99 @@ return function(t)
     end)
   end)
 
+  t.describe("card toggling", function()
+    local config = require("acp.config")
+    local Chat = require("acp.ui.chat")
+    local ns = vim.api.nvim_create_namespace("acp_chat")
+    local ns_bg = vim.api.nvim_create_namespace("acp_chat_bg")
+
+    ---Snapshot every extmark so two renders can be compared exactly.
+    local function snapshot(chat)
+      local function dump(space)
+        local out = {}
+        for _, m in ipairs(vim.api.nvim_buf_get_extmarks(chat.buf, space, 0, -1, { details = true })) do
+          out[#out + 1] = string.format("%d:%d-%s:%s", m[2], m[3], tostring(m[4].end_col), tostring(m[4].hl_group))
+        end
+        table.sort(out)
+        return table.concat(out, ",")
+      end
+      return dump(ns) .. "|" .. dump(ns_bg)
+    end
+
+    local function fresh(s, cfg)
+      local ref = Chat.new({ config = cfg })
+      ref:set_session(s)
+      ref:render(true)
+      return snapshot(ref)
+    end
+
+    t.it("keeps later blocks highlighted after repeated toggles", function()
+      local cfg = config.validate(config.merge(config.defaults, {}))
+      local s = state.new("s", "/proj")
+      s:append({ id = "u", kind = "user", text = "hello" })
+      s:append({
+        id = "t",
+        kind = "tool",
+        tool_kind = "execute",
+        title = "cmd",
+        status = "completed",
+        expanded = false,
+        detail = "line one\nline two\nline three",
+      })
+      s:append({ id = "a", kind = "agent", text = "follow-up **bold** and `code`" })
+      s:append({
+        id = "t2",
+        kind = "tool",
+        tool_kind = "read",
+        title = "src/x.lua",
+        status = "completed",
+        expanded = false,
+        detail = "read x",
+      })
+
+      local chat = Chat.new({ config = cfg })
+      chat:set_session(s)
+      chat:render(true)
+
+      for i = 1, 6 do
+        s.blocks[2].expanded = not s.blocks[2].expanded
+        chat:render(true)
+        t.eq(fresh(s, cfg), snapshot(chat), "extmarks diverged after toggle " .. i)
+      end
+    end)
+
+    t.it("does not drop highlights of blocks after a growing card", function()
+      local cfg = config.validate(config.merge(config.defaults, {}))
+      local s = state.new("s", "/proj")
+      s:append({
+        id = "t",
+        kind = "tool",
+        tool_kind = "execute",
+        status = "completed",
+        expanded = false,
+        detail = "a\nb",
+      })
+      s:append({ id = "a", kind = "agent", text = "text after the card" })
+
+      local chat = Chat.new({ config = cfg })
+      chat:set_session(s)
+      chat:render(true)
+
+      s.blocks[1].expanded = true
+      chat:render(true)
+
+      -- The agent block still needs its inline highlight.
+      local found = false
+      for _, m in ipairs(vim.api.nvim_buf_get_extmarks(chat.buf, ns, 0, -1, { details = true })) do
+        local line = vim.api.nvim_buf_get_lines(chat.buf, m[2], m[2] + 1, false)[1] or ""
+        if line:find("text after the card", 1, true) and m[4].hl_group then
+          found = true
+        end
+      end
+      t.truthy(found, "the block after the card lost its highlight")
+    end)
+  end)
+
   t.describe("padding helper", function()
     t.it("pads to a display width", function()
       t.eq("ab  ", blocks.pad_to("ab", 4))
