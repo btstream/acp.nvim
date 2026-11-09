@@ -240,11 +240,34 @@ function M.create_panel(chat_buf, input_buf)
 end
 
 ---Create the chat window on its own.
+---
+---Only the transcript window is created; the composer is left alone so
+---restoring one view cannot leave a stray window (and buffer) behind.
 ---@param buf integer
 ---@return integer|nil win
 function M.create_chat_win(buf)
-  local chat = M.create_panel(buf, vim.api.nvim_create_buf(false, true))
-  return chat
+  local total = vim.o.columns
+  local width = require("acp.config").panel_width(state.config, total)
+  local horizontal = state.position == "left" and "topleft " or "botright "
+  local cmd = state.backend == "native" and (horizontal .. width .. "vsplit") or (horizontal .. "vsplit")
+
+  local equalalways = vim.o.equalalways
+  vim.o.equalalways = false
+  local ok = pcall(vim.cmd, cmd)
+  vim.o.equalalways = equalalways
+  if not ok then
+    return nil
+  end
+
+  local win = vim.api.nvim_get_current_win()
+  M.set_window_buffer(win, buf)
+  state.views.chat = win
+  M.apply_window_options(win, "chat")
+  M.lock_window(win)
+  if state.backend == "native" then
+    pcall(vim.api.nvim_win_set_width, win, width)
+  end
+  return win
 end
 
 ---Create the composer window below the chat window.

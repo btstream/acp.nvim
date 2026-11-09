@@ -127,4 +127,42 @@ return function(t)
       t.truthy(m.chat_w <= 60, "the panel exceeded the requested width")
     end)
   end)
+
+  t.describe("restoring a single view", function()
+    -- Reopening the transcript while only the composer is visible must not
+    -- create (and immediately abandon) a second composer window.
+    local function count_windows(script)
+      local tmp = vim.fn.tempname() .. ".lua"
+      vim.fn.writefile(vim.split(script, "\n"), tmp)
+      local out = vim.fn.system({ "nvim", "--headless", "-u", "NONE", "-l", tmp })
+      vim.fn.delete(tmp)
+      return out:match("wins=(%d+)")
+    end
+
+    t.it("creates exactly one window for the transcript", function()
+      local script = string.format(
+        [[
+        vim.opt.runtimepath:append(%q)
+        vim.o.swapfile = false
+        local controller = require("acp.controller")
+        controller.setup({})
+        local layout = require("acp.layout")
+        local S = controller.state()
+        S.input.win = layout.create_input_win(S.input.buf, nil)
+        S.chat.win = layout.create_chat_win(S.chat.buf)
+        local n = 0
+        for _, win in ipairs(vim.api.nvim_list_wins()) do
+          if vim.bo[vim.api.nvim_win_get_buf(win)].filetype == "acp_chat" then
+            n = n + 1
+          end
+        end
+        io.write(string.format("wins=%%d", n))
+        vim.cmd("qa!")
+        ]],
+        root
+      )
+      local count = count_windows(script)
+      t.eq("1", count, "restoring the transcript left a stray window behind")
+    end)
+  end)
 end
