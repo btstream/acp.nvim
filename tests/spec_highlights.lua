@@ -142,6 +142,23 @@ return function(t)
       t.eq(nil, highlights.groups["AcpToolBody"], "card body must not define a group")
     end)
 
+    t.it("links the diff groups to the theme's diff highlights", function()
+      -- A diff inside a card has to read like a diff in a review window, so the
+      -- line colours come from the theme rather than a blended colour.
+      local expected = {
+        AcpDiffAdd = "DiffAdd",
+        AcpDiffDelete = "DiffDelete",
+        AcpDiffAddSign = "DiffAdd",
+        AcpDiffRemoveSign = "DiffDelete",
+        AcpDiffHunk = "NonText",
+        AcpDiffMeta = "Comment",
+        AcpDiffFile = "Title",
+      }
+      for name, target in pairs(expected) do
+        t.eq(target, highlights.groups[name].link, name .. " should link to " .. target)
+      end
+    end)
+
     t.it("applies groups passed through the config", function()
       vim.cmd("hi clear")
       highlights.setup({ AcpUser = { fg = "#abcdef" }, AcpToolbarModePlan = { fg = "#111111", bg = "#222222" } })

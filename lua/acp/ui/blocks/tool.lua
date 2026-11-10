@@ -1,5 +1,6 @@
 -- Tool-call cards: header, status, expanded detail and file locations.
 local text_layout = require("acp.ui.text")
+local diff_layout = require("acp.ui.diff")
 
 local M = {}
 
@@ -260,7 +261,48 @@ function M.render_tool(block, ctx)
     end
   end
 
-  if block.expanded and (#body_lines > 0 or (block.locations and #block.locations > 0)) then
+  -- The change itself, for the tools that edit files. It sits after the
+  -- agent's own summary so the card reads "what happened, then what changed".
+  local diffed = false
+  if block.expanded then
+    local opts = vim.tbl_extend("force", {}, ctx.diff or {})
+    opts.summary = block.detail
+    opts.cwd = ctx.cwd
+    local entries = diff_layout.from_block(block)
+    if #entries > 0 then
+      -- Computing a diff is O(lines) in xdiff, so the result is cached on the
+      -- block and only recomputed when the payload or the context changes. A
+      -- streaming tick that touches unrelated fields reuses it.
+      local sig = diff_layout.signature(block, opts)
+      local cached = block._diff_cache
+      if not cached or cached.sig ~= sig then
+        local lines = diff_layout.lines(entries, opts)
+        -- Rows are static for a given payload: freeze them so a later render
+        -- cannot mutate shared tables.
+        cached = { sig = sig, lines = lines }
+        block._diff_cache = cached
+      end
+      if #cached.lines > 0 then
+        diffed = true
+        if #body_lines > 0 then
+          -- A rule keeps the summary from reading as part of the diff.
+          local rule_width = math.max(1, ctx.width - 4)
+          body_lines[#body_lines + 1] = {
+            text = string.rep("─", rule_width),
+            segments = { { s = 0, e = -1, group = "AcpDiffMeta" } },
+          }
+        end
+        for _, line in ipairs(cached.lines) do
+          body_lines[#body_lines + 1] = line
+        end
+      end
+    end
+  end
+
+  -- Locations are already shown as the diff's file header, so they are only
+  -- listed when no diff was drawn.
+  local locations = diffed and {} or (block.locations or {})
+  if block.expanded and (#body_lines > 0 or #locations > 0) then
     -- The card is padded so the background forms a solid block rather than
     -- hugging the text. Width is the panel width minus nothing: `hl_eol` fills
     -- the remaining cells, so the padding only needs to exist.
@@ -271,10 +313,12 @@ function M.render_tool(block, ctx)
         segments = vim.tbl_map(function(seg)
           return { s = seg.s + 2, e = seg.e >= 0 and seg.e + 2 or seg.e, group = seg.group, conceal = seg.conceal }
         end, line.segments or {}),
-        bg = "AcpCardBg",
+        -- A diff row brings its own line-wide background; the card's surface
+        -- would otherwise paint over it.
+        bg = line.bg or "AcpCardBg",
       }
     end
-    for _, loc in ipairs(block.locations or {}) do
+    for _, loc in ipairs(locations) do
       local rel = one_line(loc.path or "")
       if ctx.cwd and vim.startswith(rel, ctx.cwd .. "/") then
         rel = rel:sub(#ctx.cwd + 2)

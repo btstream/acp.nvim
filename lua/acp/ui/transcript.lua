@@ -43,6 +43,25 @@ local function block_signature(block)
     -- signature has to cover both or a card would keep showing its first
     -- (empty) state until the block object was replaced.
   end
+  local diff_len = -1
+  if
+    block.kind == "tool" and (block.tool_kind == "edit" or block.tool_kind == "write" or block.tool_kind == "patch")
+  then
+    diff_len = 0
+    for _, item in ipairs(block.content or {}) do
+      if type(item) == "table" and item.type == "diff" then
+        diff_len = diff_len + #(item.oldText or "") + #(item.newText or "")
+      end
+    end
+    local input = block.raw_input
+    if type(input) == "table" then
+      for _, key in ipairs({ "oldString", "oldText", "newString", "newText", "content", "patchText" }) do
+        if type(input[key]) == "string" then
+          diff_len = diff_len + #input[key]
+        end
+      end
+    end
+  end
   return {
     kind = block.kind,
     status = block.status,
@@ -59,6 +78,7 @@ local function block_signature(block)
     child_title = block.child and block.child.title or nil,
     raw_len = raw_len,
     command_len = command_len,
+    diff_len = diff_len,
     -- Plan entries render both their text and their status, so a same-count
     -- update has to be detected.
     plan = block.entries and vim.inspect(block.entries) or nil,
@@ -92,6 +112,7 @@ local function context(session, view)
     cwd = session.cwd,
     show_thoughts = view.show_thoughts,
     thoughts = view.thoughts,
+    diff = view.diff,
   }
 end
 

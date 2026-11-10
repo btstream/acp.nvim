@@ -16,6 +16,7 @@ local memory = require("acp.session.memory")
 ---@field raw_input any
 ---@field raw_output any
 ---@field expanded boolean|nil
+---@field toggled boolean|nil user collapsed/expanded it explicitly
 ---@field optimistic boolean|nil
 ---@field child table|nil
 ---@field entries table[]|nil
@@ -117,6 +118,7 @@ end
 ---@field turn integer
 ---@field pending_user AcpBlock|nil
 ---@field last_error string|nil
+---@field historical boolean|nil replayed from history, not a live session
 
 local Session = {}
 Session.__index = Session
@@ -174,6 +176,9 @@ function Session:update(block, fields, payload_changed)
 end
 
 function Session:toggle(block)
+  -- Remember that the user made the call: later tool updates must not reopen a
+  -- card that was deliberately closed.
+  block.toggled = true
   self:update(block, { expanded = not block.expanded }, false)
 end
 

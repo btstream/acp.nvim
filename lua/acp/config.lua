@@ -135,6 +135,18 @@ M.defaults = {
       -- "off"  no divider
       form = "dot",
     },
+
+    -- File-modifying tool calls (`edit`, `write`, `patch`) render their change
+    -- as a diff inside the card.
+    ---@type { context: integer, max_lines: integer, max_bytes: integer }
+    diff = {
+      -- Unchanged lines kept around each hunk.
+      context = 3,
+      -- Ceiling on rendered diff rows; the rest is summarised in one row.
+      max_lines = 800,
+      -- A larger old+new payload is not diffed at all (`diff too large`).
+      max_bytes = 512 * 1024,
+    },
   },
 
   -- Buffer-local mappings for the two views.
@@ -304,6 +316,12 @@ function M.validate(cfg)
   check_enum(cfg.ui.title.placement, { "auto", "winbar", "off" }, "ui.title.placement")
   check_enum(cfg.ui.toolbar.placement, { "auto", "winbar", "off" }, "ui.toolbar.placement")
   check_enum(cfg.ui.separator.form, { "dot", "turn", "off" }, "ui.separator.form")
+  if type(cfg.ui.diff) ~= "table" then
+    fail("ui.diff must be a table")
+  end
+  check_number(cfg.ui.diff.context, 0, 100, "ui.diff.context")
+  check_number(cfg.ui.diff.max_lines, 1, 100000, "ui.diff.max_lines")
+  check_number(cfg.ui.diff.max_bytes, 1024, 1024 * 1024 * 1024, "ui.diff.max_bytes")
   check_enum(cfg.permissions.prompt, { "select", "native" }, "permissions.prompt")
   if type(cfg.ui.thoughts) ~= "table" then
     fail("ui.thoughts must be a table")

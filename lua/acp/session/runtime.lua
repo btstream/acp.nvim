@@ -61,6 +61,9 @@ function Runtime:stage(id, cwd)
   local previous = self.sessions[id]
   local session = State.new(id, cwd, self.limits)
   session:track_changes()
+  -- A replayed session is history: its tool cards stay collapsed so reading an
+  -- old conversation does not unfold every diff at once.
+  session.historical = true
   if previous then
     session.outbox = self:outbox(previous)
     session.queue, session.queue_bytes, session.turn = session.outbox.messages, session.outbox.bytes, previous.turn

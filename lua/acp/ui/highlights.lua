@@ -68,6 +68,16 @@ M.groups = {
   -- code block inside a card still reads as a separate region.
   AcpCardBg = { link = "CursorLine" },
   AcpCodeBlockBg = { link = "NormalFloat" },
+  -- Diffs inside a tool card. The line colour is the diff background itself, so
+  -- a change reads like it does in a review window; the sign gets its own group
+  -- because some themes only colour the background.
+  AcpDiffAdd = { link = "DiffAdd" },
+  AcpDiffDelete = { link = "DiffDelete" },
+  AcpDiffAddSign = { link = "DiffAdd" },
+  AcpDiffRemoveSign = { link = "DiffDelete" },
+  AcpDiffHunk = { link = "NonText" },
+  AcpDiffMeta = { link = "Comment" },
+  AcpDiffFile = { link = "Title" },
   -- Same captures a Markdown buffer uses for a fenced block's info string and
   -- for table borders, so both look identical to a `.md` file.
   AcpCodeLang = { link = "@label" },

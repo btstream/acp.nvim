@@ -40,12 +40,79 @@ local function tool_content_text(content)
         parts[#parts + 1] = "[image]"
       end
     elseif item.type == "diff" then
-      parts[#parts + 1] = string.format("diff: %s", item.path or "?")
+      -- A diff with text is rendered as a diff; only the path-only form has to
+      -- fall back to a summary line. Keeping it out of `detail` also means the
+      -- collapsed preview shows the agent's own summary instead of a path.
+      if item.oldText == nil and item.newText == nil and item.path then
+        parts[#parts + 1] = string.format("diff: %s", item.path)
+      end
     elseif item.type == "terminal" then
       parts[#parts + 1] = string.format("terminal: %s", item.terminalId or "?")
     end
   end
   return table.concat(parts, "\n")
+end
+
+---Whether a tool call changes a file, and therefore deserves an open card.
+---
+---Only the tool kind and the update payload are consulted: the renderer decides
+---what the diff actually looks like.
+---@param block AcpBlock
+---@return boolean
+local function is_file_edit(block)
+  local kind = block.tool_kind
+  if kind == "edit" or kind == "write" or kind == "patch" then
+    return true
+  end
+  for _, item in ipairs(block.content or {}) do
+    if type(item) == "table" and item.type == "diff" then
+      return true
+    end
+  end
+  return false
+end
+
+---Whether the block already carries something a card could show.
+---
+---Auto-expanding on the very first `tool_call` (which often has an empty
+---`rawInput`) would open an empty card and leave a caret pointing down at
+---nothing. The next update with real content expands it instead.
+---@param block AcpBlock
+---@return boolean
+local function has_payload(block)
+  if block.detail ~= nil and block.detail ~= "" then
+    return true
+  end
+  if #(block.content or {}) > 0 then
+    return true
+  end
+  local input = block.raw_input
+  if type(input) == "table" then
+    for _, value in pairs(input) do
+      if type(value) == "string" and value ~= "" then
+        return true
+      end
+    end
+  elseif type(input) == "string" then
+    return input ~= ""
+  end
+  return false
+end
+
+---Open a file-edit card the first time its change shows up.
+---
+---A user who collapsed the card by hand keeps it collapsed; a session replayed
+---from history or after a reconnect starts with every card closed, so reading
+---old work does not unfold dozens of diffs.
+---@param session AcpSessionState
+---@param block AcpBlock
+local function maybe_auto_expand(session, block)
+  if block.toggled or session.historical or block.expanded then
+    return
+  end
+  if is_file_edit(block) and has_payload(block) then
+    block.expanded = true
+  end
 end
 
 local function merge_list(current, incoming)
@@ -130,6 +197,7 @@ local function reduce(session, update)
     if update.content ~= nil or block.detail == nil then
       block.detail = tool_content_text(block.content)
     end
+    maybe_auto_expand(session, block)
     return true
   end
 
@@ -173,6 +241,7 @@ local function reduce(session, update)
     if update.content ~= nil or block.detail == nil then
       block.detail = tool_content_text(block.content)
     end
+    maybe_auto_expand(session, block)
     return true
   end
 

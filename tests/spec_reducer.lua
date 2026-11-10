@@ -67,6 +67,109 @@ return function(t)
       t.eq("in_progress", s.blocks[1].status)
     end)
 
+    t.it("keeps diff content out of the summary text", function()
+      local s = state.new("s1", "/tmp")
+      reducer.apply(s, {
+        sessionUpdate = "tool_call",
+        toolCallId = "c1",
+        title = "edit",
+        kind = "edit",
+        status = "in_progress",
+      })
+      reducer.apply(s, {
+        sessionUpdate = "tool_call_update",
+        toolCallId = "c1",
+        status = "completed",
+        content = {
+          { type = "content", content = { type = "text", text = "Edited f.lua (1 replacement)" } },
+          { type = "diff", path = "/tmp/f.lua", oldText = "a\n", newText = "b\n" },
+        },
+      })
+      local block = s.blocks[1]
+      t.eq("Edited f.lua (1 replacement)", block.detail)
+      t.falsy(block.detail:find("diff:", 1, true), "the diff was flattened into a path line")
+    end)
+
+    t.it("still summarises a path-only diff", function()
+      local s = state.new("s1", "/tmp")
+      reducer.apply(s, {
+        sessionUpdate = "tool_call",
+        toolCallId = "c1",
+        kind = "edit",
+        status = "in_progress",
+      })
+      reducer.apply(s, {
+        sessionUpdate = "tool_call_update",
+        toolCallId = "c1",
+        content = { { type = "diff", path = "/tmp/f.lua" } },
+      })
+      t.match("diff: /tmp/f%.lua", s.blocks[1].detail)
+    end)
+
+    t.it("opens a file edit card once it has content", function()
+      local s = state.new("s1", "/tmp")
+      reducer.apply(s, { sessionUpdate = "tool_call", toolCallId = "c1", kind = "edit", status = "pending" })
+      -- The first call carries no payload: an open card would be empty.
+      t.falsy(s.blocks[1].expanded, "an empty card was opened")
+
+      reducer.apply(s, {
+        sessionUpdate = "tool_call_update",
+        toolCallId = "c1",
+        status = "in_progress",
+        rawInput = { path = "/tmp/f.lua", oldString = "a", newString = "b" },
+      })
+      t.truthy(s.blocks[1].expanded, "the card did not open when the change arrived")
+    end)
+
+    t.it("leaves other tools collapsed", function()
+      local s = state.new("s1", "/tmp")
+      reducer.apply(s, {
+        sessionUpdate = "tool_call",
+        toolCallId = "c1",
+        kind = "execute",
+        status = "in_progress",
+        rawInput = { command = "ls" },
+      })
+      t.falsy(s.blocks[1].expanded, "a shell call was opened")
+    end)
+
+    t.it("keeps a card closed after the user collapses it", function()
+      local s = state.new("s1", "/tmp")
+      reducer.apply(s, {
+        sessionUpdate = "tool_call",
+        toolCallId = "c1",
+        kind = "edit",
+        status = "in_progress",
+        rawInput = { path = "/tmp/f.lua", oldString = "a", newString = "b" },
+      })
+      local block = s.blocks[1]
+      t.truthy(block.expanded)
+      s:toggle(block)
+      t.falsy(block.expanded)
+      t.truthy(block.toggled, "the manual toggle was not recorded")
+
+      reducer.apply(s, {
+        sessionUpdate = "tool_call_update",
+        toolCallId = "c1",
+        status = "completed",
+        rawInput = { path = "/tmp/f.lua", oldString = "a", newString = "c" },
+      })
+      t.falsy(block.expanded, "an update reopened a card the user closed")
+    end)
+
+    t.it("keeps history collapsed", function()
+      local s = state.new("s1", "/tmp")
+      s.historical = true
+      reducer.apply(s, {
+        sessionUpdate = "tool_call",
+        toolCallId = "c1",
+        kind = "edit",
+        status = "completed",
+        rawInput = { path = "/tmp/f.lua", oldString = "a", newString = "b" },
+      })
+      t.falsy(s.blocks[1].expanded, "a replayed session opened its cards")
+    end)
+
     t.it("records plans, usage and config options", function()
       local s = state.new("s1", "/tmp")
       reducer.apply(s, { sessionUpdate = "plan", entries = { { content = "a", status = "pending" } } })

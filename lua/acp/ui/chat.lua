@@ -46,6 +46,7 @@ function M.new(opts)
     width = 80,
     show_thoughts = opts.config.ui.show_thoughts,
     thoughts = opts.config.ui.thoughts,
+    diff = opts.config.ui.diff,
     icons = blocks.icon_set(opts.config.ui.icons),
     session = nil,
     dirty = false,

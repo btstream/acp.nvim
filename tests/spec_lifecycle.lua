@@ -245,6 +245,35 @@ return function(t)
       end)
     end)
 
+    t.it("marks a staged replay as history", function()
+      fixture(function(s)
+        local runtime = s.runtime
+        local staged = runtime:stage("a", "/tmp/project-a")
+        t.truthy(staged.historical, "a replayed session must be marked as history")
+        runtime:rollback(staged)
+        -- A freshly created session is live, so its cards may open themselves.
+        local fresh = runtime:create("live", "/tmp/project-a", {})
+        t.falsy(fresh.historical, "a new session was marked as history")
+        runtime:remove("live")
+      end)
+    end)
+
+    t.it("keeps a staged replay's cards closed", function()
+      fixture(function(s)
+        local runtime, reducer = s.runtime, require("acp.session.reducer")
+        local staged = runtime:stage("a", "/tmp/project-a")
+        reducer.apply(staged, {
+          sessionUpdate = "tool_call",
+          toolCallId = "c1",
+          kind = "edit",
+          status = "completed",
+          rawInput = { path = "/tmp/project-a/f.lua", oldString = "a", newString = "b" },
+        })
+        t.falsy(staged.blocks[1].expanded, "a replayed card opened itself")
+        runtime:rollback(staged)
+      end)
+    end)
+
     t.it("does not clear a newly selected composer during a reentrant send", function()
       fixture(function(s, client)
         s.input:restore("draft A")

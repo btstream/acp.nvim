@@ -137,6 +137,20 @@ require("acp").setup({})
 结构化输入时退回标题；标题栏为了适配面板宽度仍会截断长命令，卡片里的是完整文本。
 命令与输出之间留一个空行，多行命令（heredoc 等）逐行显示。
 
+`edit` / `write` / `patch` 的卡片展开后直接在卡片里画出 diff：删除行用主题的
+`DiffDelete` 背景、新增行用 `DiffAdd`，`+` / `-` 号单独配色，上下文行沿用卡片底色。
+只有一个 hunk 时不显示 `@@` 头，多个 hunk 才用它分隔；行数超过 `ui.diff.max_lines`
+或体积超过 `ui.diff.max_bytes` 时以一行提示收尾，不会把整个文件倒进 buffer。
+
+这些卡片**默认展开**，因为改动本身就是要看的内容；agent 还在执行时就能看到
+`rawInput` 里的变更，完成后替换成权威的 diff。
+
+- 用户按 `<Tab>` 手动折叠后，后续更新不会再把它弹开；
+- 从历史会话加载（`:Acp sessions`）或重连恢复的卡片默认折叠，避免一次展开几十个
+  diff；手动展开仍然可用；
+- 同进程内切回仍在运行的缓存会话时，展开状态原样保留；
+- `write` 拿不到旧文件内容，因此按“全新增”展示并标注 `(new content)`。
+
 配置示例：
 
 ```lua
@@ -226,6 +240,11 @@ require("acp").setup({
     },
     separator = {
       form = "dot",                   -- "dot" | "turn" | "off"
+    },
+    diff = {
+      context = 3,                    -- 每个 hunk 保留的上下文行数
+      max_lines = 800,                -- 超过后折叠成一行提示
+      max_bytes = 512 * 1024,         -- 超过后不计算 diff
     },
   },
 
@@ -459,6 +478,18 @@ require("acp").setup({
 `AcpAssistantIcon` / `AcpAssistantTitle`。用户标题默认链接到用户图标；助手两组默认均链接到 `Keyword`；
 想区分时单独覆盖即可。助手回合开头的 Markdown 标题会用 `AcpAssistantTitle`，
 正文中间的标题仍保留各自的 `AcpH1`–`AcpH4` 级别。
+
+diff 卡片使用主题自带的 diff 组，所以红绿配色与你的 review 窗口一致：
+
+| 组 | 默认链接 | 作用 |
+|---|---|---|
+| `AcpDiffAdd` | `DiffAdd` | 新增行的整行背景 |
+| `AcpDiffDelete` | `DiffDelete` | 删除行的整行背景 |
+| `AcpDiffAddSign` | `DiffAdd` | `+` 号 |
+| `AcpDiffRemoveSign` | `DiffDelete` | `-` 号 |
+| `AcpDiffHunk` | `NonText` | 多 hunk 时的 `@@` 分隔行 |
+| `AcpDiffMeta` | `Comment` | 卡片内分隔线与“已省略 N 行”提示 |
+| `AcpDiffFile` | `Title` | 多文件时的路径表头 |
 
 两处例外，都是为了让表格读起来安静一些：
 
@@ -714,7 +745,8 @@ Agent 请求权限时弹出选择器：
 
 - 未实现客户端侧的文件读写与终端能力（`fs/read_text_file`、`terminal/*`），
   这些功能由 Agent 自行完成。
-- 修改审阅（逐块接受 / 拒绝）尚未提供，目前可展开工具调用查看 diff 摘要与文件位置。
+- 修改审阅（逐块接受 / 拒绝）尚未提供：可以展开工具调用查看完整 diff，但不能在
+  插件里应用或回滚某一块改动。
 - 会话历史来自 Agent（`session/list`），acp.nvim 不额外保存一份对话库。
 - 部分能力（压缩、用量、子会话）依赖 Agent 的扩展，缺失时会自动降级。
 

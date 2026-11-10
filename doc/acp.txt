@@ -108,6 +108,16 @@ q              隐藏面板
 结构化输入时退回标题。标题栏仍会为适配面板宽度截断长命令，卡片内是完整文本。
 多行命令逐行显示，命令与输出之间留一个空行。
 
+edit / write / patch 的卡片展开后直接画出 diff：删除行用 DiffDelete 背景，新增
+行用 DiffAdd，+/- 号单独配色，上下文行沿用卡片底色。只有一个 hunk 时不显示 @@
+头，多个 hunk 才用它分隔。超过 ui.diff.max_lines 或 ui.diff.max_bytes 时以一行
+提示收尾，不会把整个文件倒进 buffer。
+
+这些卡片默认展开。agent 仍在执行时就会用 rawInput 里的变更出图，完成后替换为
+权威的 diff。按 <Tab> 手动折叠后，后续更新不会再弹出；从历史加载或重连恢复的
+卡片默认折叠，避免一次展开几十个 diff；同进程内切回缓存会话时保留原状态。
+write 拿不到旧内容，按"全新增"展示并标注 (new content)。
+
 ==============================================================================
 5. 键位配置                                                *acp-keymaps*
 
@@ -164,6 +174,11 @@ picker、会话浏览器等自绘浮窗内部的按键不在 keymaps 管辖范�
         title = { placement = "auto" },
         toolbar = { placement = "auto", show_usage = false },
         separator = { form = "dot" },   -- "dot" | "turn" | "off"
+        diff = {
+          context = 3,                  -- 每个 hunk 保留的上下文行数
+          max_lines = 800,              -- 超过后折叠成一行提示
+          max_bytes = 512 * 1024,       -- 超过后不计算 diff
+        },
       },
       keymaps = {
         input = {
@@ -429,6 +444,16 @@ ui.separator.form 控制样式：
     AcpToolSuccess  AcpToolError  AcpPlan  AcpSeparator
     AcpTitle  AcpToolbar  AcpPermission  AcpStreaming
     AcpUserIcon  AcpUserTitle  AcpAssistantIcon  AcpAssistantTitle
+
+工具卡片里的 diff 使用主题自带的 diff 组，红绿配色与 review 窗口一致；行内文字
+另按所在文件的 treesitter @capture 着色，两层叠加而不是互相覆盖：
+
+    AcpDiffAdd  AcpDiffDelete  AcpDiffAddSign  AcpDiffRemoveSign
+    AcpDiffHunk  AcpDiffMeta  AcpDiffFile
+
+AcpDiffAdd / AcpDiffDelete 是整行背景（链接 DiffAdd / DiffDelete），+/- 号单独
+成组，便于主题只给背景色时单独调整；AcpDiffMeta 同时用于卡片内的分隔线与
+"已省略 N 行"提示。
 
 插件自绘的 picker（ui.picker = "internal" 的选择框、:Acp sessions 的内置窗口）
 使用另一套 AcpPicker* 组，默认链接到主题组：

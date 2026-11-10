@@ -191,6 +191,62 @@ return function(t)
     end)
   end)
 
+  t.describe("diff backgrounds", function()
+    t.it("keeps a removed run separate from an added run", function()
+      local runs = Chat._background_runs({
+        { bg = "AcpCardBg" },
+        { bg = "AcpDiffDelete", block_id = "t" },
+        { bg = "AcpDiffAdd", block_id = "t" },
+        { bg = "AcpDiffAdd", block_id = "t" },
+        { bg = "AcpCardBg" },
+      })
+      t.eq(4, #runs)
+      t.eq({ s = 1, e = 2, group = "AcpDiffDelete" }, runs[2])
+      t.eq({ s = 2, e = 4, group = "AcpDiffAdd" }, runs[3])
+    end)
+
+    t.it("paints diff rows through the transcript", function()
+      local chat = Chat.new({ config = cfg() })
+      local s = state.new("s", "/tmp")
+      s:append({
+        id = "t",
+        kind = "tool",
+        tool_kind = "edit",
+        status = "completed",
+        expanded = true,
+        content = { { type = "diff", path = "/tmp/f.lua", oldText = "a\nb\n", newText = "a\nB\n" } },
+      })
+      chat:set_session(s)
+
+      local runs = chat.bg_runs or {}
+      local groups = {}
+      for _, run in ipairs(runs) do
+        groups[run.group] = true
+      end
+      t.truthy(groups.AcpDiffAdd, "no added row was painted")
+      t.truthy(groups.AcpDiffDelete, "no removed row was painted")
+      t.truthy(groups.AcpCardBg, "the card surface was dropped")
+    end)
+
+    t.it("does not paint a diff while the card is collapsed", function()
+      local chat = Chat.new({ config = cfg() })
+      local s = state.new("s", "/tmp")
+      s:append({
+        id = "t",
+        kind = "tool",
+        tool_kind = "edit",
+        status = "completed",
+        expanded = false,
+        detail = "Edited f.lua",
+        content = { { type = "diff", path = "/tmp/f.lua", oldText = "a\nb\n", newText = "a\nB\n" } },
+      })
+      chat:set_session(s)
+      for _, run in ipairs(chat.bg_runs or {}) do
+        t.truthy(run.group ~= "AcpDiffAdd" and run.group ~= "AcpDiffDelete", "a collapsed card painted a diff")
+      end
+    end)
+  end)
+
   t.describe("transcript copying", function()
     t.it("strips trailing padding", function()
       local chat = Chat.new({ config = cfg() })
