@@ -146,6 +146,7 @@ function M.new(id, cwd, limits)
     turn = 0,
     pending_user = nil,
     dirty = false,
+    thoughts = require("acp.config").defaults.ui.thoughts,
     limits = limits or require("acp.config").defaults.memory,
     bytes = 0,
     version = 0,
@@ -154,6 +155,10 @@ function M.new(id, cwd, limits)
 end
 
 function Session:append(block)
+  self:finish_thought()
+  if block.kind == "thought" and block.status == "streaming" then
+    self.active_thought = block
+  end
   block._index = #self.blocks + 1
   block._max_bytes = self.limits.max_block_bytes
   self.blocks[#self.blocks + 1] = block
@@ -182,6 +187,28 @@ function Session:toggle(block)
   self:update(block, { expanded = not block.expanded }, false)
 end
 
+---Close a streaming thought. A finished thought defaults to collapsed; the
+---text stays in the model so it can be reopened.
+---@param block AcpBlock
+function Session:finish_thought(block)
+  block = block or self.active_thought
+  if not block then
+    return
+  end
+  if self.active_thought == block then
+    self.active_thought = nil
+  end
+  if block.kind ~= "thought" or block.status ~= "streaming" then
+    return
+  end
+  block.status = nil
+  block._append_base = nil
+  if (self.thoughts or {}).collapse_on_finish ~= false then
+    block.expanded = false
+  end
+  self:touch(block, false)
+end
+
 function Session:configure(result)
   assert(type(result) == "table", "invalid session response")
   for _, field in ipairs({ "configOptions", "modes" }) do
@@ -208,6 +235,7 @@ function Session:cancel_turn()
     return false
   end
   self.status = "cancelling"
+  self:finish_thought()
   for _, block in ipairs(self.blocks) do
     if block.kind == "tool" and (block.status == "pending" or block.status == "in_progress") then
       self:update(block, { status = "cancelled" }, false)
@@ -275,6 +303,9 @@ function Session:trim()
   local removed = {}
   for i = 1, keep_from - 1 do
     removed[self.blocks[i].id] = true
+    if self.blocks[i] == self.active_thought then
+      self.active_thought = nil
+    end
   end
   for i = keep_from, n do
     kept[#kept + 1] = self.blocks[i]
@@ -298,7 +329,8 @@ end
 
 function Session:append_text(kind, text, message_id)
   local last = self.blocks[#self.blocks]
-  if last and last.kind == kind and last.status == "streaming" then
+  local cancelled_thought = kind == "thought" and self.status == "cancelling"
+  if last and last.kind == kind and (last.status == "streaming" or cancelled_thought) then
     if not message_id or last.message_id == nil or last.message_id == message_id then
       last.message_id = last.message_id or message_id
       M.append_block_text(last, text)
@@ -306,13 +338,21 @@ function Session:append_text(kind, text, message_id)
       return last
     end
   end
-  return self:append({
+  if kind == "thought" and last and last.kind == "thought" then
+    self:finish_thought(last)
+  end
+  local block = self:append({
     id = next_id(kind),
     kind = kind,
     text = text,
     status = "streaming",
     message_id = message_id,
+    expanded = kind == "thought" and (self.thoughts or {}).expand_while_streaming ~= false and true or nil,
   })
+  if cancelled_thought then
+    self:finish_thought(block)
+  end
+  return block
 end
 
 ---Start a new turn: close out any streaming blocks.
@@ -321,7 +361,9 @@ function Session:begin_turn()
   self.turn = self.turn + 1
   self.status = "running"
   for _, block in ipairs(self.blocks) do
-    if block.status == "streaming" then
+    if block.kind == "thought" then
+      self:finish_thought(block)
+    elseif block.status == "streaming" then
       block.status = nil
       block._append_base = nil
       self:touch(block, false)
@@ -364,12 +406,19 @@ end
 ---Close streaming blocks at the end of a turn.
 ---@param stop_reason string|nil
 function Session:finish_turn(stop_reason)
+  self:finish_thought()
   -- Cancelled and error turns both leave tools that will never report again;
   -- they must not keep showing as "running" forever.
   local interrupted = stop_reason == "cancelled" or stop_reason == "error"
   for _, block in ipairs(self.blocks) do
     local previous = block.status
-    if block.status == "streaming" then
+    if block.kind == "thought" and block.status == "streaming" then
+      block.status = nil
+      block._append_base = nil
+      if (self.thoughts or {}).collapse_on_finish ~= false then
+        block.expanded = false
+      end
+    elseif block.status == "streaming" then
       block.status = nil
       block._append_base = nil
     end

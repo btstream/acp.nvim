@@ -59,8 +59,14 @@ return function(t)
         local proc = require("acp.transport.process").spawn({
           command = "mock",
           max_pending_bytes = 1024,
+          dispatch_budget_ms = 1,
+          -- Slower than the budget so the interleaved drain cannot keep up and the
+          -- hard limit still has to fire.
           on_line = function()
             received = received + 1
+            local t = vim.uv.hrtime()
+            while vim.uv.hrtime() - t < 2e6 do
+            end
           end,
           on_exit = function() end,
         })
@@ -68,12 +74,16 @@ return function(t)
         for i = 1, 20 do
           data[i] = string.rep("x", 100)
         end
-        data[#data + 1] = ""
-        callbacks.on_stdout(999999, data)
+        local warm = {}
+        for i = 1, 10 do
+          warm[i] = "warm" .. i
+        end
+        callbacks.on_stdout(999999, warm)
+        callbacks.on_stdout(999999, { table.concat(data, "\n") .. "\n" })
         callbacks.on_exit(999999, 1)
         vim.wait(20)
         t.truthy(stopped > 0)
-        t.eq(0, received)
+        t.truthy(received > 0 and received < 22, "some input is consumed before the limit fires")
         t.eq(false, proc:is_alive())
       end)
       vim.fn.jobstart, vim.fn.jobstop = start, stop

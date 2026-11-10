@@ -469,6 +469,36 @@ return function(t)
       t.truthy(stable_rule == cache.lines[2])
     end)
 
+    t.it("survives JSON null fields in tool diffs", function()
+      local Chat = require("acp.ui.chat")
+      local cfg = require("acp.config").defaults
+      local session = state.new("nil-diff", "/tmp")
+      session:track_changes()
+      session:append({
+        id = "tool",
+        kind = "tool",
+        tool_kind = "edit",
+        title = "Write",
+        status = "completed",
+        content = {
+          { type = "diff", path = "/tmp/new.lua", oldText = vim.NIL, newText = "local a = 1\n" },
+          { type = "diff", path = "/tmp/old.lua", oldText = "gone\n", newText = vim.NIL },
+        },
+      })
+      local chat = Chat.new({ config = cfg })
+      local ok, err = pcall(function()
+        chat:set_session(session)
+        chat:render()
+        session.blocks[1].expanded = true
+        session:touch(session.blocks[1], false)
+        chat:render()
+      end)
+      chat:destroy()
+      if not ok then
+        error(err, 0)
+      end
+    end)
+
     t.it("matches a fresh transcript and extmarks as a mixed CJK table grows", function()
       local Chat = require("acp.ui.chat")
       local cfg = require("acp.config").defaults

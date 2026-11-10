@@ -170,6 +170,31 @@ return function(t)
       t.falsy(s.blocks[1].expanded, "a replayed session opened its cards")
     end)
 
+    t.it("opens new diffs after a history replay is committed", function()
+      local Runtime = require("acp.session.runtime")
+      local runtime = Runtime.new(state.new("box", "/tmp").limits, {})
+      local staged = runtime:stage("s1", "/tmp")
+      reducer.apply(staged, {
+        sessionUpdate = "tool_call",
+        toolCallId = "old",
+        kind = "edit",
+        status = "completed",
+        rawInput = { path = "/tmp/old.lua", oldString = "a", newString = "b" },
+      })
+      t.falsy(staged.blocks[1].expanded)
+      t.truthy(runtime:commit(staged))
+      t.falsy(staged.historical)
+      reducer.apply(staged, {
+        sessionUpdate = "tool_call",
+        toolCallId = "new",
+        kind = "edit",
+        status = "completed",
+        rawInput = { path = "/tmp/new.lua", oldString = "c", newString = "d" },
+      })
+      t.falsy(staged.blocks[1].expanded, "the replayed card must stay closed")
+      t.truthy(staged.blocks[2].expanded, "a live diff must open")
+    end)
+
     t.it("records plans, usage and config options", function()
       local s = state.new("s1", "/tmp")
       reducer.apply(s, { sessionUpdate = "plan", entries = { { content = "a", status = "pending" } } })

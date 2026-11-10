@@ -22,8 +22,15 @@ function Runtime:sync_outbox(session)
   end
 end
 
-function M.new(limits, sessions)
-  return setmetatable({ limits = limits, sessions = sessions or {}, replays = {}, clock = 0, selection = 0 }, Runtime)
+function M.new(limits, sessions, thoughts)
+  return setmetatable({
+    limits = limits,
+    sessions = sessions or {},
+    thoughts = thoughts,
+    replays = {},
+    clock = 0,
+    selection = 0,
+  }, Runtime)
 end
 
 function Runtime:create(id, cwd, result)
@@ -34,6 +41,7 @@ function Runtime:create(id, cwd, result)
     error("new session id conflicts with an active runtime")
   end
   local session = State.new(id, cwd, self.limits)
+  session.thoughts = self.thoughts or session.thoughts
   session:track_changes()
   session:configure(result or {})
   self.sessions[id] = session
@@ -60,6 +68,7 @@ end
 function Runtime:stage(id, cwd)
   local previous = self.sessions[id]
   local session = State.new(id, cwd, self.limits)
+  session.thoughts = self.thoughts or session.thoughts
   session:track_changes()
   -- A replayed session is history: its tool cards stay collapsed so reading an
   -- old conversation does not unfold every diff at once.
@@ -80,6 +89,9 @@ function Runtime:commit(session)
   self.replays[session.id] = nil
   self.sessions[session.id] = session
   session.needs_load = false
+  -- Blocks replayed so far stay collapsed (they carry explicit `expanded`),
+  -- while new work after this point is live and follows the live defaults.
+  session.historical = false
   return true
 end
 

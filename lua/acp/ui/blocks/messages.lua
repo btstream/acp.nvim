@@ -102,14 +102,20 @@ end
 function M.render_thought(block, ctx)
   local ic = ctx.icons
   local thoughts = ctx.thoughts or {}
+  local streaming = block.status == "streaming"
   -- A block that was never toggled follows the configured default; an explicit
   -- toggle always wins, so a user's choice is never overridden by a re-render.
+  -- Live reasoning is visible while it streams even if completed thoughts stay
+  -- collapsed.
   local expanded
   if block.expanded ~= nil then
     expanded = block.expanded == true
+  elseif streaming and thoughts.expand_while_streaming ~= false then
+    expanded = true
   else
     expanded = thoughts.default_expanded == true
   end
+  local label = streaming and "Thinking" or "Thought"
   local caret = expanded and ic.chevron_down or ic.chevron_right
   -- The header is always drawn when thoughts are enabled: without it there is
   -- nothing for the user to expand.
@@ -118,7 +124,7 @@ function M.render_thought(block, ctx)
   -- own colour, so the header does not read as a solid block of search colour.
   local icon_start = #caret + 1
   local header = {
-    text = caret .. " " .. ic.thought .. " Thinking",
+    text = caret .. " " .. ic.thought .. " " .. label,
     segments = {
       { s = 0, e = #caret, group = "AcpSeparator" },
       { s = icon_start, e = -1, group = "AcpThought" },

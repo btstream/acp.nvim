@@ -823,6 +823,7 @@ function M.debug_state()
     status = session and session.status or nil,
     queue = session and #session.queue or 0,
     pending_permissions = vim.tbl_count(S.pending_permissions),
+    transport = S.client and S.client.transport_stats and S.client:transport_stats() or nil,
     panel = {
       chat = S.chat and S.chat.win or nil,
       input = S.input and S.input.win or nil,
@@ -881,7 +882,7 @@ function M.setup(opts, action)
   end
   S.session = nil
   S.sessions = {}
-  S.runtime = Runtime.new(merged.memory, S.sessions)
+  S.runtime = Runtime.new(merged.memory, S.sessions, merged.ui.thoughts)
   S.titles, S.session_cwds = {}, {}
   S.catalog = Catalog.new({
     titles = function()
@@ -980,6 +981,9 @@ function M.setup(opts, action)
     on_changed = refresh_chrome,
     on_replaying = function(value)
       S.replaying = value
+      if S.client and S.client.mark_phase then
+        S.client:mark_phase(value and "replay" or nil)
+      end
     end,
     on_creating = function(value)
       S.creating_session = value

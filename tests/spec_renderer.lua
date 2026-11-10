@@ -55,7 +55,7 @@ return function(t)
       local collapsed = blocks.render_block(s.blocks[1], ctx)
       -- A header stays visible so the block can be expanded.
       t.truthy(#collapsed > 0, "a collapsed thought should keep its header")
-      t.match("Thinking", collapsed[1].text)
+      t.match("Thought", collapsed[1].text)
       t.falsy(
         table
           .concat(

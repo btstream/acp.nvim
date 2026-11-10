@@ -125,7 +125,8 @@ treesitter 的 @capture 组，与普通 buffer 一致；红绿背景与语法前
 
 这些卡片默认展开。agent 仍在执行时就会用 rawInput 里的变更出图，完成后替换为
 权威的 diff。按 <Tab> 手动折叠后，后续更新不会再弹出；从历史加载或重连恢复的
-卡片默认折叠，避免一次展开几十个 diff；同进程内切回缓存会话时保留原状态。
+卡片默认折叠，避免一次展开几十个 diff；回放提交后再产生的新 diff 恢复默认展开，
+历史卡片保持折叠；同进程内切回缓存会话时保留原状态。
 write 拿不到旧内容，按"全新增"展示并标注 (new content)。
 
 ==============================================================================
@@ -177,6 +178,8 @@ picker、会话浏览器等自绘浮窗内部的按键不在 keymaps 管辖范�
         thoughts = {
           default_expanded = false,
           show_collapsed_header = true,
+          expand_while_streaming = true,
+          collapse_on_finish = true,
         },
         picker = "vim",       -- "vim" | "internal"
         session_picker = "snacks", -- "snacks" | "internal"
@@ -406,10 +409,33 @@ memory.* 限制本地保留载荷，不是 Lua/Neovim RSS 硬上限。超大 blo
 闲置会话按 LRU 淘汰，当前、运行中、有队列或权限请求的会话受保护，可暂时超过
 缓存数量/总载荷预算。渲染缓存和 Neovim 对象仍有额外开销。
 
-transport.max_pending_bytes 默认 16 MiB，限制协议待分发队列的估算开销；超出时
-断开连接。dispatch_budget_ms 默认 4ms，每批按顺序分发后让出主循环，但不能抢占
-单条 JSON 解码或单块排版。
+transport.max_pending_bytes 默认 64 MiB，限制尚未消费接收数据（不完整消息、待分发
+消息、尚未完成的文本分片、在途写入与已读缓冲）的估算开销；设为 0 关闭积压上限。
+spill_bytes 默认 64 MiB，是完整 JSON 行异步落盘的工作集目标；设为 0 则只占内存。
+两者为正时，落盘阈值最多为上限的 75%。磁盘旧消息优先于内存新消息，当前文本分片
+又优先于所有后续消息。回调时间预算到期后不再逐元素同步派发，留待下一次调度。
+阈值不是 RSS 硬上限：输入回调、JSON 对象和临时复制仍有额外开销；磁盘慢于输入时，
+有限预算仍可能触发断连。单条 JSON 解码、工具替换更新或单块排版仍不可抢占。
+
+超过 transport.text_chunk_bytes 的文本型 session/update 会在完整解码后按 UTF-8 边界
+切片，通过惰性派发器直接归约已解码片段，不重新编码或进入分片检测；片间可让出主循环。
+仅处理 agent/user/thought 追加文本。工具内容、diff 和 rawOutput 保持原子替换，避免
+累计前缀的二次方复制；其它消息仍整条处理。完整 JSON 解码的峰值内存仍然存在。
+
+落盘文件位于 `stdpath("run")/acp.nvim/acp-spill-*`，权限 0600，排空、停止或退出时删除；
+停止时若尚有 I/O，等待其回调后释放文件描述符。创建/写入失败回退内存；读取失败明确
+报错并断连，不在缺失消息后继续运行。超过 24 小时的崩溃残留会在下次启用落盘时清理。
+文件是原始协议正文，未加密。
+
+`max_pending_bytes = 0` 且 `spill_bytes = 0` 时永不因总积压断开，代价是可能耗尽内存，
+只适合确定历史规模的环境。回放期间超限日志会带 `phase=replay`；摘要包含积压、上限、
+触发行大小、本次回调消息数、累计消息/字节、最大输入、落盘记录与批次耗时，不含正文。
+16/64/256/1024 MiB 会各告警一次。开启 `log.protocol` 还会逐回调记录明细。
 通知归约在该预算内执行；权限 UI 单独调度，旧连接的模型/权限选择器不会影响新状态。
+
+思考块在流式期间实时展开并显示 Thinking，结束后自动折叠并显示 Thought；历史与重连
+重放保持折叠。手动 <Tab> 优先。ui.thoughts.expand_while_streaming / collapse_on_finish
+可关闭对应行为。
 
 权限选择器按 Esc 或 q 关闭视为拒绝；若 Agent 没有提供 reject 选项，则返回
 cancelled。

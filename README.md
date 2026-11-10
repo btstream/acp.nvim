@@ -159,7 +159,7 @@ diff 行还会按**被编辑文件自己的文件类型**着色：`.lua` 用 Lua
 
 - 用户按 `<Tab>` 手动折叠后，后续更新不会再把它弹开；
 - 从历史会话加载（`:Acp sessions`）或重连恢复的卡片默认折叠，避免一次展开几十个
-  diff；手动展开仍然可用；
+  diff；回放提交后，再新产生的 diff 恢复默认展开，历史卡片保持折叠；
 - 同进程内切回仍在运行的缓存会话时，展开状态原样保留；
 - `write` 拿不到旧文件内容，因此按“全新增”展示并标注 `(new content)`。
 
@@ -235,8 +235,10 @@ require("acp").setup({
     -- 旧键，等价于 thoughts.default_expanded = true
     show_thoughts = false,
     thoughts = {
-      default_expanded = false,      -- 默认展开思考内容
-      show_collapsed_header = true,  -- 折叠时显示 "Thinking" 头部
+      default_expanded = false,      -- 已完成的思考默认展开
+      show_collapsed_header = true,  -- 折叠时显示头部
+      expand_while_streaming = true, -- 思考进行中实时展开
+      collapse_on_finish = true,     -- 思考结束后自动折叠
     },
     follow_output = true,
     wrap = true,
@@ -306,8 +308,8 @@ require("acp").setup({
   notices = true,         -- 显示 Agent 的时间线通知
 
   transport = {
-    -- 单条 JSON 消息的字节上限；超过会断开连接
-    max_line_bytes = 8 * 1024 * 1024,
+    -- 单条 JSON 消息的字节上限；超过会断开连接。日志会给出实际大小
+    max_line_bytes = 32 * 1024 * 1024,
     -- 保留多少字节的 agent stderr 用于诊断
     stderr_keep_bytes = 64 * 1024,
     -- 关闭时等待 agent 自行退出的毫秒数，超时后升级为 SIGKILL
@@ -316,8 +318,10 @@ require("acp").setup({
     request_timeout = 30000,
     -- 单轮对话的绝对上限（毫秒，0 表示不限制）；默认 10 分钟
     prompt_timeout = 600000,
-    max_pending_bytes = 16 * 1024 * 1024, -- 待分发消息及队列开销的估算预算
-    dispatch_budget_ms = 4,               -- 每批处理后让出主循环；无法抢占单条请求
+    max_pending_bytes = 64 * 1024 * 1024, -- 未消费接收数据的估算上限；0 = 不限，超限断开
+    spill_bytes = 64 * 1024 * 1024,       -- 完整消息异步落盘的工作集目标；不是硬内存上限
+    text_chunk_bytes = 64 * 1024,         -- 解码后超大文本的切片大小；0 = 不切片
+    dispatch_budget_ms = 4,               -- 每批分发/接收切片后让出主循环；不可抢占单条消息
   },
 
   log = {
@@ -685,6 +689,17 @@ require("acp").setup({ layout = { backend = "native" } }, { discard_queued = tru
 ```
 
 队列目前只保存在本次 Neovim 进程内，不是持久化 outbox；正常退出或崩溃不会恢复它。
+
+### 思考块
+
+思考进行中会实时展开并显示 `Thinking`，正文随 chunk 更新；思考结束（Agent 转入正文、
+工具、计划，或回合结束）后自动折叠并改为 `Thought`。历史会话和重连重放的思考保持折叠。
+
+`<Tab>` 手动操作始终优先：流式中折叠后不会被后续 chunk 弹开。需要改变默认值时：
+
+```lua
+ui = { thoughts = { expand_while_streaming = false, collapse_on_finish = false } }
+```
 
 ### 中断与恢复
 

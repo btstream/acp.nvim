@@ -220,8 +220,9 @@ function M.lines(entries, opts)
   local parsed = {}
   local hunks = 0
   for _, entry in ipairs(entries) do
-    local bytes = #entry.oldText + #entry.newText
-    if entry.patch then
+    local bytes = (type(entry.oldText) == "string" and #entry.oldText or 0)
+      + (type(entry.newText) == "string" and #entry.newText or 0)
+    if type(entry.patch) == "string" then
       bytes = #entry.patch
     end
     if bytes > max_bytes then

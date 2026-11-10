@@ -5,6 +5,7 @@ local M = {}
 ---@field parts string[] pending chunks of an incomplete line
 ---@field max integer
 ---@field failed boolean
+---@field failed_size integer|nil size of the message that hit the limit
 local Decoder = {}
 Decoder.__index = Decoder
 
@@ -53,7 +54,7 @@ function Decoder:feed(chunk, on_line)
     self.parts[#self.parts + 1] = chunk
     self.buffered = self.buffered + #chunk
     if self.buffered > self.max then
-      self.failed = true
+      self.failed, self.failed_size = true, self.buffered
       self.parts = {}
       self.buffered = 0
       return false
@@ -84,7 +85,8 @@ function Decoder:feed(chunk, on_line)
       size = size - 1
     end
     if size > self.max then
-      self.failed, self.parts, self.buffered = true, {}, 0
+      self.failed, self.failed_size = true, size
+      self.parts, self.buffered = {}, 0
       return false
     end
     local line = pending:sub(start, nl - 1)
@@ -110,7 +112,7 @@ function Decoder:feed(chunk, on_line)
     self.buffered = #rest
   end
   if self.buffered > self.max then
-    self.failed = true
+    self.failed, self.failed_size = true, self.buffered
     self.parts = {}
     self.buffered = 0
     return false

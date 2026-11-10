@@ -13,9 +13,9 @@ return function(t)
     }, overrides or {})
   end
 
-  local function thought(text)
+  local function thought(text, status)
     local s = state.new("s", "/proj")
-    s:append({ id = "th", kind = "thought", text = text })
+    s:append({ id = "th", kind = "thought", text = text, status = status })
     return s.blocks[1]
   end
 
@@ -30,7 +30,7 @@ return function(t)
   t.describe("thought folding", function()
     t.it("shows a header and hides the body by default", function()
       local lines = blocks.render_block(thought("hidden reasoning"), ctx())
-      t.match("Thinking", lines[1].text)
+      t.match("Thought", lines[1].text)
       t.falsy(text_of(lines):find("hidden reasoning", 1, true), "body leaked while collapsed")
     end)
 
@@ -172,6 +172,166 @@ return function(t)
       for _, line in ipairs(blocks.render_block(block, ctx())) do
         t.falsy(line.text:find("\n"), "thought row contains a newline")
       end
+    end)
+  end)
+
+  t.describe("streaming thoughts", function()
+    t.it("finishes thoughts on updates to existing tools and plans", function()
+      local reducer = require("acp.session.reducer")
+      for _, kind in ipairs({ "tool", "plan" }) do
+        local s = state.new("s", "/proj")
+        s:begin_turn()
+        reducer.apply(
+          s,
+          kind == "tool" and { sessionUpdate = "tool_call", toolCallId = "t" }
+            or { sessionUpdate = "plan", entries = {} }
+        )
+        local block = s:append_text("thought", "reasoning", "m")
+        reducer.apply(
+          s,
+          kind == "tool" and { sessionUpdate = "tool_call_update", toolCallId = "t", status = "completed" }
+            or { sessionUpdate = "plan", entries = { { content = "next", status = "pending" } } }
+        )
+        t.eq(nil, block.status)
+        t.eq(false, block.expanded)
+        t.match("Thought", blocks.render_block(block, ctx())[1].text)
+      end
+    end)
+
+    t.it("closes immediately on cancellation and keeps late thought chunks closed", function()
+      local s = state.new("s", "/proj")
+      s:begin_turn()
+      local block = s:append_text("thought", "reasoning", "m")
+      t.truthy(s:cancel_turn())
+      t.eq(nil, block.status)
+      t.eq(false, block.expanded)
+      s:append_text("thought", " late", "m")
+      t.eq(1, #s.blocks)
+      t.eq("reasoning late", block.text)
+      t.eq(nil, block.status)
+      local second = s:append_text("thought", "another", "m2")
+      t.eq(nil, second.status)
+      t.eq(false, second.expanded)
+    end)
+
+    t.it("does not scan finished thought history on append", function()
+      local s = state.new("s", "/proj")
+      for i = 1, 200 do
+        s:append({ id = "th" .. i, kind = "thought", text = "old" })
+      end
+      local original, calls = s.finish_thought, 0
+      s.finish_thought = function(self, block)
+        calls = calls + 1
+        return original(self, block)
+      end
+      s:append({ id = "agent", kind = "agent", text = "answer" })
+      t.eq(1, calls)
+    end)
+
+    t.it("shows the body live and labels it Thinking", function()
+      local block = thought("live reasoning", "streaming")
+      local lines = blocks.render_block(block, ctx())
+      t.match("Thinking", lines[1].text)
+      t.truthy(text_of(lines):find("live reasoning", 1, true), "live reasoning was hidden")
+    end)
+
+    t.it("collapses and relabels to Thought when finished", function()
+      local s = state.new("s", "/proj")
+      s:append_text("thought", "reasoning", "m")
+      local block = s.blocks[1]
+      t.truthy(block.expanded)
+      s:finish_thought(block)
+      t.eq(nil, block.status)
+      t.eq(false, block.expanded)
+      local lines = blocks.render_block(block, ctx())
+      t.match("Thought", lines[1].text)
+      t.falsy(text_of(lines):find("reasoning", 1, true))
+    end)
+
+    t.it("finishes the thought when agent text starts", function()
+      local s = state.new("s", "/proj")
+      s:append_text("thought", "reasoning", "m")
+      local block = s.blocks[1]
+      s:append_text("agent", "answer", "a")
+      t.eq(nil, block.status)
+      t.eq(false, block.expanded)
+    end)
+
+    t.it("finishes the thought when the message id changes", function()
+      local s = state.new("s", "/proj")
+      s:append_text("thought", "first", "m1")
+      local first = s.blocks[1]
+      local second = s:append_text("thought", "second", "m2")
+      t.eq(nil, first.status)
+      t.eq(false, first.expanded)
+      t.truthy(second.expanded)
+    end)
+
+    t.it("finishes every thought at the end of a turn", function()
+      local s = state.new("s", "/proj")
+      s:begin_turn()
+      s:append_text("thought", "reasoning", "m")
+      local block = s.blocks[1]
+      s:finish_turn("end_turn")
+      t.eq(nil, block.status)
+      t.eq(false, block.expanded)
+    end)
+
+    t.it("can stay collapsed while streaming when configured", function()
+      local s = state.new("s", "/proj")
+      s.thoughts = { expand_while_streaming = false, collapse_on_finish = true }
+      s:append_text("thought", "quiet", "m")
+      t.eq(nil, s.blocks[1].expanded)
+      local lines = blocks.render_block(
+        s.blocks[1],
+        ctx({
+          thoughts = { expand_while_streaming = false, show_collapsed_header = true },
+        })
+      )
+      t.falsy(text_of(lines):find("quiet", 1, true))
+    end)
+
+    t.it("can stay open after finishing when configured", function()
+      local s = state.new("s", "/proj")
+      s.thoughts = { expand_while_streaming = true, collapse_on_finish = false }
+      s:append_text("thought", "kept", "m")
+      local block = s.blocks[1]
+      s:finish_thought(block)
+      t.truthy(block.expanded)
+    end)
+
+    t.it("respects a manual collapse during streaming", function()
+      local s = state.new("s", "/proj")
+      s:append_text("thought", "reasoning", "m")
+      local block = s.blocks[1]
+      s:toggle(block)
+      t.eq(false, block.expanded)
+      s:append_text("thought", " more", "m")
+      t.eq(false, block.expanded)
+      s:finish_thought(block)
+      t.eq(false, block.expanded)
+    end)
+
+    t.it("keeps the header while streaming even when collapsed headers are off", function()
+      local block = thought("live", "streaming")
+      local lines = blocks.render_block(
+        block,
+        ctx({
+          thoughts = { expand_while_streaming = false, show_collapsed_header = false },
+        })
+      )
+      t.truthy(#lines > 0)
+      t.match("Thinking", lines[1].text)
+    end)
+
+    t.it("leaves history collapsed after a replay finishes", function()
+      local s = state.new("s", "/proj")
+      s.historical = true
+      s:begin_turn()
+      s:append_text("thought", "old reasoning", "m")
+      s:finish_turn("end_turn")
+      t.eq(nil, s.blocks[1].status)
+      t.eq(false, s.blocks[1].expanded)
     end)
   end)
 

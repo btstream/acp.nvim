@@ -111,7 +111,7 @@ end
 function Client:do_start(generation)
   local cfg = self.agent
   local limits = self.limits or {}
-  local max_line = limits.max_line_bytes or 8 * 1024 * 1024
+  local max_line = limits.max_line_bytes or 32 * 1024 * 1024
   local stderr_keep = limits.stderr_keep_bytes or 64 * 1024
 
   local proc, err = process.spawn({
@@ -123,9 +123,10 @@ function Client:do_start(generation)
     stderr_keep_bytes = stderr_keep,
     shutdown_timeout = limits.shutdown_timeout,
     max_pending_bytes = limits.max_pending_bytes,
+    spill_bytes = limits.spill_bytes,
     dispatch_budget_ms = limits.dispatch_budget_ms,
     on_line = function(line)
-      self:on_line(line)
+      return self:on_line(line)
     end,
     on_exit = function(code, stderr)
       self:handle_exit(code, stderr, generation)
@@ -266,7 +267,91 @@ function Client:on_line(line)
   if not self.rpc then
     return
   end
+  local dispatch = self:chunk_update(decoded)
+  if dispatch then
+    return dispatch
+  end
   self.rpc:handle(decoded, line)
+end
+
+local TEXT_CHUNK = 64 * 1024
+local CHUNK_KINDS = {
+  agent_message_chunk = true,
+  agent_thought_chunk = true,
+  user_message_chunk = true,
+}
+
+---Move `stop` forward off a UTF-8 continuation byte.
+---@param text string
+---@param stop integer
+---@return integer
+local function utf8_boundary(text, stop)
+  while stop < #text do
+    local byte = text:byte(stop + 1)
+    if byte and byte >= 0x80 and byte < 0xC0 then
+      stop = stop + 1
+    else
+      break
+    end
+  end
+  return stop
+end
+
+---Extract the text-bearing part of a streamed update, if it is chunkable.
+---Tool content is a replacement, not an append. Keep it atomic: cumulative
+---prefixes would copy O(n²) bytes and expose a completed tool with partial data.
+---@param update table
+---@return table|nil content prototype, string|nil text
+local function chunkable(update)
+  local kind = update.sessionUpdate
+  if CHUNK_KINDS[kind] then
+    local content = update.content
+    if type(content) == "table" and content.type == "text" and type(content.text) == "string" then
+      return content, content.text
+    end
+    return nil
+  end
+  return nil
+end
+
+---Return a lazy dispatcher for an oversized append-only text notification.
+---Decoded slices go straight to RPC, never back through chunk detection. This
+---also makes UTF-8 slices slightly above `size` safe and avoids JSON re-encoding.
+---@param decoded table
+---@return function|nil dispatch returns true while more slices remain
+function Client:chunk_update(decoded)
+  local size = (self.limits or {}).text_chunk_bytes or TEXT_CHUNK
+  if size <= 0 then
+    return nil
+  end
+  if type(decoded) ~= "table" or decoded.method ~= "session/update" or decoded.id ~= nil then
+    return nil
+  end
+  local params = decoded.params
+  local update = type(params) == "table" and params.update
+  if type(update) ~= "table" then
+    return nil
+  end
+  local content, text = chunkable(update)
+  if not text or #text <= size then
+    return nil
+  end
+  local rpc, offset = self.rpc, 1
+  self.stats = self.stats or {}
+  self.stats.chunked_messages = (self.stats.chunked_messages or 0) + 1
+  return function()
+    if self.rpc ~= rpc or not rpc or rpc.closed or offset > #text then
+      return false
+    end
+    local stop = utf8_boundary(text, math.min(#text, offset + size - 1))
+    local body = vim.tbl_extend("force", {}, content, { text = text:sub(offset, stop) })
+    local payload_update = vim.tbl_extend("force", {}, update, { content = body })
+    local payload_params = vim.tbl_extend("force", {}, params, { update = payload_update })
+    offset = stop + 1
+    self.stats.chunk_parts = (self.stats.chunk_parts or 0) + 1
+    rpc:handle({ jsonrpc = decoded.jsonrpc or "2.0", method = "session/update", params = payload_params })
+    return offset <= #text
+  end
 end
 
 function Client:install_handlers()
@@ -513,6 +598,29 @@ end
 ---@return table
 function Client:agent_capabilities()
   return self.capabilities or {}
+end
+
+---Mark a protocol phase on the transport for diagnostics.
+---@param phase string|nil "replay" while replaying agent history
+function Client:mark_phase(phase)
+  if self.proc then
+    self.proc:mark_phase(phase)
+  end
+end
+
+---Compact transport diagnostics, for overflow reporting and `:AcpDebug`.
+---@return table|nil
+function Client:transport_stats()
+  if not self.proc then
+    return nil
+  end
+  local stats = self.proc.stats
+  if self.stats then
+    for key, value in pairs(self.stats) do
+      stats[key] = value
+    end
+  end
+  return stats
 end
 
 return M

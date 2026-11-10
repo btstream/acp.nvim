@@ -39,8 +39,10 @@ M.defaults = {
   },
 
   transport = {
-    -- Maximum size of a single newline delimited JSON message.
-    max_line_bytes = 8 * 1024 * 1024,
+    -- Maximum size of a single newline delimited JSON message. Large edits and
+    -- tool outputs are delivered as one message, so this is well above the
+    -- normal chunk size; exceeding it still closes the connection.
+    max_line_bytes = 32 * 1024 * 1024,
     -- How many bytes of stderr to keep for diagnostics.
     stderr_keep_bytes = 64 * 1024,
     -- Milliseconds to wait for graceful shutdown before killing the process.
@@ -52,7 +54,15 @@ M.defaults = {
     -- agent cannot hang the turn forever. 0 disables it.
     prompt_timeout = 600000,
     -- Bound queued decoded-line payloads and yield between dispatch batches.
-    max_pending_bytes = 16 * 1024 * 1024,
+    -- 0 means no total cap: memory grows instead of disconnecting.
+    max_pending_bytes = 64 * 1024 * 1024,
+    -- Spill complete unread lines asynchronously above this working-set target.
+    -- 0 keeps everything in memory. This is not a hard memory bound: incoming
+    -- callbacks, incomplete lines, JSON decoding and in-flight I/O also retain data.
+    spill_bytes = 64 * 1024 * 1024,
+    -- After decoding, split text updates larger than this into ordered parts so
+    -- reduce/render can yield between them. 0 disables chunking.
+    text_chunk_bytes = 64 * 1024,
     dispatch_budget_ms = 4,
   },
 
@@ -86,9 +96,12 @@ M.defaults = {
     thoughts = {
       -- Expand reasoning by default instead of showing a collapsed header.
       default_expanded = false,
-      -- Draw a "Thinking" header when collapsed. Turning this off hides
+      -- Draw a header when collapsed. Turning this off hides completed
       -- thoughts entirely, with no way to expand them from the transcript.
       show_collapsed_header = true,
+      -- Show reasoning live while it streams, and close it once finished.
+      expand_while_streaming = true,
+      collapse_on_finish = true,
     },
     follow_output = true,
     wrap = true,
@@ -346,6 +359,12 @@ function M.validate(cfg)
   if type(cfg.ui.thoughts.show_collapsed_header) ~= "boolean" then
     fail("ui.thoughts.show_collapsed_header must be a boolean")
   end
+  if type(cfg.ui.thoughts.expand_while_streaming) ~= "boolean" then
+    fail("ui.thoughts.expand_while_streaming must be a boolean")
+  end
+  if type(cfg.ui.thoughts.collapse_on_finish) ~= "boolean" then
+    fail("ui.thoughts.collapse_on_finish must be a boolean")
+  end
 
   check_number(cfg.layout.min_width, 1, 10000, "layout.min_width")
   check_number(cfg.layout.max_width, 1, 10000, "layout.max_width")
@@ -365,7 +384,19 @@ function M.validate(cfg)
   check_number(cfg.transport.shutdown_timeout, 0, 600000, "transport.shutdown_timeout")
   check_number(cfg.transport.request_timeout, 0, 3600000, "transport.request_timeout")
   check_number(cfg.transport.prompt_timeout, 0, 24 * 3600 * 1000, "transport.prompt_timeout")
-  check_number(cfg.transport.max_pending_bytes, 1024, 1024 * 1024 * 1024, "transport.max_pending_bytes")
+  -- 0 disables the total cap; any positive value must still be usable.
+  check_number(cfg.transport.max_pending_bytes, 0, 1024 * 1024 * 1024, "transport.max_pending_bytes")
+  if cfg.transport.max_pending_bytes > 0 and cfg.transport.max_pending_bytes < 1024 then
+    fail("transport.max_pending_bytes must be 0 or at least 1024")
+  end
+  check_number(cfg.transport.spill_bytes, 0, 1024 * 1024 * 1024, "transport.spill_bytes")
+  if cfg.transport.spill_bytes > 0 and cfg.transport.spill_bytes < 1024 then
+    fail("transport.spill_bytes must be 0 or at least 1024")
+  end
+  check_number(cfg.transport.text_chunk_bytes, 0, 1024 * 1024, "transport.text_chunk_bytes")
+  if cfg.transport.text_chunk_bytes > 0 and cfg.transport.text_chunk_bytes < 1024 then
+    fail("transport.text_chunk_bytes must be 0 or at least 1024")
+  end
   check_number(cfg.transport.dispatch_budget_ms, 1, 100, "transport.dispatch_budget_ms")
 
   check_enum(cfg.log.level, { "trace", "debug", "info", "warn", "error" }, "log.level")

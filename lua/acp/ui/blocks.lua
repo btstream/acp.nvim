@@ -137,7 +137,8 @@ local function render_block(block, ctx)
       block.expanded = previous
       return out
     end
-    if not show_header and block.expanded ~= true then
+    -- Live reasoning always keeps its header so "Thinking" stays visible.
+    if not show_header and block.expanded ~= true and block.status ~= "streaming" then
       return {}
     end
     return render_thought(block, ctx)

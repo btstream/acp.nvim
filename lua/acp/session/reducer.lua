@@ -133,6 +133,11 @@ local function reduce(session, update)
   end
   local kind = update.sessionUpdate
 
+  -- Existing tools/plans mutate in place and do not pass through append().
+  if kind == "tool_call" or kind == "tool_call_update" or kind == "plan" then
+    session:finish_thought()
+  end
+
   if kind == "user_message_chunk" then
     local text = text_of(update.content)
     if text ~= "" then

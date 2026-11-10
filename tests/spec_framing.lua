@@ -66,6 +66,12 @@ return function(t)
       t.truthy(d.failed)
     end)
 
+    t.it("records the size that exceeded the limit", function()
+      local d = framing.new_decoder(8)
+      d:feed(string.rep("x", 20), function() end)
+      t.eq(20, d.failed_size)
+    end)
+
     t.it("encodes one newline-delimited line", function()
       local encoded = framing.encode({ jsonrpc = "2.0", method = "x" })
       t.match("^.+%}\n$", encoded)

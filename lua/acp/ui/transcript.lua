@@ -7,6 +7,13 @@ local session_state = require("acp.session.state")
 
 local M = {}
 
+---Length of a string field, tolerating JSON null (vim.NIL) and other types.
+---@param value any
+---@return integer
+local function len(value)
+  return type(value) == "string" and #value or 0
+end
+
 local EMPTY_HINT = "Start a conversation with the agent."
 local TRIMMED_HINT = "Earlier messages omitted by local memory limits."
 
@@ -50,7 +57,7 @@ local function block_signature(block)
     diff_len = 0
     for _, item in ipairs(block.content or {}) do
       if type(item) == "table" and item.type == "diff" then
-        diff_len = diff_len + #(item.oldText or "") + #(item.newText or "")
+        diff_len = diff_len + len(item.oldText) + len(item.newText)
       end
     end
     local input = block.raw_input
@@ -66,22 +73,22 @@ local function block_signature(block)
     kind = block.kind,
     status = block.status,
     expanded = block.expanded,
-    text_len = #(block.text or ""),
-    title_len = #(block.title or ""),
-    detail_len = #(block.detail or ""),
-    name_len = #(block.name or ""),
+    text_len = len(block.text),
+    title_len = len(block.title),
+    detail_len = len(block.detail),
+    name_len = len(block.name),
     tool_kind = block.tool_kind,
     severity = block.severity,
-    entries = block.entries and #block.entries or 0,
-    attachments = block.attachments and #block.attachments or 0,
-    locations = block.locations and #block.locations or 0,
-    child_title = block.child and block.child.title or nil,
+    entries = type(block.entries) == "table" and #block.entries or 0,
+    attachments = type(block.attachments) == "table" and #block.attachments or 0,
+    locations = type(block.locations) == "table" and #block.locations or 0,
+    child_title = type(block.child) == "table" and block.child.title or nil,
     raw_len = raw_len,
     command_len = command_len,
     diff_len = diff_len,
     -- Plan entries render both their text and their status, so a same-count
     -- update has to be detected.
-    plan = block.entries and vim.inspect(block.entries) or nil,
+    plan = type(block.entries) == "table" and vim.inspect(block.entries) or nil,
   }
 end
 
