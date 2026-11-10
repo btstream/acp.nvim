@@ -138,7 +138,7 @@ M.defaults = {
 
     -- File-modifying tool calls (`edit`, `write`, `patch`) render their change
     -- as a diff inside the card.
-    ---@type { context: integer, max_lines: integer, max_bytes: integer }
+    ---@type { context: integer, max_lines: integer, max_bytes: integer, syntax: boolean, max_syntax_rows: integer }
     diff = {
       -- Unchanged lines kept around each hunk.
       context = 3,
@@ -146,6 +146,11 @@ M.defaults = {
       max_lines = 800,
       -- A larger old+new payload is not diffed at all (`diff too large`).
       max_bytes = 512 * 1024,
+      -- Colour the diff rows with the file's own syntax.
+      syntax = true,
+      -- Above this many rows the colour is skipped: parsing is cheap per row but
+      -- a first paint of a huge diff should still be instant.
+      max_syntax_rows = 800,
     },
   },
 
@@ -322,6 +327,10 @@ function M.validate(cfg)
   check_number(cfg.ui.diff.context, 0, 100, "ui.diff.context")
   check_number(cfg.ui.diff.max_lines, 1, 100000, "ui.diff.max_lines")
   check_number(cfg.ui.diff.max_bytes, 1024, 1024 * 1024 * 1024, "ui.diff.max_bytes")
+  check_number(cfg.ui.diff.max_syntax_rows, 0, 100000, "ui.diff.max_syntax_rows")
+  if type(cfg.ui.diff.syntax) ~= "boolean" then
+    fail("ui.diff.syntax must be a boolean")
+  end
   check_enum(cfg.permissions.prompt, { "select", "native" }, "permissions.prompt")
   if type(cfg.ui.thoughts) ~= "table" then
     fail("ui.thoughts must be a table")

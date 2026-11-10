@@ -262,6 +262,181 @@ return function(t)
     end)
   end)
 
+  t.describe("diff syntax highlighting", function()
+    local diff_hl = require("acp.ui.diff_hl")
+    local CodeHL = require("acp.ui.code_hl")
+
+    local function groups_of(lines)
+      local groups = {}
+      for _, line in ipairs(lines) do
+        for _, seg in ipairs(line.segments or {}) do
+          if type(seg.group) == "string" and seg.group:sub(1, 1) == "@" then
+            groups[seg.group] = true
+          end
+        end
+      end
+      return groups
+    end
+
+    t.it("resolves a language from the file path", function()
+      t.eq("lua", diff_hl.language("/proj/src/a.lua"))
+      t.eq("python", diff_hl.language("/proj/a.py"))
+      -- A filetype is not a parser name; the fence aliases are reused.
+      t.eq("bash", diff_hl.language("/proj/run.sh"))
+      t.eq(nil, diff_hl.language("/proj/a.unknownext"))
+      t.eq(nil, diff_hl.language(""))
+      t.eq(nil, diff_hl.language(nil))
+    end)
+
+    t.it("colours both sides of a lua diff", function()
+      local lines = diff.lines({
+        { path = "/proj/sample.lua", oldText = "local a = 1\n", newText = "-- note\nlocal b = 2\n" },
+      })
+      local groups = groups_of(lines)
+      t.truthy(groups["@keyword"] or groups["@keyword.lua"], "no keyword colour")
+      t.truthy(groups["@comment"] or groups["@comment.lua"], "no comment colour")
+    end)
+
+    t.it("colours context rows from both sides", function()
+      local lines = diff.lines({
+        {
+          path = "/proj/sample.lua",
+          oldText = "local keep = 1\nlocal a = 1\n",
+          newText = "local keep = 1\nlocal b = 2\n",
+        },
+      })
+      -- "local keep = 1" is context: it must be coloured even though it is not
+      -- an added or removed line.
+      local found = false
+      for _, line in ipairs(lines) do
+        if line.text:find("local keep", 1, true) then
+          for _, seg in ipairs(line.segments or {}) do
+            if type(seg.group) == "string" and seg.group:match("^@keyword") then
+              found = true
+            end
+          end
+        end
+      end
+      t.truthy(found, "a context row was left plain")
+    end)
+
+    t.it("skips the sign column and the card margin", function()
+      local lines = diff.lines({ { path = "/proj/a.lua", oldText = "", newText = "local x = 1\n" } })
+      local added
+      for _, line in ipairs(lines) do
+        if line.bg == "AcpDiffAdd" then
+          added = line
+        end
+      end
+      t.truthy(added)
+      -- The diff row is "+ local x = 1" and the syntax offset must skip the
+      -- two-byte sign prefix, so the keyword starts after it.
+      local keyword
+      for _, seg in ipairs(added.segments or {}) do
+        if seg.group and seg.group:match("^@keyword") then
+          keyword = seg
+        end
+      end
+      t.truthy(keyword, "the added row lost its colour")
+      t.eq("local", added.text:sub(keyword.s + 1, keyword.e))
+    end)
+
+    t.it("stays plain for an unknown file type", function()
+      local lines = diff.lines({ { path = "/proj/a.unknownext", oldText = "a\n", newText = "b\n" } })
+      t.eq(0, vim.tbl_count(groups_of(lines)), "an unknown type must not invent colours")
+      -- The diff itself is still there.
+      local text = text_of(lines)
+      t.match("%- a", text)
+      t.match("%+ b", text)
+    end)
+
+    t.it("stays plain when highlighting is disabled", function()
+      local lines = diff.lines(
+        { { path = "/proj/a.lua", oldText = "local a = 1\n", newText = "local b = 1\n" } },
+        { syntax = false }
+      )
+      t.eq(0, vim.tbl_count(groups_of(lines)))
+    end)
+
+    t.it("stays plain past the row ceiling", function()
+      local rows = {}
+      for i = 1, 100 do
+        rows[i] = "local v" .. i .. " = " .. i
+      end
+      local new = table.concat(rows, "\n") .. "\n"
+      local lines = diff.lines(
+        { { path = "/proj/a.lua", oldText = "", newText = new } },
+        { max_rows = 10, max_lines = 200 }
+      )
+      t.eq(0, vim.tbl_count(groups_of(lines)), "a huge diff should not be parsed")
+    end)
+
+    t.it("keeps the diff background under the syntax colours", function()
+      local lines = diff.lines({
+        { path = "/proj/a.lua", oldText = "local a = 1\n", newText = "local b = 1\n" },
+      })
+      local checked = 0
+      for _, line in ipairs(lines) do
+        if line.bg == "AcpDiffAdd" or line.bg == "AcpDiffDelete" then
+          checked = checked + 1
+          -- The line-wide background lives in its own namespace; syntax and the
+          -- sign are inline segments on top of it, so all three must coexist.
+          local sign, syntax = false, false
+          for _, seg in ipairs(line.segments or {}) do
+            if seg.group == "AcpDiffAddSign" or seg.group == "AcpDiffRemoveSign" then
+              sign = true
+            elseif type(seg.group) == "string" and seg.group:sub(1, 1) == "@" then
+              syntax = true
+            end
+          end
+          t.truthy(sign, "the row lost its sign segment: " .. line.text)
+          t.truthy(syntax, "the row lost its syntax segments: " .. line.text)
+        end
+      end
+      t.truthy(checked > 0, "no coloured diff rows")
+    end)
+
+    t.it("reuses the syntax cache across renders", function()
+      CodeHL.clear_cache()
+      local original, calls = vim.treesitter.get_string_parser, 0
+      vim.treesitter.get_string_parser = function(...)
+        calls = calls + 1
+        return original(...)
+      end
+      local ok, err = pcall(function()
+        local entries = { { path = "/proj/cache.lua", oldText = "local a = 1\n", newText = "local b = 1\n" } }
+        diff.lines(entries)
+        local first = calls
+        t.truthy(first > 0, "nothing was parsed")
+        diff.lines(entries)
+        t.eq(first, calls, "the same diff was parsed twice")
+      end)
+      vim.treesitter.get_string_parser = original
+      CodeHL.clear_cache()
+      if not ok then
+        error(err)
+      end
+    end)
+
+    t.it("parses each file of a patch separately", function()
+      local lines = diff.lines({
+        { path = "/proj/a.lua", oldText = "local a = 1\n", newText = "local b = 1\n" },
+        { path = "/proj/a.py", oldText = "x = 1\n", newText = "x = 2\n" },
+      })
+      -- Lua's and Python's captures must both be present; one language would
+      -- mean the sections were merged.
+      local groups = groups_of(lines)
+      local saw_python = false
+      for name in pairs(groups) do
+        if name:find("%.python$") or name == "@variable" then
+          saw_python = true
+        end
+      end
+      t.truthy(groups["@keyword"] or groups["@keyword.lua"], "the lua file lost its colour")
+      t.truthy(saw_python, "the python file was not parsed")
+    end)
+  end)
+
   t.describe("diff card", function()
     local function render(block, over)
       local s = state.new("s", "/proj")

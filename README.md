@@ -137,10 +137,22 @@ require("acp").setup({})
 结构化输入时退回标题；标题栏为了适配面板宽度仍会截断长命令，卡片里的是完整文本。
 命令与输出之间留一个空行，多行命令（heredoc 等）逐行显示。
 
+文件修改的卡片标题会区分 **Edit** 与 **Write**：ACP 本身没有 `write` kind，创建/
+覆盖文件也报成 `edit`，所以插件按工具输入判断——带旧内容（`oldString` / `oldText`
+/ `patchText`）的是 Edit，只有新内容（`content` 等）的是 Write；输入还没到时就退回
+标题里的 `write` / `create`。
+
 `edit` / `write` / `patch` 的卡片展开后直接在卡片里画出 diff：删除行用主题的
 `DiffDelete` 背景、新增行用 `DiffAdd`，`+` / `-` 号单独配色，上下文行沿用卡片底色。
 只有一个 hunk 时不显示 `@@` 头，多个 hunk 才用它分隔；行数超过 `ui.diff.max_lines`
 或体积超过 `ui.diff.max_bytes` 时以一行提示收尾，不会把整个文件倒进 buffer。
+
+diff 行还会按**被编辑文件自己的文件类型**着色：`.lua` 用 Lua 语法、`.py` 用 Python
+语法，颜色取自 treesitter 的 `@capture` 组，所以和你在普通 buffer 里看到的一致。
+红绿背景与语法前景同时生效。实现上只把「要显示的那几行」拼成片段解析，成本与文件
+大小无关（30 行约 0.6 ms，800 行约 13 ms），结果按内容缓存，流式刷新命中缓存几乎零
+成本。文件类型未安装 parser、扩展名未知或行数超过 `ui.diff.max_syntax_rows` 时
+静默退化为纯文本，diff 本身不受影响。设 `ui.diff.syntax = false` 可整体关闭。
 
 这些卡片**默认展开**，因为改动本身就是要看的内容；agent 还在执行时就能看到
 `rawInput` 里的变更，完成后替换成权威的 diff。
@@ -245,6 +257,8 @@ require("acp").setup({
       context = 3,                    -- 每个 hunk 保留的上下文行数
       max_lines = 800,                -- 超过后折叠成一行提示
       max_bytes = 512 * 1024,         -- 超过后不计算 diff
+      syntax = true,                  -- 用被编辑文件的语法着色 diff
+      max_syntax_rows = 800,          -- 超过后跳过着色（保持纯文本）
     },
   },
 

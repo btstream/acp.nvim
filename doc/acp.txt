@@ -108,10 +108,20 @@ q              隐藏面板
 结构化输入时退回标题。标题栏仍会为适配面板宽度截断长命令，卡片内是完整文本。
 多行命令逐行显示，命令与输出之间留一个空行。
 
+文件修改的卡片标题区分 Edit 与 Write。ACP 没有 write kind，创建/覆盖文件也报成
+edit，因此插件按工具输入判断：带旧内容（oldString / oldText / patchText）的是
+Edit，只有新内容（content 等）的是 Write；输入未到达时退回标题里的 write/create。
+
 edit / write / patch 的卡片展开后直接画出 diff：删除行用 DiffDelete 背景，新增
 行用 DiffAdd，+/- 号单独配色，上下文行沿用卡片底色。只有一个 hunk 时不显示 @@
 头，多个 hunk 才用它分隔。超过 ui.diff.max_lines 或 ui.diff.max_bytes 时以一行
 提示收尾，不会把整个文件倒进 buffer。
+
+diff 行按被编辑文件自身的文件类型着色（.lua 用 Lua、.py 用 Python），颜色来自
+treesitter 的 @capture 组，与普通 buffer 一致；红绿背景与语法前景同时生效。只解析
+"要显示的几行"，成本与文件大小无关（30 行约 0.6ms，800 行约 13ms），并按内容缓存，
+流式刷新几乎零成本。缺 parser、扩展名未知或超过 ui.diff.max_syntax_rows 时静默
+退化为纯文本，diff 本身不受影响。ui.diff.syntax = false 可整体关闭。
 
 这些卡片默认展开。agent 仍在执行时就会用 rawInput 里的变更出图，完成后替换为
 权威的 diff。按 <Tab> 手动折叠后，后续更新不会再弹出；从历史加载或重连恢复的
@@ -178,6 +188,8 @@ picker、会话浏览器等自绘浮窗内部的按键不在 keymaps 管辖范�
           context = 3,                  -- 每个 hunk 保留的上下文行数
           max_lines = 800,              -- 超过后折叠成一行提示
           max_bytes = 512 * 1024,       -- 超过后不计算 diff
+          syntax = true,                -- 用被编辑文件的语法着色 diff
+          max_syntax_rows = 800,        -- 超过后跳过着色
         },
       },
       keymaps = {

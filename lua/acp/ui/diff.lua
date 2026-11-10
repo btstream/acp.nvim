@@ -6,6 +6,9 @@
 -- change while the turn is streaming instead of only after it finishes.
 local M = {}
 
+local diff_hl = require("acp.ui.diff_hl")
+local CodeHL = require("acp.ui.code_hl")
+
 -- Byte ceiling before xdiff runs. Past this a "too large" notice is cheaper and
 -- clearer than turning a multi-megabyte rewrite into transcript rows.
 local DEFAULT_MAX_BYTES = 512 * 1024
@@ -206,7 +209,7 @@ end
 ---the other body lines. `bg` is the line-wide highlight group; text rows keep
 ---it `nil` so the card's own background shows through.
 ---@param entries AcpDiffEntry[]
----@param opts {context?: integer, max_lines?: integer, max_bytes?: integer, summary?: string, cwd?: string}|nil
+---@param opts {context?: integer, max_lines?: integer, max_bytes?: integer, summary?: string, cwd?: string, syntax?: boolean, max_rows?: integer}|nil
 ---@return AcpRenderedLine[]
 function M.lines(entries, opts)
   opts = opts or {}
@@ -256,7 +259,23 @@ function M.lines(entries, opts)
   local emitted = 0
   local skipped = 0
 
+  -- Each file is rendered as its own section so syntax highlighting can parse
+  -- one language at a time. A multi-file patch is the only case with more than
+  -- one section.
+  local function flush(section)
+    if section then
+      diff_hl.attach(section.lines, section.file, {
+        enabled = opts.syntax,
+        max_rows = opts.max_rows,
+      })
+    end
+  end
+
+  local section
   for _, item in ipairs(parsed) do
+    flush(section)
+    section = { file = item.entry.path, lines = {} }
+
     local entry = item.entry
     local label = display_path(entry.path, opts.cwd)
     -- The old text is the discriminator, not the source: an edit reported only
@@ -280,7 +299,9 @@ function M.lines(entries, opts)
         return
       end
       emitted = emitted + 1
-      out[#out + 1] = { text = text, bg = bg, segments = segments }
+      local line = { text = text, bg = bg, segments = segments }
+      out[#out + 1] = line
+      section.lines[#section.lines + 1] = line
     end
 
     if shown then
@@ -302,6 +323,7 @@ function M.lines(entries, opts)
       end
     end
   end
+  flush(section)
 
   if skipped > 0 then
     out[#out + 1] = {
@@ -328,6 +350,11 @@ function M.signature(block, opts)
     tostring(opts.context or DEFAULT_CONTEXT),
     tostring(opts.max_lines or DEFAULT_MAX_LINES),
     tostring(opts.max_bytes or DEFAULT_MAX_BYTES),
+    -- Syntax colouring is part of the rendered output and its cache generation
+    -- advances on `ColorScheme`, so toggling or re-theming invalidates the rows.
+    tostring(opts.syntax ~= false),
+    tostring(opts.max_rows or 0),
+    tostring(CodeHL.generation),
     -- Both decide whether the file header is printed, so the cache has to see
     -- them too.
     opts.summary or "",

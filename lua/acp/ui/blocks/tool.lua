@@ -268,6 +268,7 @@ function M.render_tool(block, ctx)
     local opts = vim.tbl_extend("force", {}, ctx.diff or {})
     opts.summary = block.detail
     opts.cwd = ctx.cwd
+    opts.max_rows = (ctx.diff or {}).max_syntax_rows
     local entries = diff_layout.from_block(block)
     if #entries > 0 then
       -- Computing a diff is O(lines) in xdiff, so the result is cached on the
