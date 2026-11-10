@@ -95,6 +95,41 @@ return function(t)
       end
     end)
 
+    t.it("aligns vertical borders with rule junctions at every wrapped row", function()
+      local glyphs = {
+        ["│"] = true,
+        ["┌"] = true,
+        ["┬"] = true,
+        ["┐"] = true,
+        ["├"] = true,
+        ["┼"] = true,
+        ["┤"] = true,
+        ["└"] = true,
+        ["┴"] = true,
+        ["┘"] = true,
+      }
+      for _, width in ipairs({ 32, 45, 68, 90 }) do
+        local lines = render(
+          "| 场景 | 行为 | 验证 |\n|---|:---:|---:|\n"
+            .. "| **单 buffer，保存** | `enew() + delete` → nvim 继续运行 | ✅ [存活](https://example.test) |",
+          width
+        )
+        local expected
+        for _, line in ipairs(lines) do
+          if line.table then
+            local positions = {}
+            for i = 1, #line.text do
+              if glyphs[line.text:sub(i, i + 2)] then
+                positions[#positions + 1] = vim.api.nvim_strwidth(line.text:sub(1, i - 1))
+              end
+            end
+            expected = expected or positions
+            t.eq(expected, positions, "border column differs: " .. line.text)
+          end
+        end
+      end
+    end)
+
     t.it("draws a full grid around every row", function()
       local lines = render("| a | b |\n|---|---|\n| 1 | 2 |\n| 3 | 4 |")
       local out = texts(lines)
@@ -118,11 +153,83 @@ return function(t)
       local lines = render("| a | b |\n|---|---|\n| 1 | 2 |")
       for _, line in ipairs(lines) do
         if line.table then
-          -- The whole row is covered by the border group first, so the frame is
-          -- a single tone; cell groups are layered on top.
+          -- The first segment paints the leading border. Cell styling must
+          -- never spill over any of the vertical border glyphs.
           t.eq("AcpTableBorder", line.segments[1].group, "border group missing on: " .. line.text)
         end
       end
+    end)
+
+    t.it("never conceals already stripped markup or styles a border as cell text", function()
+      local lines = render(
+        "| 场景 | 行为 | 验证 |\n|---|---|---|\n"
+          .. "| 单 buffer，保存 | `enew() + delete` → 只关 buffer，nvim 继续运行 | ✅ nvim 存活，当前是空 buffer |\n"
+          .. "| **未保存修改** | 拒绝关闭 + `vim.notify(WARN)`，不写盘、不丢数据 | [正常](https://example.test/long-url) |",
+        68
+      )
+      local width
+      for _, line in ipairs(lines) do
+        if line.table then
+          width = width or vim.api.nvim_strwidth(line.text)
+          t.eq(width, vim.api.nvim_strwidth(line.text), "grid width differs: " .. line.text)
+          for _, seg in ipairs(line.segments) do
+            t.falsy(seg.conceal, "table markup is already removed from the buffer")
+            t.truthy(seg.s >= 0 and seg.e >= seg.s and seg.e <= #line.text, "segment outside rendered row")
+          end
+          local from = 1
+          while true do
+            local bar = line.text:find("│", from, true)
+            if not bar then
+              break
+            end
+            local painted = false
+            for _, seg in ipairs(line.segments) do
+              if seg.s < bar - 1 + #"│" and seg.e > bar - 1 then
+                t.eq("AcpTableBorder", seg.group, "cell highlight spilled onto a border: " .. line.text)
+                painted = true
+              end
+            end
+            t.truthy(painted, "vertical border has no highlight")
+            from = bar + #"│"
+          end
+        end
+      end
+    end)
+
+    t.it("measures natural column widths using visible cell content", function()
+      local marked = Table.render(
+        Table.parse({ "| **标题** | `name` |", "|---|---|", "| [内容](https://long.test/url) | `abc` |" }),
+        "AcpAssistant",
+        80
+      )
+      local plain =
+        Table.render(Table.parse({ "| 标题 | name |", "|---|---|", "| 内容 | abc |" }), "AcpAssistant", 80)
+      t.eq(texts(plain), texts(marked))
+    end)
+
+    t.it("keeps inline styles on the right visible bytes after whitespace wrapping", function()
+      local lines = Table.render(
+        Table.parse({
+          "| 项目 | 内容 |",
+          "|---|---|",
+          "| a | `alpha bravo charlie delta` **粗体文字** [链接](https://long.test/url) |",
+        }),
+        "AcpAssistant",
+        30
+      )
+      local code, bold, link = {}, {}, {}
+      local groups = { AcpMdCode = code, AcpBold = bold, AcpMdLink = link }
+      for _, line in ipairs(lines) do
+        for _, seg in ipairs(line.segments) do
+          local target = groups[seg.group]
+          if target then
+            target[#target + 1] = line.text:sub(seg.s + 1, seg.e)
+          end
+        end
+      end
+      t.eq("alphabravocharliedelta", table.concat(code):gsub("%s", ""))
+      t.eq("粗体文字", table.concat(bold))
+      t.eq("链接", table.concat(link))
     end)
 
     t.it("applies the alignment of each column", function()
@@ -293,6 +400,122 @@ return function(t)
       local lines = render("just | a | line")
       for _, line in ipairs(lines) do
         t.eq(nil, line.table)
+      end
+    end)
+  end)
+
+  t.describe("streaming tables", function()
+    local source = "Intro\n\n| Name | Value |\n|---|---|\n| alpha | **bold** |\n| beta | `code` |\n\nAfter\n"
+
+    t.it("matches fresh layout at every character including completed row boundaries", function()
+      local cache = {}
+      for i = 1, #source do
+        local prefix = source:sub(1, i)
+        local streamed = blocks.render_text(prefix, "AcpAssistant", 40, cache)
+        local fresh = blocks.render_text(prefix, "AcpAssistant", 40)
+        t.eq(fresh, streamed, "incremental layout lost a table row at byte " .. i)
+      end
+    end)
+
+    t.it("preserves all accumulated rows when source arrives one line at a time", function()
+      local cache, prefix = {}, ""
+      for line in source:gmatch("[^\n]*\n") do
+        prefix = prefix .. line
+        t.eq(
+          blocks.render_text(prefix, "AcpAssistant", 40),
+          blocks.render_text(prefix, "AcpAssistant", 40, cache),
+          "completed source rows must not vanish"
+        )
+      end
+      t.truthy(joined(cache.lines):find("alpha", 1, true))
+      t.truthy(joined(cache.lines):find("beta", 1, true))
+    end)
+
+    t.it("matches fresh layout for CJK character chunks and multiple tables", function()
+      local full = "正文\n| **标题** | 内容 |\n|---|---|\n| 中文 | `代码` |\n\n"
+        .. "中间\n| a | b |\n|---|---|\n| 链接 | [标签](https://example.test) |\n\n结束"
+      local cache, prefix = {}, ""
+      for i = 0, vim.fn.strchars(full) - 1 do
+        prefix = prefix .. vim.fn.strcharpart(full, i, 1)
+        t.eq(
+          blocks.render_text(prefix, "AcpAssistant", 35),
+          blocks.render_text(prefix, "AcpAssistant", 35, cache),
+          "CJK stream differs at character " .. i
+        )
+      end
+    end)
+
+    t.it("reuses a completed table when subsequent prose streams", function()
+      local prefix = "Intro\n| a | b |\n|---|---|\n| alpha | beta |\n\n"
+      local cache = {}
+      blocks.render_text(prefix, "AcpAssistant", 40, cache)
+      local stable_rule = cache.lines[2]
+      local calls, original = 0, Table.render
+      Table.render = function(...)
+        calls = calls + 1
+        return original(...)
+      end
+      local ok, err = pcall(function()
+        for i = 1, 20 do
+          prefix = prefix .. "x"
+          blocks.render_text(prefix, "AcpAssistant", 40, cache)
+        end
+      end)
+      Table.render = original
+      if not ok then
+        error(err)
+      end
+      t.eq(0, calls, "a closed table should stay in the stable prefix")
+      t.truthy(stable_rule == cache.lines[2])
+    end)
+
+    t.it("matches a fresh transcript and extmarks as a mixed CJK table grows", function()
+      local Chat = require("acp.ui.chat")
+      local cfg = require("acp.config").defaults
+      local session = state.new("stream-table", "/proj")
+      session:track_changes()
+      local incremental, fresh = Chat.new({ config = cfg }), Chat.new({ config = cfg })
+      incremental.width, fresh.width = 45, 45
+      incremental:set_session(session)
+      local chunks = {
+        "| 场景 | 行为 | 验证 |\n",
+        "|---|---|---|\n",
+        "| 单 buffer，保存 | `enew()",
+        " + delete` → 只关 buffer，nvim 继续运行 | ✅ nvim 存活 |\n",
+        "| 未保存修改 | **拒绝关闭** + `vim.notify(WARN)` | [正常](https://test.local) |\n",
+        "\n表格之后的正文\n",
+      }
+      local function marks(chat)
+        local out = {}
+        for _, mark in
+          ipairs(
+            vim.api.nvim_buf_get_extmarks(chat.buf, vim.api.nvim_get_namespaces().acp_chat, 0, -1, { details = true })
+          )
+        do
+          local d = mark[4]
+          out[#out + 1] = { mark[2], mark[3], d.end_row, d.end_col, d.hl_group, d.conceal }
+        end
+        table.sort(out, function(a, b)
+          return vim.inspect(a) < vim.inspect(b)
+        end)
+        return out
+      end
+      local ok, err = pcall(function()
+        for _, chunk in ipairs(chunks) do
+          session:append_text("agent", chunk, "table")
+          incremental:render()
+          -- Clear the reference so it cannot reuse a previous layout or marks.
+          fresh:set_session(nil)
+          fresh:set_session(session)
+          t.eq(fresh:transcript(), incremental:transcript())
+          t.eq(fresh.meta, incremental.meta)
+          t.eq(marks(fresh), marks(incremental))
+        end
+      end)
+      incremental:destroy()
+      fresh:destroy()
+      if not ok then
+        error(err, 0)
       end
     end)
   end)

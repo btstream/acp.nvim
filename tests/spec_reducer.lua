@@ -1,6 +1,7 @@
 return function(t)
   local state = require("acp.session.state")
   local reducer = require("acp.session.reducer")
+  local presenter = require("acp.ui.presenter")
 
   t.describe("reducer", function()
     t.it("streams agent chunks into one block", function()
@@ -124,7 +125,7 @@ return function(t)
           options = { { value = "code", name = "Code" } },
         },
       }
-      local model, mode = reducer.toolbar_labels(s)
+      local model, mode = presenter.toolbar_labels(s)
       t.eq("Two", model)
       t.eq("Code", mode)
     end)
@@ -142,7 +143,7 @@ return function(t)
           },
         },
       }
-      local model = reducer.toolbar_labels(s)
+      local model = presenter.toolbar_labels(s)
       t.eq("DeepSeek V4.1 Flash", model)
     end)
 
@@ -157,16 +158,16 @@ return function(t)
           options = { { value = "openai/gpt-5", name = "GPT-5" } },
         },
       }
-      local model = reducer.toolbar_labels(s)
+      local model = presenter.toolbar_labels(s)
       t.eq("GPT-5", model)
     end)
 
     t.it("shortens only the first provider segment", function()
-      t.eq("b/c", reducer.short_model_name("a/b/c"))
-      t.eq("DeepSeek V4.1 Flash", reducer.short_model_name("commandcode/DeepSeek V4.1 Flash"))
-      t.eq("GPT-5", reducer.short_model_name("GPT-5"))
-      t.eq(nil, reducer.short_model_name(nil))
-      t.eq("", reducer.short_model_name(""))
+      t.eq("b/c", presenter.short_model_name("a/b/c"))
+      t.eq("DeepSeek V4.1 Flash", presenter.short_model_name("commandcode/DeepSeek V4.1 Flash"))
+      t.eq("GPT-5", presenter.short_model_name("GPT-5"))
+      t.eq(nil, presenter.short_model_name(nil))
+      t.eq("", presenter.short_model_name(""))
     end)
   end)
 end

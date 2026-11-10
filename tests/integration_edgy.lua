@@ -160,6 +160,31 @@ check("conversation works under edgy", function()
   assert(text:find("Hello from the mock agent", 1, true), "missing reply")
 end)
 
+check("idle transcript follows edgy width changes without a session update", function()
+  wait(function()
+    return st.session.status == "idle"
+  end, 8000, "idle before resize")
+  local win = st.chat.win
+  local managed = assert(edgy.get_win(win), "chat is not managed by edgy")
+  local original = vim.api.nvim_win_get_width(win)
+  managed:resize("width", 6)
+  wait(function()
+    return vim.api.nvim_win_get_width(win) ~= original
+  end, 2000, "edgy resize")
+  vim.api.nvim_exec_autocmds("WinResized", { modeline = false })
+  wait(function()
+    return st.chat.width == math.max(20, vim.api.nvim_win_get_width(win) - 2) and not st.chat.resize_timer
+  end, 2000, "edgy width reflow")
+  assert(not st.chat.pending_new, "resize created a false new-output badge")
+  managed:resize("width")
+  require("edgy.layout").update()
+  vim.wait(100)
+  vim.api.nvim_exec_autocmds("WinResized", { modeline = false })
+  wait(function()
+    return st.chat.width == math.max(20, vim.api.nvim_win_get_width(win) - 2) and not st.chat.resize_timer
+  end, 2000, "edgy width restore")
+end)
+
 -- Closing only the composer must not be re-created by acp.
 vim.api.nvim_win_close(st.input.win, true)
 vim.wait(200)

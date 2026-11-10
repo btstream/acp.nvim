@@ -21,8 +21,8 @@ if not st.session then
   return
 end
 
-local reducer = require("acp.session.reducer")
-local model, mode = reducer.toolbar_labels(st.session)
+local presenter = require("acp.ui.presenter")
+local model, mode = presenter.toolbar_labels(st.session)
 print("MODEL:", model, "| MODE:", mode)
 print("OPTIONS:", #(st.session.config_options or {}))
 

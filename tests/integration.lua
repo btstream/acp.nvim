@@ -120,6 +120,26 @@ check("toolbar reflects an idle session after the turn", function()
   assert(res.str:find(ic.status_idle, 1, true), "toolbar did not return to idle: " .. tostring(res.str))
 end)
 
+check("idle transcript reflows after a native split resize", function()
+  local win = st.chat.win
+  local original = vim.api.nvim_win_get_width(win)
+  vim.api.nvim_win_set_width(win, original + 6)
+  local resized = vim.api.nvim_win_get_width(win)
+  assert(resized ~= original, "the chat split did not change width")
+  -- Headless Neovim has no attached UI, so explicitly dispatch the event that
+  -- a real UI emits after resizing. Do not send any session/content update.
+  vim.api.nvim_exec_autocmds("WinResized", { modeline = false })
+  wait(function()
+    return st.chat.width == math.max(20, resized - 2) and not st.chat.resize_timer
+  end, 2000, "native width reflow")
+  assert(not st.chat.pending_new, "resize created a false new-output badge")
+  vim.api.nvim_win_set_width(win, original)
+  vim.api.nvim_exec_autocmds("WinResized", { modeline = false })
+  wait(function()
+    return st.chat.width == math.max(20, vim.api.nvim_win_get_width(win) - 2) and not st.chat.resize_timer
+  end, 2000, "native width restore")
+end)
+
 -- Queuing while running.
 controller.submit("slow one", {})
 controller.submit("queued message", {})

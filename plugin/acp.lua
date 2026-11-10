@@ -31,13 +31,13 @@ local function setup()
     elseif sub == "sessions" then
       acp.pick_session()
     elseif sub == "delete" then
-      require("acp.controller").delete_session_flow()
+      acp.delete_session()
     elseif sub == "reconnect" then
-      require("acp.controller").reconnect()
+      acp.reconnect()
     elseif sub == "disconnect" then
-      require("acp.controller").disconnect()
+      acp.disconnect()
     elseif sub == "permission" then
-      require("acp.controller").show_pending_permission()
+      acp.show_permission()
     elseif sub == "model" then
       acp.pick_model()
     elseif sub == "mode" then
@@ -54,14 +54,14 @@ local function setup()
   define("AcpLog", function()
     local m = api()
     if m then
-      require("acp.controller").show_log()
+      m.show_log()
     end
   end, "open the log file")
 
   define("AcpDebug", function()
     local m = api()
     if m then
-      require("acp.controller").debug_state()
+      m.debug_state()
     end
   end, "print controller state")
 end

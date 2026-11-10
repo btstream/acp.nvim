@@ -104,4 +104,14 @@ function M.health()
   return require("acp.health").check()
 end
 
+---Open the log file.
+function M.show_log()
+  ensure().show_log()
+end
+
+---Print controller diagnostics.
+function M.debug_state()
+  ensure().debug_state()
+end
+
 return M

@@ -139,7 +139,7 @@ end
 
 out[#out + 1] = ""
 out[#out + 1] = "=== composer toolbar (width 60) ==="
-local model, mode = require("acp.session.reducer").toolbar_labels(session)
+local model, mode = require("acp.ui.presenter").toolbar_labels(session)
 local tb = toolbar.render({
   mode = mode,
   model = model,

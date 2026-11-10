@@ -40,5 +40,8 @@ require("tests.spec_subagent")(t)
 require("tests.spec_audit")(t)
 require("tests.spec_performance")(t)
 require("tests.spec_lifecycle")(t)
+require("tests.spec_modules")(t)
+require("tests.spec_chrome_lifecycle")(t)
+require("tests.spec_resize")(t)
 
 t.run()

@@ -9,16 +9,40 @@ transport/process + framing
   └─ 有界、有序、按时间片分发完整协议行
        └─ protocol/client + jsonrpc
             ├─ RPC 匹配、超时、初始化与权限协议
-            └─ controller：路由通知与用户操作
+            └─ controller：装配、选择与跨模块协调
+                 ├─ app/connection：client 创建、启动、断连与重连
+                 ├─ app/sessions：创建、加载、恢复、删除与会话浏览
+                 ├─ app/catalog：会话列表、标题与 cwd 缓存
+                 ├─ app/prompts：发送校验、本地队列与回合结算
+                 ├─ app/permissions：权限策略与交互
+                 ├─ app/options：模型、模式与配置选择
                  ├─ tasks：任务代际、身份校验与取消
                  ├─ session/runtime：会话、重放事务、outbox、LRU
                  │    └─ session/state + reducer：本地投影及变更版本
-                 ├─ ui/chat + blocks：转录与私有渲染缓存
+                 ├─ ui/panel + chrome：视图、窗口事件、winbar 与动画
+                 ├─ ui/chat + transcript + buffer_renderer
+                 │    └─ ui/blocks + text：转录内容与排版
                  └─ ui/input + storage/drafts：编辑草稿及持久化
 ```
 
-Controller 仍负责布局与 UI 协调，但不再直接实现队列字节计数、出队预留、历史提交和淘汰。
-`state()` 是诊断接口，返回值应视为只读，不应绕过运行时修改内部表。
+Controller 只保留公开入口、会话选择、服务装配和跨模块协调。业务流程由
+`app/*` 承担；展示计算与编辑器交互由 `ui/*` 承担。
+
+- `app/*` 不反向依赖 `acp.controller`，也不直接操作 Chat/Input；激活会话通过回调交给控制器。
+- `ui/transcript` 只做 block → 行/元数据/位置映射；`ui/buffer_renderer` 只做 buffer 差异写入、高亮与背景 extmark。
+- `ui/chat` 监听窗口和编辑器 resize，宽度变化经 100ms 防抖后重排；`ui/viewport` 用
+  block/行偏移锚点保留阅读位置。布局刷新不产生新消息标记，流式更新不等待 resize。
+- `ui/chrome` 拥有 spinner 计时器与重绘合并；`ui/panel` 拥有窗口与窗口事件。
+- 动画按当前连接、会话状态及输入窗口可见性同步，隐藏后重开会恢复，后台生成不启动
+  隐藏窗口的 timer。销毁 chrome/panel 会释放资源并使其已排队的 UI 回调失效。
+- 快捷键与补全在创建 buffer 时绑定一次，窗口重开或缺失视图恢复不重新绑定。
+- 断连取消任务后重置 Catalog 的查询合并状态，但保留元信息缓存；重新 setup 则清空
+  标题及 cwd 缓存，避免混用不同 Agent/项目的数据。
+- `session/runtime` 仍是重放事务、outbox 与 LRU 的唯一实现者，`app/sessions` 只负责编排。
+
+`state()` 是诊断接口，返回值应视为只读，不应绕过运行时修改内部表。诊断视图中的
+`titles`、`session_cwds` 与 `pending_permissions` 仍指向控制器持有的表，服务通过 getter
+读取，避免测试或集成写入后与服务内部副本分叉。
 
 ## 必须保持的不变量
 
