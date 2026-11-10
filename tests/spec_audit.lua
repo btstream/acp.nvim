@@ -76,7 +76,8 @@ return function(t)
     end)
     t.it("honours the configured close key in both panel buffers", function()
       local controller = require("acp.controller")
-      controller.setup({ keymaps = { close_panel = "Q" } })
+      -- `close_panel` exists in both views, so it has to be set in both.
+      controller.setup({ keymaps = { input = { close_panel = "Q" }, chat = { close_panel = "Q" } } })
       local state = controller.state()
       state.connection = "starting" -- Exercise the UI without spawning an agent.
       controller.open()

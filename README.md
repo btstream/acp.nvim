@@ -95,37 +95,69 @@ require("acp").setup({})
 
 ### 输入区
 
-| 按键 | 说明 |
-|---|---|
-| `<C-s>` | 发送；回合进行中且输入框为空时改为中止 |
-| `<C-c>`（普通模式） | 中止当前回合 |
-| `q`（普通模式） | 隐藏面板（不中断会话） |
-| `L`（普通模式） | 历史会话 |
-| `<C-x><C-u>` | 补全 `/命令` 或 `@文件` |
-| `@path/to/file` | 发送时自动作为附件 |
-| 点击 winbar 的模型 / 模式 | 打开选择器 |
-| `<M-m>` / `<M-b>` | 输入时选择模型 / 模式 |
-| `M` / `m`（普通模式） | 选择模型 / 模式 |
+下表的按键都是默认值，全部可以通过 `keymaps.input` 修改。
+
+| 按键 | 配置字段 | 说明 |
+|---|---|---|
+| `<C-s>` | `send` | 发送；回合进行中且输入框为空时改为中止 |
+| `<C-c>`（普通模式） | `cancel` | 中止当前回合 |
+| `q`（普通模式） | `close_panel` | 隐藏面板（不中断会话） |
+| `<C-]>`（普通模式） | `add_selection` | 附加当前选区 |
+| `M` / `<M-m>` | `pick_model` | 普通模式 / 输入时选择模型 |
+| `m` / `<M-b>` | `pick_mode` | 普通模式 / 输入时选择模式 |
+| `L`（普通模式） | `pick_session` | 历史会话 |
+| `<C-x><C-u>` | — | 补全 `/命令` 或 `@文件`（Vim 内置触发，不受 `keymaps` 控制） |
+| `@path/to/file` | — | 发送时自动作为附件 |
+| 点击 winbar 的模型 / 模式 | — | 打开选择器（鼠标区域，不是键位） |
 
 ### 转录区
 
-| 按键 | 说明 |
-|---|---|
-| `i` / `<C-s>` | 聚焦输入框 |
-| `<CR>` | 打开光标所在位置的文件 |
-| `<Tab>` | 展开 / 折叠工具调用或思考块；不可折叠时聚焦输入框 |
-| `[b` / `]b` | 上一个 / 下一个消息块 |
-| `G` / `gg` | 最新 / 最早 |
-| `S` | 附加当前选区 |
-| `F` | 附加当前文件 |
-| `R` | 附加诊断 |
-| `M` / `m` | 选择模型 / 模式 |
-| `<C-n>` | 新建会话 |
-| `L` | 历史会话 |
-| `g?` | 帮助 |
-| `q` | 隐藏面板 |
+同样，全部可以通过 `keymaps.chat` 修改。
+
+| 按键 | 配置字段 | 说明 |
+|---|---|---|
+| `i` / `<C-s>` | `focus_input` | 聚焦输入框 |
+| `<CR>` | `open_location` | 打开光标所在位置的文件 |
+| `<Tab>` | `toggle_block` | 展开 / 折叠工具调用或思考块；不可折叠时聚焦输入框 |
+| `[b` / `]b` | `prev_block` / `next_block` | 上一个 / 下一个消息块 |
+| `G` / `gg` | `scroll_bottom` / `scroll_top` | 最新 / 最早 |
+| `S` | `add_selection` | 附加当前选区 |
+| `F` | `add_file` | 附加当前文件 |
+| `R` | `add_diagnostics` | 附加诊断 |
+| `M` / `m` | `pick_model` / `pick_mode` | 选择模型 / 模式 |
+| `<C-n>` | `new_session` | 新建会话 |
+| `L` | `pick_session` | 历史会话 |
+| `g?` | `help` | 帮助（列表按当前配置生成） |
+| `q` | `close_panel` | 隐藏面板 |
 
 所有按键都是 buffer-local，不会污染全局映射。
+
+配置示例：
+
+```lua
+require("acp").setup({
+  keymaps = {
+    input = {
+      send = "<C-CR>",                       -- 单个键
+      pick_model = { n = "M", i = "<M-m>" }, -- 按模式分别指定
+    },
+    chat = {
+      focus_input = { "i", "<C-s>" },        -- 多个键
+      toggle_block = "<C-t>",
+      scroll_top = false,                    -- 关闭该绑定
+    },
+  },
+})
+```
+
+每个字段接受四种写法：单个键、键的列表、`{ n = ..., i = ... }` 模式表、`false`
+（关闭）。配置里只会绑定该动作实际声明的模式，例如转录区没有输入模式，写成
+`pick_model = { n = "T", i = "<M-t>" }` 时 `i` 那一项会被忽略。两个动作在同一模式
+抢同一个键会在 `setup()` 时报错（`<Tab>` 与 `<C-i>`、`<CR>` 与 `<C-m>` 视为同一个键），
+而不是让后一个悄悄生效。
+
+按键必须写在其所属视图下。`keymaps.send` 这类扁平写法会直接报错，并在报错里指出
+应该写成 `keymaps.input.send`——静默忽略一个写错位置的按键最难排查。
 
 ## 配置
 
@@ -193,14 +225,33 @@ require("acp").setup({
   },
 
   keymaps = {
-    send = "<C-s>",
-    cancel = "<C-c>",
-    close_panel = "q",
-    focus_input = "i",
-    open_location = "<CR>",
-    prev_block = "[b",
-    next_block = "]b",
-    toggle_block = "<Tab>",
+    input = {
+      send = "<C-s>",
+      cancel = "<C-c>",
+      close_panel = "q",
+      add_selection = "<C-]>",
+      pick_model = { n = "M", i = "<M-m>" },
+      pick_mode = { n = "m", i = "<M-b>" },
+      pick_session = "L",
+    },
+    chat = {
+      close_panel = "q",
+      focus_input = { "i", "<C-s>" },
+      toggle_block = "<Tab>",
+      prev_block = "[b",
+      next_block = "]b",
+      open_location = "<CR>",
+      help = "g?",
+      add_selection = "S",
+      add_file = "F",
+      add_diagnostics = "R",
+      pick_model = "M",
+      pick_mode = "m",
+      new_session = "<C-n>",
+      pick_session = "L",
+      scroll_bottom = "G",
+      scroll_top = "gg",
+    },
   },
 
   permissions = {

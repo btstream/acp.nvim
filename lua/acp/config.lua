@@ -137,15 +137,52 @@ M.defaults = {
     },
   },
 
+  -- Buffer-local mappings for the two views.
+  --
+  -- Each view lists its own actions because the same action can want a
+  -- different key in the composer and in the transcript (`add_selection` is
+  -- `<C-]>` while typing but `S` while reading). A value is one of:
+  --
+  --   "<key>"                 one key, bound to every mode the action declares
+  --   { "<key>", "<key>" }    several keys
+  --   { n = "..", i = ".." }  per-mode keys
+  --   false                   leave the action unbound
+  --
+  -- See `acp.ui.keymaps`: it owns which modes each action declares, and
+  -- `config.validate` rejects keys it cannot use.
   keymaps = {
-    send = "<C-s>",
-    cancel = "<C-c>",
-    close_panel = "q",
-    focus_input = "i",
-    open_location = "<CR>",
-    prev_block = "[b",
-    next_block = "]b",
-    toggle_block = "<Tab>",
+    input = {
+      -- "<C-s>" while typing, and as the stop key when the composer is empty.
+      send = "<C-s>",
+      cancel = "<C-c>",
+      close_panel = "q",
+      add_selection = "<C-]>",
+      -- Normal mode uses a letter, insert mode an Alt combination. `<C-m>` must
+      -- not be used: in a terminal it is the same key as <CR>.
+      pick_model = { n = "M", i = "<M-m>" },
+      pick_mode = { n = "m", i = "<M-b>" },
+      pick_session = "L",
+    },
+    chat = {
+      close_panel = "q",
+      -- Both keys focus the composer: `i` is the Vim habit, `<C-s>` the one
+      -- shared with the composer's own send key.
+      focus_input = { "i", "<C-s>" },
+      toggle_block = "<Tab>",
+      prev_block = "[b",
+      next_block = "]b",
+      open_location = "<CR>",
+      help = "g?",
+      add_selection = "S",
+      add_file = "F",
+      add_diagnostics = "R",
+      pick_model = "M",
+      pick_mode = "m",
+      new_session = "<C-n>",
+      pick_session = "L",
+      scroll_bottom = "G",
+      scroll_top = "gg",
+    },
   },
 
   permissions = {
@@ -247,6 +284,7 @@ end
 ---@param cfg table
 ---@return table
 function M.validate(cfg)
+  M.normalize_keymaps(cfg)
   for _, key in ipairs({ "max_block_bytes", "max_session_bytes", "max_total_bytes", "max_queue_bytes" }) do
     check_number(cfg.memory[key], 1024, 1024 * 1024 * 1024, "memory." .. key)
   end
@@ -343,6 +381,151 @@ function M.validate(cfg)
   end
 
   return cfg
+end
+
+---Validate one keymaps entry.
+---
+---A value is a key, a list of keys, or a per-mode map of keys; `false` disables
+---the binding. Anything else is a configuration mistake worth reporting: an
+---unmapped action silently doing nothing is much harder to debug than an error
+---at setup time.
+---@param value any
+---@param path string
+local function check_keymap_value(value, path)
+  if value == false or value == nil then
+    return
+  end
+  local function key(lhs, where)
+    if type(lhs) ~= "string" then
+      fail("%s%s must be a string, got %s", path, where, type(lhs))
+    end
+    if lhs ~= "" and not pcall(vim.keycode, lhs) then
+      fail("%s%s is not a valid key notation: %s", path, where, lhs)
+    end
+  end
+  if type(value) == "string" then
+    key(value, "")
+    return
+  end
+  if type(value) ~= "table" then
+    fail("%s must be a string, a list of strings, a mode map or false, got %s", path, type(value))
+  end
+  if vim.islist(value) then
+    for i, lhs in ipairs(value) do
+      key(lhs, "[" .. i .. "]")
+    end
+    return
+  end
+  for mode, keys in pairs(value) do
+    if not vim.tbl_contains({ "n", "i", "v", "x", "t", "c" }, mode) then
+      fail("%s has an unknown mode %q", path, mode)
+    end
+    if type(keys) == "string" then
+      key(keys, "." .. mode)
+    elseif type(keys) == "table" and vim.islist(keys) then
+      for i, lhs in ipairs(keys) do
+        key(lhs, "." .. mode .. "[" .. i .. "]")
+      end
+    else
+      fail("%s.%s must be a string or a list of strings", path, mode)
+    end
+  end
+end
+
+---Validate every entry of a resolved `keymaps` table.
+---
+---Expects a merged configuration, so every action's value in a view table is
+---already the resolved one.
+---@param cfg table
+function M.normalize_keymaps(cfg)
+  local keymaps = cfg.keymaps
+  if type(keymaps) ~= "table" then
+    fail("keymaps must be a table")
+  end
+
+  -- Lazy require: `acp.config` is loaded very early, and the action table lives
+  -- with the code that installs the mappings.
+  local ok, layout = pcall(require, "acp.ui.keymaps")
+  if not ok then
+    fail("unable to load acp.ui.keymaps: %s", tostring(layout))
+  end
+
+  local views = {}
+  local view_list = {}
+  for view in pairs(layout.actions) do
+    views[view] = true
+    view_list[#view_list + 1] = view
+  end
+  table.sort(view_list)
+
+  -- Actions are grouped by view, so a bare `keymaps.send` is a mistake: it has
+  -- to say which view it belongs to. Naming the owning view turns "unknown
+  -- entry" into an actionable message.
+  for name in pairs(keymaps) do
+    if not views[name] then
+      local owners = {}
+      for view, actions in pairs(layout.actions) do
+        for _, spec in ipairs(actions) do
+          if spec.action == name then
+            owners[#owners + 1] = view
+          end
+        end
+      end
+      if #owners > 0 then
+        fail(
+          "keymaps.%s must be nested under a view: %s",
+          name,
+          table.concat(
+            vim.tbl_map(function(view)
+              return "keymaps." .. view .. "." .. name
+            end, owners),
+            " / "
+          )
+        )
+      end
+      fail("unknown keymaps entry %q; expected one of: %s", name, table.concat(view_list, ", "))
+    end
+  end
+
+  for view in pairs(views) do
+    local entries = keymaps[view]
+    if entries == nil then
+      keymaps[view] = {}
+    elseif type(entries) ~= "table" then
+      fail("keymaps.%s must be a table", view)
+    else
+      local known = {}
+      for _, spec in ipairs(layout.view_actions(view)) do
+        known[spec.action] = true
+      end
+      for action, value in pairs(entries) do
+        if not known[action] then
+          fail("unknown keymaps.%s action %q", view, action)
+        end
+        check_keymap_value(value, "keymaps." .. view .. "." .. action)
+      end
+
+      -- Two actions on one key in the same mode: the later mapping would win
+      -- silently, so say which pair clashes instead.
+      for _, claim in pairs(layout.claims(view, entries)) do
+        if claim.conflict then
+          if claim.lhs == claim.conflict_lhs then
+            fail("keymaps.%s: %s and %s both use %s", view, claim.action, claim.conflict, claim.lhs)
+          end
+          -- Different spellings of one key (`<Tab>` and `<C-i>`): name both so
+          -- the user can see why they clash.
+          fail(
+            "keymaps.%s: %s (%s) and %s (%s) are the same key",
+            view,
+            claim.action,
+            claim.lhs,
+            claim.conflict,
+            claim.conflict_lhs
+          )
+        end
+      end
+    end
+  end
 end
 
 ---Resolve the panel width in columns for a total `total` width.

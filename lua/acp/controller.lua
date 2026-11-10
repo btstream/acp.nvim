@@ -319,7 +319,7 @@ end
 
 local function set_input_keymaps()
   keymaps.attach_input(S.input.buf, {
-    keymaps = cfg().keymaps,
+    keymaps = cfg().keymaps.input,
     get_session = function()
       return S.session
     end,
@@ -355,7 +355,7 @@ end
 
 local function set_chat_keymaps()
   keymaps.attach_chat(S.chat.buf, {
-    keymaps = cfg().keymaps,
+    keymaps = cfg().keymaps.chat,
     on_hide = function()
       M.hide()
     end,
@@ -807,7 +807,7 @@ function M.copy_transcript()
 end
 
 function M.show_help()
-  windows.show_help()
+  windows.show_help(S.config and S.config.keymaps or nil)
 end
 
 function M.show_log()

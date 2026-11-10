@@ -44,15 +44,24 @@ acp.nvim 是一个 Neovim 原生的 Agent Client Protocol 客户端。
 ==============================================================================
 3. 输入区                                                    *acp-composer*
 
+以下均为默认值，可用 keymaps.input 修改（见 |acp-keymaps|）。
+
 <C-s>          发送；回合进行中且输入为空时改为中止
+               keymaps.input.send
 <C-c>          中止当前回合（普通模式）
+               keymaps.input.cancel
 q              隐藏面板（普通模式）
+               keymaps.input.close_panel
+<C-]>          附加当前选区（普通模式）
+               keymaps.input.add_selection
+<M-m> / M      切换模型（输入 / 普通模式）
+               keymaps.input.pick_model
+<M-b> / m      切换模式（输入 / 普通模式）
+               keymaps.input.pick_mode
 L              历史会话（普通模式）
-<C-x><C-u>     补全 /命令 与 @文件
+               keymaps.input.pick_session
+<C-x><C-u>     补全 /命令 与 @文件（Vim 内置触发，不可配）
 @path/to/file  发送时自动展开为附件
-<M-m>          切换模型（输入模式）
-<M-b>          切换模式（输入模式）
-M / m          切换模型 / 模式（普通模式）
 
 winbar 左侧显示模式徽标、模型名与可选用量；右侧显示状态图标/动画与队列数量。
 模型名不显示 provider 前缀，选择器仍保留完整名称。模式徽标和模型名可以点击。
@@ -63,24 +72,63 @@ winbar 左侧显示模式徽标、模型名与可选用量；右侧显示状态�
 ==============================================================================
 4. 转录区                                                  *acp-transcript*
 
-i / <C-s>      聚焦输入区
-<CR>           打开光标所在位置的文件
-<Tab>          展开或折叠工具/思考块；不可折叠时聚焦输入区
-[b / ]b        上一个 / 下一个消息块
-G / gg         最新 / 最早
-S              附加当前选区
-F              附加当前文件
-R              附加诊断
-M / m          选择模型 / 模式
-<C-n>          新建会话
-L              历史会话
-g?             帮助
-q              隐藏面板
+以下均为默认值，可用 keymaps.chat 修改（见 |acp-keymaps|）。
 
-所有按键都是 buffer-local。
+i / <C-s>      聚焦输入区
+               keymaps.chat.focus_input
+<CR>           打开光标所在位置的文件
+               keymaps.chat.open_location
+<Tab>          展开或折叠工具/思考块；不可折叠时聚焦输入区
+               keymaps.chat.toggle_block
+[b / ]b        上一个 / 下一个消息块
+               keymaps.chat.prev_block / keymaps.chat.next_block
+G / gg         最新 / 最早
+               keymaps.chat.scroll_bottom / keymaps.chat.scroll_top
+S              附加当前选区
+               keymaps.chat.add_selection
+F              附加当前文件
+               keymaps.chat.add_file
+R              附加诊断
+               keymaps.chat.add_diagnostics
+M / m          选择模型 / 模式
+               keymaps.chat.pick_model / keymaps.chat.pick_mode
+<C-n>          新建会话
+               keymaps.chat.new_session
+L              历史会话
+               keymaps.chat.pick_session
+g?             帮助（内容按当前配置生成）
+               keymaps.chat.help
+q              隐藏面板
+               keymaps.chat.close_panel
+
+所有按键都是 buffer-local，不会污染全局映射。
 
 ==============================================================================
-5. 配置                                                      *acp-config*
+5. 键位配置                                                *acp-keymaps*
+
+    require("acp").setup({
+      keymaps = {
+        input = { send = "<C-CR>" },                        -- 单个键
+        chat = {
+          focus_input = { "i", "<C-s>" },                   -- 多个键
+          toggle_block = "<C-t>",
+          scroll_top = false,                               -- 关闭该绑定
+        },
+      },
+    })
+
+每个字段接受：单个键、键的列表、{ n = "...", i = "..." } 模式表，或 false。
+只会绑定该动作实际声明的模式；转录区没有输入模式，因此那里写成
+pick_model = { n = "T", i = "<M-t>" } 时 i 会被忽略。
+两个动作在同一模式抢同一个键会在 setup() 时报错；<Tab> 与 <C-i>、<CR> 与 <C-m>
+视为同一个键。按键必须写在所属视图下：直接写 keymaps.send 会报错，并提示
+应写成 keymaps.input.send。
+
+可配置的字段与默认值见 |acp-composer| 与 |acp-transcript| 两张表。
+picker、会话浏览器等自绘浮窗内部的按键不在 keymaps 管辖范围内。
+
+==============================================================================
+6. 配置                                                      *acp-config*
 
     require("acp").setup({
       agent = "opencode",
@@ -113,14 +161,33 @@ q              隐藏面板
         separator = { form = "dot" },   -- "dot" | "turn" | "off"
       },
       keymaps = {
-        send = "<C-s>",
-        cancel = "<C-c>",
-        close_panel = "q",
-        focus_input = "i",
-        open_location = "<CR>",
-        prev_block = "[b",
-        next_block = "]b",
-        toggle_block = "<Tab>",
+        input = {
+          send = "<C-s>",
+          cancel = "<C-c>",
+          close_panel = "q",
+          add_selection = "<C-]>",
+          pick_model = { n = "M", i = "<M-m>" },
+          pick_mode = { n = "m", i = "<M-b>" },
+          pick_session = "L",
+        },
+        chat = {
+          close_panel = "q",
+          focus_input = { "i", "<C-s>" },
+          toggle_block = "<Tab>",
+          prev_block = "[b",
+          next_block = "]b",
+          open_location = "<CR>",
+          help = "g?",
+          add_selection = "S",
+          add_file = "F",
+          add_diagnostics = "R",
+          pick_model = "M",
+          pick_mode = "m",
+          new_session = "<C-n>",
+          pick_session = "L",
+          scroll_bottom = "G",
+          scroll_top = "gg",
+        },
       },
       permissions = { prompt = "select" },
       notices = true,
@@ -139,7 +206,7 @@ q              隐藏面板
 可用字段与完整说明见 README。
 
 ==============================================================================
-6. 与 edgy.nvim 集成                                          *acp-edgy*
+7. 与 edgy.nvim 集成                                          *acp-edgy*
 
     require("acp").setup({ layout = { backend = "external" } })
 
@@ -187,7 +254,7 @@ views() 返回 { chat = ..., input = ... }，不能直接赋给 opts.right；使
 的 layout.position。
 
 ==============================================================================
-7. 状态栏                                                  *acp-statusline*
+8. 状态栏                                                  *acp-statusline*
 
 acp.nvim 不修改 'statusline' 和 'laststatus'。交互信息全部放在输入窗口的
 winbar 中，因此 laststatus=3（全局状态栏）下也能正常显示。
@@ -198,7 +265,7 @@ winbar 中，因此 laststatus=3（全局状态栏）下也能正常显示。
     require("acp").status()       -- 结构化表
 
 ==============================================================================
-8. 窗口保护与选择器                                        *acp-protection*
+9. 窗口保护与选择器                                        *acp-protection*
 
 ACP 的两个窗口默认锁定到自己的 buffer（'winfixbuf'），:edit、:bnext 等操作
 无法把对话记录或输入框替换成其它文件。关闭窗口与隐藏面板不受影响。
@@ -218,7 +285,7 @@ ACP 的两个窗口默认锁定到自己的 buffer（'winfixbuf'），:edit、:b
 会话浏览器独立使用 ui.session_picker，默认 snacks，不可用时回退到内置窗口。
 
 ==============================================================================
-9. 工作目录                                                  *acp-cwd*
+10. 工作目录                                                  *acp-cwd*
 
 会话的工作目录默认与 Neovim 的 cwd 一致（vim.fn.getcwd()），可用 cwd 配置项
 显式固定。:Acp sessions 的列表按该目录过滤；若为空，会自动退回展示 Agent 知道
@@ -228,7 +295,7 @@ ACP 的两个窗口默认锁定到自己的 buffer（'winfixbuf'），:edit、:b
 会话一致，不匹配时 Agent 会拒绝。
 
 ==============================================================================
-10. 面板尺寸                                                    *acp-sizing*
+11. 面板尺寸                                                    *acp-sizing*
 
 原生布局中 layout.width 为 0.05~1 时按编辑器宽度取比例，>1 时为绝对列数。
 先应用 min_width / max_width，再限制为编辑器宽度的 60%；空间不足时可能小于
@@ -247,7 +314,7 @@ edgy 调整宽度均适用。连续调整采用 100ms 防抖，期间流式内�
 并不要求包含 a。设为空字符串会关闭鼠标支持。无法点击时也可用 <M-m>/<M-b>。
 
 ==============================================================================
-11. 会话标题与删除                                      *acp-session-titles*
+12. 会话标题与删除                                      *acp-session-titles*
 
 标题显示在对话记录窗口的 winbar 中。为兼容未推送 session_info_update 的 Agent，
 acp.nvim 在会话创建后、切换会话后及每回合结束后查询 session/list 来同步标题，
@@ -277,7 +344,7 @@ q 关闭，gg/G 跳到首项/末项；需要搜索保留字母 j/k/q 时用大�
 sessionCapabilities.delete 时给出提示，不弹出无法兑现的确认框。
 
 ==============================================================================
-12. 行为细节                                                *acp-behavior*
+13. 行为细节                                                *acp-behavior*
 
 同一会话同时只运行一个 prompt；生成中提交的消息本地排队。
 默认最多排队 16 条、估算载荷 4 MiB，超过时拒绝入队并保留输入。
@@ -316,7 +383,7 @@ transport.max_pending_bytes 默认 16 MiB，限制协议待分发队列的估算
 cancelled。
 
 ==============================================================================
-13. 轮次分隔符                                          *acp-separator*
+14. 轮次分隔符                                          *acp-separator*
 
 每两轮对话之间画一条细分隔线。默认中间一个圆点：
 
@@ -336,7 +403,7 @@ ui.separator.form 控制样式：
 上面时 <Tab> 不会误展开相邻的卡片。
 
 ==============================================================================
-14. 高亮                                                    *acp-highlights*
+15. 高亮                                                    *acp-highlights*
 
 样式为静态定义，多数组链接到 Neovim / Tree-sitter 组；模式徽标默认使用固定颜色，
 可通过 ui.highlights 覆盖。插件不会在运行时混合主题颜色。
@@ -406,7 +473,7 @@ AcpUserIcon；助手的两组均链接到 Keyword。想区分时
 ui.icons = false 会改用 ASCII 图标。
 
 ==============================================================================
-15. 健康检查                                                 *acp-health*
+16. 健康检查                                                 *acp-health*
 
     :checkhealth acp
 

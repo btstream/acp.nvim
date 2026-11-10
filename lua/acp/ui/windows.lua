@@ -1,36 +1,50 @@
 -- Small standalone windows: the help sheet and log viewing.
 local layout = require("acp.layout")
 local log = require("acp.log")
+local keymaps = require("acp.ui.keymaps")
 
 local M = {}
 
-local HELP_LINES = {
-  "# acp.nvim",
-  "",
-  "Composer",
-  "  <C-s>     send",
-  "  <C-c>     cancel the current turn",
-  "",
-  "Transcript",
-  "  i / <C-s> focus the composer",
-  "  <Tab>     expand or collapse a tool block",
-  "  <CR>      open the file location under the cursor",
-  "  [b / ]b   previous / next block",
-  "  G / gg    newest / oldest message",
-  "  S         attach the current selection",
-  "  F         attach the current file",
-  "  R         attach diagnostics",
-  "  M / m     pick model / mode",
-  "  <C-n>     new session",
-  "  L         pick a stored session",
-  "  q         hide the panel",
-  "",
-  "The panel hides without stopping the agent.",
-}
+---Header and footer of the help sheet. The key list in between is generated
+---from the live `keymaps` configuration, so a rebound action never leaves the
+---sheet describing the default.
+local HELP_INTRO = { "# acp.nvim", "" }
+local HELP_OUTRO = { "", "The panel hides without stopping the agent." }
+
+---Width of the key column, so the descriptions line up whatever the keys are.
+local HELP_KEY_COLUMN = 20
+
+---Render the cheat sheet for a resolved `keymaps` table.
+---@param keymaps_config table|nil
+---@return string[]
+function M.help_lines(keymaps_config)
+  local lines = {}
+  vim.list_extend(lines, HELP_INTRO)
+
+  for _, view in ipairs({ "input", "chat" }) do
+    local title = view == "input" and "Composer" or "Transcript"
+    lines[#lines + 1] = title
+    local entries = keymaps.help_entries(view, (keymaps_config or {})[view])
+    for _, entry in ipairs(entries) do
+      local keys = entry.keys
+      if #keys < HELP_KEY_COLUMN then
+        keys = keys .. string.rep(" ", HELP_KEY_COLUMN - #keys)
+      end
+      lines[#lines + 1] = "  " .. keys .. entry.desc
+    end
+    lines[#lines + 1] = ""
+  end
+
+  -- Drop the blank line the last view added before the footer.
+  lines[#lines] = nil
+  vim.list_extend(lines, HELP_OUTRO)
+  return lines
+end
 
 ---Open the keymap cheat sheet in a floating window.
-function M.show_help()
-  local lines = HELP_LINES
+---@param keymaps_config table|nil resolved `keymaps` configuration
+function M.show_help(keymaps_config)
+  local lines = M.help_lines(keymaps_config)
   local buf = vim.api.nvim_create_buf(false, true)
   vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
   vim.bo[buf].filetype = "markdown"
