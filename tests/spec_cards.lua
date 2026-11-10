@@ -27,7 +27,6 @@ return function(t)
   t.describe("tool labels", function()
     local cases = {
       { kind = "execute", expect = "Run Command" },
-      { kind = "edit", expect = "Write" },
       { kind = "read", expect = "Read" },
       { kind = "search", expect = "Search" },
       { kind = "fetch", expect = "Fetch" },
@@ -41,6 +40,50 @@ return function(t)
         t.match(case.expect, lines[1].text)
       end)
     end
+
+    t.it("says Edit for a partial change", function()
+      local s = state.new("s", "/proj")
+      s:append({
+        id = "t",
+        kind = "tool",
+        tool_kind = "edit",
+        status = "completed",
+        raw_input = { path = "a.lua", oldString = "a", newString = "b" },
+      })
+      local text = render(s.blocks[1])[1].text
+      t.match("Edit", text)
+      t.falsy(text:find("Write", 1, true), "a partial edit was labelled as a write")
+    end)
+
+    t.it("says Write when the whole file is replaced", function()
+      local s = state.new("s", "/proj")
+      s:append({
+        id = "t",
+        kind = "tool",
+        tool_kind = "edit",
+        status = "completed",
+        raw_input = { path = "a.lua", content = "local a = 1\n" },
+      })
+      t.match("Write", render(s.blocks[1])[1].text)
+    end)
+
+    t.it("recognises write from the title before the input arrives", function()
+      local s = state.new("s", "/proj")
+      s:append({ id = "t", kind = "tool", tool_kind = "edit", status = "pending", title = "write" })
+      t.match("Write", render(s.blocks[1])[1].text)
+    end)
+
+    t.it("treats a patch as an edit", function()
+      local s = state.new("s", "/proj")
+      s:append({
+        id = "t",
+        kind = "tool",
+        tool_kind = "edit",
+        status = "completed",
+        raw_input = { path = "a.lua", patchText = "@@ -1 +1 @@\n-a\n+b\n" },
+      })
+      t.match("Edit", render(s.blocks[1])[1].text)
+    end)
 
     t.it("humanises an unknown kind", function()
       local s = state.new("s", "/proj")

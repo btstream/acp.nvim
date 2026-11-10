@@ -38,10 +38,13 @@ end
 
 -- Human-readable label for a tool call, derived from the ACP tool kind. Falls
 -- back to the tool name so unknown kinds still say something useful.
+--
+-- ACP has no `write` kind: an agent that creates or overwrites a file reports
+-- it as `edit` and distinguishes the two only through its input. `tool_label`
+-- therefore looks at the input as well, otherwise every file write would be
+-- labelled "Edit" and the two operations would be indistinguishable.
 local TOOL_LABELS = {
   execute = "Run Command",
-  edit = "Write",
-  write = "Write",
   read = "Read",
   search = "Search",
   fetch = "Fetch",
@@ -51,10 +54,58 @@ local TOOL_LABELS = {
   switch_mode = "Switch Mode",
 }
 
+local OLD_TEXT_KEYS = { "oldString", "old_string", "oldText", "old_text", "before" }
+local NEW_TEXT_KEYS = { "newString", "new_string", "newText", "new_text", "content", "after" }
+local PATCH_KEYS = { "patchText", "patch" }
+
+---@param input any
+---@param keys string[]
+---@return boolean
+local function has_key(input, keys)
+  if type(input) ~= "table" then
+    return false
+  end
+  for _, key in ipairs(keys) do
+    if input[key] ~= nil then
+      return true
+    end
+  end
+  return false
+end
+
+---Whether an `edit` call replaces the whole file instead of part of it.
+---
+---The presence of the old text is the discriminator: a patch or a partial edit
+---always carries it, while a write only carries the new content. Until the
+---input arrives the agent's title is the only hint, so the generic tool names
+---are recognised there.
+---@param block AcpBlock
+---@return boolean
+local function is_write(block)
+  local kind = block.tool_kind
+  if kind == "write" then
+    return true
+  end
+  if kind ~= "edit" then
+    return false
+  end
+  if has_key(block.raw_input, PATCH_KEYS) or has_key(block.raw_input, OLD_TEXT_KEYS) then
+    return false
+  end
+  if has_key(block.raw_input, NEW_TEXT_KEYS) then
+    return true
+  end
+  local title = type(block.title) == "string" and block.title:lower() or ""
+  return title == "write" or title == "create" or title == "write file" or title == "create file"
+end
+
 ---@param block AcpBlock
 ---@return string
 local function tool_label(block)
   local kind = block.tool_kind
+  if kind == "edit" or kind == "write" then
+    return is_write(block) and "Write" or "Edit"
+  end
   if type(kind) == "string" and TOOL_LABELS[kind] then
     return TOOL_LABELS[kind]
   end
