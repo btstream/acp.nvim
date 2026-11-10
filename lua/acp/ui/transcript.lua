@@ -25,6 +25,24 @@ local function block_signature(block)
     local dump = type(block.raw_output) == "string" and block.raw_output or vim.inspect(block.raw_output)
     raw_len = #dump
   end
+  -- A shell command is rendered into the card body when expanded, so a later
+  -- update that only fills `rawInput` has to invalidate the cached lines.
+  local command_len = -1
+  if block.tool_kind == "execute" then
+    local input = block.raw_input
+    if type(input) == "string" then
+      command_len = #input
+    elseif type(input) == "table" then
+      command_len = #(
+        type(input.command) == "string" and input.command
+        or type(input.cmd) == "string" and input.cmd
+        or ""
+      )
+    end
+    -- Diffs come from `content` or, while the call runs, from `rawInput`. The
+    -- signature has to cover both or a card would keep showing its first
+    -- (empty) state until the block object was replaced.
+  end
   return {
     kind = block.kind,
     status = block.status,
@@ -40,6 +58,7 @@ local function block_signature(block)
     locations = block.locations and #block.locations or 0,
     child_title = block.child and block.child.title or nil,
     raw_len = raw_len,
+    command_len = command_len,
     -- Plan entries render both their text and their status, so a same-count
     -- update has to be detected.
     plan = block.entries and vim.inspect(block.entries) or nil,

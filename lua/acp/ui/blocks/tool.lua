@@ -80,6 +80,37 @@ local function tool_title(block)
   return ""
 end
 
+---The full command an `execute` call ran, when the agent supplied one.
+---
+---The header carries the title as a one-line summary and truncates it to the
+---panel width, which is exactly what makes a long shell command unreadable.
+---`rawInput.command` is preferred over the title because it is the text that
+---actually ran, not a rewritten summary; the title is the fallback for agents
+---that do not send structured input.
+---@param block AcpBlock
+---@return string|nil
+local function shell_command(block)
+  if block.tool_kind ~= "execute" then
+    return nil
+  end
+  local input = block.raw_input
+  if type(input) == "table" then
+    for _, key in ipairs({ "command", "cmd" }) do
+      local value = input[key]
+      if type(value) == "string" and vim.trim(value) ~= "" then
+        return value
+      end
+    end
+  elseif type(input) == "string" and vim.trim(input) ~= "" then
+    return input
+  end
+  local title = block.title
+  if type(title) == "string" and title ~= "" and one_line(title) ~= tool_label(block) then
+    return one_line(title)
+  end
+  return nil
+end
+
 function M.render_tool(block, ctx)
   local ic = ctx.icons
   local glyph, glyph_hl = tool_icon(block, ic)
@@ -187,6 +218,33 @@ function M.render_tool(block, ctx)
 
   -- Card body: only when expanded and there is something to show.
   local body_lines = {}
+  if block.expanded then
+    -- A shell command is only ever visible in the header, where it is fitted to
+    -- the panel and truncated. The expanded card repeats it in full, so a long
+    -- command can actually be read and copied.
+    local command = shell_command(block)
+    if command then
+      local command_lines = vim.split(command:gsub("\r\n", "\n"):gsub("\r", "\n"), "\n", {
+        plain = true,
+        trimempty = true,
+      })
+      for index, line in ipairs(command_lines) do
+        local prompt = index == 1 and "$ " or "  "
+        body_lines[#body_lines + 1] = {
+          text = prompt .. line,
+          segments = {
+            { s = 0, e = #prompt, group = "AcpMuted" },
+            { s = #prompt, e = -1, group = "AcpMdCode" },
+          },
+        }
+      end
+      if block.detail and block.detail ~= "" then
+        -- Separate the command from its output; without the gap the first
+        -- output line reads as part of the command.
+        body_lines[#body_lines + 1] = { text = "", segments = nil }
+      end
+    end
+  end
   if block.detail and block.detail ~= "" then
     block._md_detail = block._md_detail or {}
     -- No base highlight group: card body text must inherit the card's own

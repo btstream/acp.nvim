@@ -59,6 +59,31 @@ return function(t)
       t.match("copy me", chat:transcript())
     end)
 
+    t.it("re-renders a tool card when its command arrives later", function()
+      local chat = Chat.new({ config = cfg() })
+      local s = state.new("s", "/tmp")
+      s:append({
+        id = "t",
+        kind = "tool",
+        tool_kind = "execute",
+        title = "Run Command",
+        status = "completed",
+        expanded = true,
+        detail = "output",
+      })
+      chat:set_session(s)
+      local first = table.concat(vim.api.nvim_buf_get_lines(chat.buf, 0, -1, false), "\n")
+      t.falsy(first:find("$ ", 1, true), "there is no command yet")
+
+      -- A later update supplies the structured command; without it in the
+      -- render signature the cached card would never show it.
+      s.blocks[1].raw_input = { command = "ls -la" }
+      s:touch(s.blocks[1], false)
+      chat:render()
+      local second = table.concat(vim.api.nvim_buf_get_lines(chat.buf, 0, -1, false), "\n")
+      t.truthy(second:find("$ ls -la", 1, true), "the command did not reach the card: " .. second)
+    end)
+
     t.it("keeps drafts isolated per session", function()
       local input = Input.new({ config = cfg() })
       input:switch_session("a")

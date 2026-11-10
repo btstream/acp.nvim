@@ -211,6 +211,118 @@ return function(t)
       )
     end)
 
+    t.it("shows the full command in the expanded card", function()
+      local s = state.new("s", "/proj")
+      local command = string.rep("very-long-command-segment ", 12)
+      s:append({
+        id = "t",
+        kind = "tool",
+        tool_kind = "execute",
+        title = command,
+        status = "completed",
+        expanded = true,
+        raw_input = { command = command },
+        detail = "output line",
+      })
+      local lines = render(s.blocks[1])
+
+      -- The header stays a summary: it is fitted to the panel.
+      t.truthy(vim.api.nvim_strwidth(lines[1].text) <= 60 + 5, "header exceeded the panel width")
+
+      -- The body carries the command verbatim, so it can be read in full.
+      local text = joined(lines)
+      t.truthy(text:find("$ " .. command, 1, true), "the full command is missing from the card")
+    end)
+
+    t.it("prefers rawInput over the title for the command", function()
+      local s = state.new("s", "/proj")
+      s:append({
+        id = "t",
+        kind = "tool",
+        tool_kind = "execute",
+        title = "Run tests",
+        status = "completed",
+        expanded = true,
+        raw_input = { command = "cargo test --all-features" },
+        detail = "ok",
+      })
+      local text = joined(render(s.blocks[1]))
+      t.match("%$ cargo test %-%-all%-features", text)
+      t.falsy(text:find("$ Run tests", 1, true), "the summary was shown as a command")
+    end)
+
+    t.it("falls back to the title when there is no structured input", function()
+      local s = state.new("s", "/proj")
+      s:append({
+        id = "t",
+        kind = "tool",
+        tool_kind = "execute",
+        title = "make build",
+        status = "completed",
+        expanded = true,
+        detail = "built",
+      })
+      t.match("%$ make build", joined(render(s.blocks[1])))
+    end)
+
+    t.it("does not show a command for non-shell tools", function()
+      local s = state.new("s", "/proj")
+      s:append({
+        id = "t",
+        kind = "tool",
+        tool_kind = "read",
+        title = "src/main.lua",
+        status = "completed",
+        expanded = true,
+        raw_input = { command = "cat src/main.lua" },
+        detail = "print('hi')",
+      })
+      local text = joined(render(s.blocks[1]))
+      t.falsy(text:find("$ cat", 1, true), "a read call was rendered as a shell command")
+      t.match("print%('hi'%)", text)
+    end)
+
+    t.it("shows every line of a multi-line command", function()
+      local s = state.new("s", "/proj")
+      s:append({
+        id = "t",
+        kind = "tool",
+        tool_kind = "execute",
+        title = "here-doc",
+        status = "completed",
+        expanded = true,
+        raw_input = { command = "cat <<'EOF'\none\ntwo\nEOF" },
+        detail = "one\ntwo",
+      })
+      local lines = render(s.blocks[1])
+      local text = joined(lines)
+      t.match("%$ cat <<'EOF'", text)
+      t.truthy(text:find("\n    one\n    two\n    EOF", 1, true), "continuation lines are missing: " .. text)
+      for _, line in ipairs(lines) do
+        t.falsy(line.text:find("\n"), "card row contains a newline")
+      end
+    end)
+
+    t.it("keeps the command out of the card while collapsed", function()
+      local s = state.new("s", "/proj")
+      s:append({
+        id = "t",
+        kind = "tool",
+        tool_kind = "execute",
+        title = "cargo test",
+        status = "completed",
+        expanded = false,
+        raw_input = { command = "cargo test" },
+        detail = "ok",
+      })
+      local lines = render(s.blocks[1])
+      t.falsy(joined(lines):find("$ cargo test", 1, true), "the collapsed preview showed the command")
+      -- The command is an expanded-only detail: collapsed stays header + one
+      -- preview line (plus the trailing separator row).
+      t.eq(3, #lines)
+      t.match("ok", lines[2].text)
+    end)
+
     t.it("does not open a card with nothing to show", function()
       local s = state.new("s", "/proj")
       s:append({ id = "t", kind = "tool", tool_kind = "execute", status = "completed", expanded = true })
