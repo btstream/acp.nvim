@@ -7,6 +7,12 @@
 -- snacks is optional: `open()` returns false when it is unavailable and the
 -- caller falls back to the built-in window.
 local Icons = require("acp.ui.icons")
+local highlights = require("acp.ui.highlights")
+
+-- Only the rows are ours to colour: snacks owns the window chrome, so the
+-- `AcpPickerNormal`/`Border`/`Title` groups of the built-in pickers do not
+-- apply here and the user's snacks theme keeps working.
+local HL = highlights.picker
 
 local M = {}
 
@@ -114,13 +120,13 @@ function M.open(opts)
       local when_text = short_time(session.updatedAt or session.createdAt)
 
       local ret = {
-        { marker, current and "AcpPinned" or "AcpMuted" },
-        { text, current and "AcpTitle" or "Normal" },
+        { marker, current and HL.current or HL.description },
+        { text, current and HL.current_item or HL.item },
       }
       if when_text ~= "" then
         ret[#ret + 1] = {
           when_text,
-          "AcpMuted",
+          HL.meta,
           virt_text = true,
           virt_text_pos = "right_align",
         }

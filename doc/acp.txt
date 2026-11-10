@@ -358,6 +358,22 @@ ui.separator.form 控制样式：
     AcpTitle  AcpToolbar  AcpPermission  AcpStreaming
     AcpUserIcon  AcpUserTitle  AcpAssistantIcon  AcpAssistantTitle
 
+插件自绘的 picker（ui.picker = "internal" 的选择框、:Acp sessions 的内置窗口）
+使用另一套 AcpPicker* 组，默认链接到主题组：
+
+    AcpPickerNormal  AcpPickerBorder  AcpPickerTitle
+    AcpPickerSelection  AcpPickerItem  AcpPickerMatch
+    AcpPickerCurrent  AcpPickerCurrentItem  AcpPickerDescription
+    AcpPickerMeta  AcpPickerEmpty  AcpPickerSeparator
+    AcpPickerPrompt  AcpPickerFooter
+
+AcpPickerNormal / AcpPickerBorder / AcpPickerTitle 通过 winhighlight 映射到浮窗
+的背景、边框和标题，所以能在 style = "minimal" 的浮窗里单独改色，不必修改全局的
+NormalFloat。AcpPickerItem 链接到 Normal：浮窗里 Normal 已被 winhighlight 映射到
+AcpPickerNormal，snacks 列表里它则保持列表自身的背景色。snacks 后端的会话浏览器只用行内的组
+（AcpPickerItem / AcpPickerCurrent / AcpPickerCurrentItem /
+AcpPickerDescription / AcpPickerMeta），窗口外观沿用用户自己的 snacks 主题。
+
 acp_chat 的标题栏（winbar）与正文共用同一个背景（AcpNormal），读起来是对话记录
 的页眉，而不是一条独立的色带。acp_input 的工具栏仍然用 StatusLine 的颜色，因为
 它是工具栏而非页眉。

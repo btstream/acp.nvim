@@ -113,6 +113,43 @@ M.groups = {
   AcpChild = { link = "Comment" },
   AcpSeparator = { link = "NonText" },
   AcpStreaming = { link = "DiagnosticInfo" },
+
+  -- Pickers the plugin draws itself (`ui.picker = "internal"` and the
+  -- `:Acp sessions` window). The window chrome is mapped through `winhighlight`,
+  -- so a float can be styled apart from other floating windows without
+  -- touching the theme's `NormalFloat`/`FloatBorder` groups.
+  AcpPickerNormal = { link = "NormalFloat" },
+  AcpPickerBorder = { link = "FloatBorder" },
+  AcpPickerTitle = { link = "FloatTitle" },
+  -- The cursor row. Links to the generic selection group so a picker looks like
+  -- every other selection by default, but can be styled on its own.
+  AcpPickerSelection = { link = "AcpSelection" },
+  -- The label of a row. Links to `Normal` rather than to a surface group: inside
+  -- a picker float `winhighlight` already remaps `Normal` to `AcpPickerNormal`,
+  -- while in a snacks list it stays the list's own background.
+  AcpPickerItem = { link = "Normal" },
+  -- Characters matched by the filter query.
+  AcpPickerMatch = { link = "Search" },
+  -- The active row's marker: the session arrow and the check on the current
+  -- option.
+  AcpPickerCurrent = { link = "StatusLine" },
+  -- The active row's label. Emphasis only, with no background of its own, so a
+  -- snacks row does not turn into a statusline strip.
+  AcpPickerCurrentItem = { link = "AcpTitle" },
+  -- Row descriptions and timestamps, drawn at the end of the line.
+  AcpPickerDescription = { link = "Comment" },
+  AcpPickerMeta = { link = "Comment" },
+  -- "no match" / "no matching sessions".
+  AcpPickerEmpty = { link = "Comment" },
+  -- The rule above the footer of the session browser.
+  AcpPickerSeparator = { link = "NonText" },
+  -- The filter prompt and the text typed into it.
+  AcpPickerPrompt = { link = "AcpToolbarAccent" },
+  -- Footer hints and transient status ("deleting...", "deleted").
+  AcpPickerFooter = { link = "Comment" },
+
+  -- Generic selection groups. The pickers link to these by default; the
+  -- transcript and panels use them directly.
   AcpSelection = { link = "Visual" },
   AcpPinned = { link = "StatusLine" },
 }
@@ -168,6 +205,46 @@ function M.setup(config)
       apply()
     end,
   })
+end
+
+---------------------------------------------------------------------------
+-- Picker groups
+---------------------------------------------------------------------------
+
+---Group names used by the plugin's own pickers.
+---
+---Kept here so the picker modules and their tests share one source of truth
+---instead of repeating string literals.
+M.picker = {
+  normal = "AcpPickerNormal",
+  border = "AcpPickerBorder",
+  title = "AcpPickerTitle",
+  selection = "AcpPickerSelection",
+  item = "AcpPickerItem",
+  match = "AcpPickerMatch",
+  current = "AcpPickerCurrent",
+  current_item = "AcpPickerCurrentItem",
+  description = "AcpPickerDescription",
+  meta = "AcpPickerMeta",
+  empty = "AcpPickerEmpty",
+  separator = "AcpPickerSeparator",
+  prompt = "AcpPickerPrompt",
+  footer = "AcpPickerFooter",
+}
+
+---`winhighlight` string that maps a picker float's chrome onto the
+---`AcpPicker*` groups.
+---
+---`style = "minimal"` installs its own `Normal:NormalFloat,FloatBorder:...`
+---mapping, so this must be assigned *after* the window is created.
+---@return string
+function M.picker_winhl()
+  return table.concat({
+    "Normal:" .. M.picker.normal,
+    "NormalNC:" .. M.picker.normal,
+    "FloatBorder:" .. M.picker.border,
+    "FloatTitle:" .. M.picker.title,
+  }, ",")
 end
 
 ---Resolve a status to a highlight group.

@@ -4,6 +4,13 @@
 -- already uses for that (telescope, fzf-lua, snacks.nvim, dressing, the plain
 -- built-in prompt) applies here too. The built-in floating picker stays
 -- available as an explicit opt-in.
+local highlights = require("acp.ui.highlights")
+
+-- Highlight groups of the plugin's own pickers, resolved once. Everything the
+-- pickers draw uses these through `AcpPicker*`, so a user can restyle the
+-- dialogs without touching the panel's groups.
+local HL = highlights.picker
+
 local M = {}
 
 ---@class AcpPickerItem
@@ -11,25 +18,43 @@ local M = {}
 ---@field description string|nil
 ---@field value any
 
+---Case-insensitive subsequence match, returning the byte ranges it covered.
+---
+---Ranges are 0-based and half-open, ready to hand to `nvim_buf_set_extmark`.
+---Adjacent characters are merged into one range so a multi-character match is a
+---single highlight instead of one mark per letter.
+---@param needle string
+---@param haystack string
+---@return {s: integer, e: integer}[]|nil ranges, or nil when there is no match
+function M.fuzzy_ranges(needle, haystack)
+  local ranges = {}
+  if needle == "" then
+    return ranges
+  end
+  local hay = haystack:lower()
+  local pos = 1
+  for i = 1, #needle do
+    local found = hay:find(needle:sub(i, i), pos, true)
+    if not found then
+      return nil
+    end
+    local last = ranges[#ranges]
+    if last and last.e == found - 1 then
+      last.e = found
+    else
+      ranges[#ranges + 1] = { s = found - 1, e = found }
+    end
+    pos = found + 1
+  end
+  return ranges
+end
+
 ---Case-insensitive subsequence match, the same idea as a fuzzy finder.
 ---@param needle string
 ---@param haystack string
 ---@return boolean
 local function fuzzy(needle, haystack)
-  if needle == "" then
-    return true
-  end
-  local hay = haystack:lower()
-  local pos = 1
-  for i = 1, #needle do
-    local char = needle:sub(i, i)
-    local found = hay:find(char, pos, true)
-    if not found then
-      return false
-    end
-    pos = found + 1
-  end
-  return true
+  return M.fuzzy_ranges(needle, haystack) ~= nil
 end
 
 ---Format one item into a single line, keeping the description readable.
@@ -119,6 +144,9 @@ local function internal_select(opts)
     row = math.max(0, math.floor((vim.o.lines - height - prompt_rows) / 2) - 1),
     col = math.max(0, math.floor((vim.o.columns - width) / 2)),
   })
+  -- `style = "minimal"` installs its own Normal/FloatBorder mapping, so the
+  -- picker groups have to be applied after the window exists.
+  vim.wo[win].winhighlight = highlights.picker_winhl()
 
   local function close()
     if vim.api.nvim_win_is_valid(win) then
@@ -162,7 +190,8 @@ local function internal_select(opts)
       -- A buffer line cannot contain a newline; agent supplied labels may.
       lines[#lines + 1] = (format(item) or ""):gsub("[\r\n]", " ")
     end
-    if #lines == 0 then
+    local empty = #lines == 0
+    if empty then
       lines[1] = "  no match"
     end
     local prompt_line
@@ -175,23 +204,62 @@ local function internal_select(opts)
     vim.bo[buf].modifiable = false
 
     vim.api.nvim_buf_clear_namespace(buf, ns, 0, -1)
+
+    ---Paint one row: the item's own group first, then the selection over it,
+    ---then the filter matches on top. Neovim merges extmarks by priority, so a
+    ---foreground-only override still combines with the row's background.
+    ---@param row integer zero-based
+    ---@param text string
+    ---@param selected boolean
+    local function paint_row(row, text, selected)
+      if #text == 0 then
+        return
+      end
+      vim.api.nvim_buf_set_extmark(buf, ns, row, 0, {
+        end_row = row,
+        end_col = #text,
+        hl_group = HL.item,
+        priority = 5,
+      })
+      if selected then
+        vim.api.nvim_buf_set_extmark(buf, ns, row, 0, {
+          end_row = row,
+          end_col = #text,
+          hl_group = HL.selection,
+          priority = 10,
+        })
+      end
+      local ranges = query ~= "" and M.fuzzy_ranges(query, text) or nil
+      for _, range in ipairs(ranges or {}) do
+        vim.api.nvim_buf_set_extmark(buf, ns, row, range.s, {
+          end_col = range.e,
+          hl_group = HL.match,
+          priority = 30,
+        })
+      end
+    end
+
+    if empty then
+      vim.api.nvim_buf_set_extmark(buf, ns, 0, 0, {
+        end_col = #lines[1],
+        hl_group = HL.empty,
+      })
+    end
+
     local cursor = math.min(vim.api.nvim_win_get_cursor(win)[1], math.max(1, #visible))
     if #visible > 0 then
       pcall(vim.api.nvim_win_set_cursor, win, { cursor, 0 })
+      for i = 1, #visible do
+        paint_row(i - 1, lines[i] or "", i == cursor)
+      end
       local line = visible[cursor]
-      local text = lines[cursor] or ""
-      vim.api.nvim_buf_set_extmark(buf, ns, cursor - 1, 0, {
-        end_row = cursor - 1,
-        end_col = #text,
-        hl_group = "AcpSelection",
-      })
       if line and line.description and line.description ~= "" then
         local desc = line.description:gsub("\n", " ")
         if #desc > width - 6 then
           desc = desc:sub(1, width - 8) .. "…"
         end
         vim.api.nvim_buf_set_extmark(buf, ns, cursor - 1, 0, {
-          virt_text = { { desc, "AcpMuted" } },
+          virt_text = { { desc, HL.description } },
           virt_text_pos = "eol",
         })
       end
@@ -200,7 +268,7 @@ local function internal_select(opts)
       vim.api.nvim_buf_set_extmark(buf, ns, prompt_line - 1, 0, {
         end_row = prompt_line - 1,
         end_col = #(lines[prompt_line] or ""),
-        hl_group = "AcpToolbarAccent",
+        hl_group = HL.prompt,
       })
     end
     -- Keep the window height in sync with the filtered list.

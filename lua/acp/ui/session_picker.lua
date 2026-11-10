@@ -5,6 +5,11 @@
 -- of this dialog. Other selectors (models, modes, permissions) keep using
 -- `vim.ui.select`.
 local icons = require("acp.ui.icons")
+local highlights = require("acp.ui.highlights")
+local picker = require("acp.ui.picker")
+
+local HL = highlights.picker
+
 local M = {}
 
 ---Case-insensitive subsequence match.
@@ -12,19 +17,7 @@ local M = {}
 ---@param haystack string
 ---@return boolean
 local function fuzzy(needle, haystack)
-  if needle == "" then
-    return true
-  end
-  local hay = haystack:lower()
-  local pos = 1
-  for i = 1, #needle do
-    local found = hay:find(needle:sub(i, i), pos, true)
-    if not found then
-      return false
-    end
-    pos = found + 1
-  end
-  return true
+  return picker.fuzzy_ranges(needle, haystack) ~= nil
 end
 
 ---Format an ISO-ish timestamp for display.
@@ -83,6 +76,9 @@ function M.open(opts)
     row = math.max(0, math.floor((vim.o.lines - max_height - 2) / 2) - 1),
     col = math.max(0, math.floor((vim.o.columns - width) / 2)),
   })
+  -- `style = "minimal"` installs its own Normal/FloatBorder mapping, so the
+  -- picker groups have to be applied after the window exists.
+  vim.wo[win].winhighlight = highlights.picker_winhl()
 
   local function close()
     if vim.api.nvim_win_is_valid(win) then
@@ -122,56 +118,135 @@ function M.open(opts)
       -- A buffer line cannot contain a newline; agent supplied titles may.
       local title = label_of(item):gsub("[\r\n]", " ")
       lines[#lines + 1] = marker .. title
-      marks[#marks + 1] = { item = item, current = is_current, title = title }
+      marks[#marks + 1] = {
+        item = item,
+        current = is_current,
+        title = title,
+        marker_len = #marker,
+      }
     end
     if #lines == 0 then
       lines[1] = "  no matching sessions"
       marks[1] = nil
     end
     lines[#lines + 1] = string.rep("─", math.max(1, width - 2))
-    lines[#lines + 1] = (query ~= "" and ("Search: " .. query) or "Type to filter") .. "   " .. status_message
+    local separator_line = #lines
+    local footer = (query ~= "" and ("Search: " .. query) or "Type to filter") .. "   " .. status_message
+    lines[#lines + 1] = footer
 
     vim.bo[buf].modifiable = true
     vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
     vim.bo[buf].modifiable = false
 
     vim.api.nvim_buf_clear_namespace(buf, ns, 0, -1)
+
+    ---Paint a row. Items are drawn first, then the selection over them, then
+    ---the filter matches on top, so every group keeps its own contribution.
+    ---@param row integer zero-based
+    ---@param text string
+    ---@param selected boolean
+    ---@param offset integer byte offset of the title within the row
+    ---@param title string
+    local function paint_row(row, text, selected, offset, title)
+      if #text == 0 then
+        return
+      end
+      vim.api.nvim_buf_set_extmark(buf, ns, row, 0, {
+        end_row = row,
+        end_col = #text,
+        hl_group = HL.item,
+        priority = 5,
+      })
+      if selected then
+        vim.api.nvim_buf_set_extmark(buf, ns, row, 0, {
+          end_row = row,
+          end_col = #text,
+          hl_group = HL.selection,
+          priority = 10,
+        })
+      end
+      local ranges = query ~= "" and picker.fuzzy_ranges(query, title) or nil
+      for _, range in ipairs(ranges or {}) do
+        vim.api.nvim_buf_set_extmark(buf, ns, row, offset + range.s, {
+          end_col = offset + range.e,
+          hl_group = HL.match,
+          priority = 30,
+        })
+      end
+    end
+
+    if #visible == 0 then
+      vim.api.nvim_buf_set_extmark(buf, ns, 0, 0, {
+        end_col = #(lines[1] or ""),
+        hl_group = HL.empty,
+      })
+    end
+
     local cursor = math.min(vim.api.nvim_win_get_cursor(win)[1], math.max(1, #visible))
     if #visible > 0 then
       pcall(vim.api.nvim_win_set_cursor, win, { cursor, 0 })
-      local line_no = cursor
-      local text = lines[line_no] or ""
-      vim.api.nvim_buf_set_extmark(buf, ns, line_no - 1, 0, {
-        end_row = line_no - 1,
-        end_col = #text,
-        hl_group = "AcpSelection",
-      })
-      local meta = marks[line_no]
+      for i = 1, #visible do
+        local meta = marks[i]
+        paint_row(i - 1, lines[i] or "", i == cursor, meta and meta.marker_len or 0, meta and meta.title or "")
+        if meta and meta.current then
+          -- The arrow marks the session currently open in the panel; it is
+          -- painted after the selection so its colour survives the row
+          -- highlight. The title is emphasised the same way the snacks backend
+          -- does it, without a background of its own.
+          vim.api.nvim_buf_set_extmark(buf, ns, i - 1, 0, {
+            end_col = meta.marker_len,
+            hl_group = HL.current,
+            priority = 20,
+          })
+          vim.api.nvim_buf_set_extmark(buf, ns, i - 1, meta.marker_len, {
+            end_col = #(lines[i] or ""),
+            hl_group = HL.current_item,
+            priority = 15,
+          })
+        end
+      end
+      local meta = marks[cursor]
       if meta then
         local when_text = short_time(meta.item.updatedAt or meta.item.createdAt)
-        local desc = when_text
-        if meta.current then
-          desc = desc .. "  " .. icon_set.check_circle .. " current"
+        local virt = {}
+        if when_text ~= "" then
+          virt[#virt + 1] = { when_text, HL.meta }
         end
-        if desc ~= "" then
-          vim.api.nvim_buf_set_extmark(buf, ns, line_no - 1, 0, {
-            virt_text = { { desc, "AcpMuted" } },
+        if meta.current then
+          if #virt > 0 then
+            virt[#virt + 1] = { "  ", HL.meta }
+          end
+          virt[#virt + 1] = { icon_set.check_circle .. " current", HL.current }
+        end
+        if #virt > 0 then
+          vim.api.nvim_buf_set_extmark(buf, ns, cursor - 1, 0, {
+            virt_text = virt,
             virt_text_pos = "eol",
           })
         end
       end
     end
-    local warn_line = #lines - 1
-    vim.api.nvim_buf_set_extmark(buf, ns, warn_line, 0, {
-      end_row = warn_line,
-      end_col = #(lines[#lines] or ""),
-      hl_group = query ~= "" and "AcpToolbarAccent" or "AcpMuted",
+
+    vim.api.nvim_buf_set_extmark(buf, ns, separator_line - 1, 0, {
+      end_row = separator_line - 1,
+      end_col = #(lines[separator_line] or ""),
+      hl_group = HL.separator,
     })
     vim.api.nvim_buf_set_extmark(buf, ns, #lines - 1, 0, {
       end_row = #lines - 1,
-      end_col = #(lines[#lines] or ""),
-      hl_group = "AcpMuted",
+      end_col = #footer,
+      hl_group = HL.footer,
     })
+    if query ~= "" then
+      -- The typed query is the part of the footer that is live input, so it
+      -- gets the prompt group rather than the muted hint colour.
+      local prompt = "Search: " .. query
+      vim.api.nvim_buf_set_extmark(buf, ns, #lines - 1, 0, {
+        end_col = #prompt,
+        hl_group = HL.prompt,
+        priority = 20,
+      })
+    end
 
     local target = math.max(1, math.min(max_height, math.max(1, #visible))) + 2
     pcall(vim.api.nvim_win_set_height, win, target)

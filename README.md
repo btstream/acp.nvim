@@ -445,6 +445,33 @@ Neovim 0.12+ 的工具栏区域继承背景；旧版本使用兼容语法，外�
 `AcpNotice` `AcpNoticeWarn` `AcpNoticeError` `AcpPermission` `AcpChild` `AcpSeparator`
 `AcpStreaming` `AcpSelection` `AcpPinned`
 
+插件自绘的 picker（`ui.picker = "internal"` 的模型/模式/权限选择框，以及
+`:Acp sessions` 的内置窗口）另有一套组，默认都链接到主题组：
+
+| 组 | 默认链接 | 作用 |
+|---|---|---|
+| `AcpPickerNormal` | `NormalFloat` | 浮窗背景与普通文字 |
+| `AcpPickerBorder` | `FloatBorder` | 圆角边框 |
+| `AcpPickerTitle` | `FloatTitle` | 浮窗标题 |
+| `AcpPickerSelection` | `AcpSelection` | 光标所在行 |
+| `AcpPickerItem` | `Normal` | 每行的标题文字 |
+| `AcpPickerMatch` | `Search` | 过滤时命中的字符 |
+| `AcpPickerCurrent` | `StatusLine` | 当前会话的箭头、`✓ current` |
+| `AcpPickerCurrentItem` | `AcpTitle` | 当前行标题（只强调前景，不画背景） |
+| `AcpPickerDescription` | `Comment` | 行尾右对齐的描述 |
+| `AcpPickerMeta` | `Comment` | 会话列表里的更新时间 |
+| `AcpPickerEmpty` | `Comment` | `no match` / `no matching sessions` |
+| `AcpPickerSeparator` | `NonText` | 列表与页脚之间的分隔线 |
+| `AcpPickerPrompt` | `AcpToolbarAccent` | 过滤提示符与输入内容 |
+| `AcpPickerFooter` | `Comment` | 页脚提示与临时状态（`deleting...`） |
+
+浮窗的边框、标题和背景通过 `winhighlight` 映射到前三个组，因此在
+`style = "minimal"` 的浮窗里也能单独改色，而不必动全局的 `NormalFloat`。
+`AcpPickerItem` 链接到 `Normal`：浮窗里 `winhighlight` 已经把 `Normal` 映射到
+`AcpPickerNormal`，而 snacks 列表里它仍然是列表自己的背景色，不会多出一层浮窗底色。
+
+snacks 后端只接管行内容：它的窗口沿用你已有的 snacks 主题，不套用上面三组。
+
 `ui.icons = false` 会把所有图标换成 ASCII，适用于不支持的终端。
 
 ## 权限与安全

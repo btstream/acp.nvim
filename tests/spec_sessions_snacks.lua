@@ -120,7 +120,7 @@ return function(t)
       -- The formatter depends on current_id, so drive it directly.
       local row = picker.opts.format(found, picker)
       t.eq(icons.arrow_right .. " ", row[1][1])
-      t.eq("AcpPinned", row[1][2])
+      t.eq("AcpPickerCurrent", row[1][2])
       picker:close()
       controller.hide()
     end)
