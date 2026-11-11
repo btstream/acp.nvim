@@ -116,6 +116,7 @@ function M.apply_window_options(win, kind)
       vim.wo[win].winfixheight = false
       vim.wo[win].cursorline = false
       vim.wo[win].scrolloff = 2
+      vim.wo[win].smoothscroll = true
       -- Inline Markdown delimiters are hidden through `conceal` extmarks. The
       -- cursor must not reveal them, otherwise the transcript jumps whenever it
       -- is focused.

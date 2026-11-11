@@ -164,8 +164,14 @@ function Panel:install_events(hooks)
   end
   self.augroup = vim.api.nvim_create_augroup("AcpPanel", { clear = true })
 
+  local refresh_pending = false
   local function resize()
+    if refresh_pending then
+      return
+    end
+    refresh_pending = true
     vim.schedule(function()
+      refresh_pending = false
       if not self.destroyed then
         hooks.on_resize()
       end
@@ -190,6 +196,12 @@ function Panel:install_events(hooks)
   -- Window-local resizes (splits, layout managers, mouse dragging) do not fire
   -- VimResized, so refresh the winbars explicitly.
   vim.api.nvim_create_autocmd({ "WinResized", "WinNew", "WinClosed" }, {
+    group = self.augroup,
+    callback = resize,
+  })
+  -- Reconcile animation when focus returns, including a timer stopped by other
+  -- code, and stop work for ACP windows in an inactive tabpage.
+  vim.api.nvim_create_autocmd({ "WinEnter", "BufWinEnter", "TabEnter", "FocusGained", "VimResume" }, {
     group = self.augroup,
     callback = resize,
   })

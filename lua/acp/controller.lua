@@ -21,6 +21,7 @@ local Sessions = require("acp.app.sessions")
 local Prompts = require("acp.app.prompts")
 local Connection = require("acp.app.connection")
 local windows = require("acp.ui.windows")
+local work = require("acp.ui.work_scheduler")
 
 local M = {}
 
@@ -246,6 +247,7 @@ local function sync_spinner()
       and session.status == "running"
       and input ~= nil
       and input:is_visible()
+      and vim.api.nvim_win_get_tabpage(input.win) == vim.api.nvim_get_current_tabpage()
       and cfg().ui.toolbar.placement ~= "off"
     S.chrome:sync_animation(running)
   end
@@ -828,6 +830,7 @@ function M.debug_state()
     pending_permissions = vim.tbl_count(S.pending_permissions),
     transport = S.client and S.client.transport_stats and S.client:transport_stats() or nil,
     render = S.chat and S.chat:render_stats() or nil,
+    spinner = S.chrome and S.chrome:diagnostics() or nil,
     panel = {
       chat = S.chat and S.chat.win or nil,
       input = S.input and S.input.win or nil,
@@ -862,6 +865,7 @@ function M.setup(opts, action)
   S.config = merged
 
   log.setup(merged.log)
+  work.configure(merged.ui.render.budget_ms)
   highlights.setup(merged.ui.highlights)
   layout.setup(merged)
 

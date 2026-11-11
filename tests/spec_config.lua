@@ -63,5 +63,16 @@ return function(t)
         end, key)
       end
     end)
+    t.it("validates render budgets including commit_rows", function()
+      t.eq(2000, config.defaults.ui.render.commit_rows)
+      t.eq(4, config.defaults.ui.render.budget_ms)
+      local cfg = config.validate(config.merge(config.defaults, { ui = { render = { commit_rows = 0 } } }))
+      t.eq(0, cfg.ui.render.commit_rows)
+      for _, change in ipairs({ { commit_rows = -1 }, { commit_rows = "many" }, { budget_ms = 0 } }) do
+        t.raises(function()
+          config.validate(config.merge(config.defaults, { ui = { render = change } }))
+        end, "render")
+      end
+    end)
   end)
 end

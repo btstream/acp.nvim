@@ -281,7 +281,8 @@ end
 ---@param base_hl string|nil
 ---@param width integer
 ---@return AcpRenderedLine[]
-function M.render(table_spec, base_hl, width)
+function M.render(table_spec, base_hl, width, opts)
+  local checkpoint = opts and opts.checkpoint
   local columns, header, rows, align = table_spec.columns, table_spec.header, table_spec.rows, table_spec.align
 
   -- Parse inline markup once per cell, before measuring or wrapping. Source
@@ -296,6 +297,10 @@ function M.render(table_spec, base_hl, width)
       prepared[c] = inline_cell(row[c] or "", base_hl)
     end
     prepared_rows[#prepared_rows + 1] = prepared
+    -- Cell markup can be expensive on wide tables; yield between source rows.
+    if checkpoint then
+      checkpoint()
+    end
   end
 
   -- Natural width of each column: the widest visible cell in it.
@@ -452,6 +457,9 @@ function M.render(table_spec, base_hl, width)
       segments[#segments + 1] = { s = offset, e = offset + #"│", group = "AcpTableBorder" }
       local line_text = table.concat(pieces)
       out[#out + 1] = { text = line_text, segments = segments, table = true, table_row = source_row }
+      if checkpoint then
+        checkpoint()
+      end
     end
   end
 

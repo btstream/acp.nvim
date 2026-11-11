@@ -136,9 +136,12 @@ function M.spawn(opts)
   vim.list_extend(cmd, opts.args or {})
   local pending, head, tail, pending_bytes = {}, 1, 0, 0
   local continuation, continuation_bytes = nil, 0
+  local inputs, input_head, input_tail, input_bytes = {}, 1, 0, 0
+  local input_scheduled = false
   local scheduled, exited, exit_sent, stopped = false, nil, false, false
   local pending_limit = opts.max_pending_bytes or 64 * 1024 * 1024
   local budget = (opts.dispatch_budget_ms or 4) * 1e6
+  local process_scheduler = opts.scheduler
   local stats = self.stats
   stats.unbounded = pending_limit == 0
   local warn_levels = opts.warn_levels or WARN_LEVELS
@@ -174,7 +177,8 @@ function M.spawn(opts)
   local pump_at = spool and spool.high or (pending_limit > 0 and pending_limit / 2 or 8 * MIB)
   local drain
   local function has_more()
-    return continuation ~= nil
+    return input_head <= input_tail
+      or continuation ~= nil
       or head <= tail
       or (spool ~= nil and (spool.busy or spool.ready ~= nil or spool.consumed < spool.written))
   end
@@ -283,6 +287,7 @@ function M.spawn(opts)
     continuation, continuation_bytes = nil, 0
     self.decoder.parts, self.decoder.buffered = {}, 0
     pending, head, tail, pending_bytes = {}, 1, 0, 0
+    inputs, input_head, input_tail, input_bytes = {}, 1, 0, 0
     if spool then
       spill_close()
     end
@@ -302,11 +307,12 @@ function M.spawn(opts)
     if pending_limit == 0 then
       return true
     end
-    return self.decoder.buffered + pending_bytes + continuation_bytes + spill_retained() + extra + 64 <= pending_limit
+    return self.decoder.buffered + pending_bytes + continuation_bytes + spill_retained() + input_bytes + extra + 64
+      <= pending_limit
   end
 
   local function retained()
-    return self.decoder.buffered + pending_bytes + continuation_bytes + spill_retained()
+    return self.decoder.buffered + pending_bytes + continuation_bytes + spill_retained() + input_bytes
   end
 
   ---Record the memory high-water mark and emit one warning per level.
@@ -598,98 +604,107 @@ function M.spawn(opts)
     stats.spill_path = nil
   end
 
-  local function handle_stdout(_, data)
-    if not data or #data == 0 then
-      return
-    end
+  local function consume_stdout(entry)
+    local data = entry.data
     local started = vim.uv.hrtime()
     local deadline = started + budget
     local pending_before = pending_bytes
-    local callback_bytes, produced = 0, 0
-    stats.callbacks = stats.callbacks + 1
-
-    -- jobstart already splits on newlines: each element except the last is one
-    -- complete line. Feeding element by element avoids the whole-burst concat
-    -- copy and lets dispatch run between lines.
-    local count = #data
-    for index = 1, count do
-      if stopped then
-        break
-      end
-      local element = data[index] or ""
-      local raw = index < count and (element .. "\n") or element
-      callback_bytes = callback_bytes + #raw
-      stats.received_bytes = stats.received_bytes + #raw
-      -- Free room before rejecting the new element: under pressure the queued
-      -- head can be consumed here rather than overflowing on a small line.
-      if head <= tail and self.decoder.buffered + pending_bytes > pump_at then
-        pump(deadline)
-      end
-      local before = self.decoder.buffered + pending_bytes
-      if not fits(#raw) then
-        -- Spilling can free the head before rejecting the new element.
-        make_space()
-        before = self.decoder.buffered + pending_bytes
-      end
-      -- One callback element may itself contain many lines and exceed the whole
-      -- budget. It is already in memory, so feed it: the per-line push path can
-      -- spill what it produces. Only a single *message* is bounded by
-      -- max_line_bytes, checked by the decoder.
-      if not fits(#raw) and #raw + 64 <= pending_limit then
-        stats.overflow_callback_message = produced
-        overflow(#raw)
-        break
-      end
-      local ok = self.decoder:feed(raw, function(line)
-        produced = produced + 1
+    local callback_bytes, produced = entry.bytes or 0, entry.produced or 0
+    local first_index = entry.index or 1
+    -- Retain only unprocessed elements across slices; consumed slots are freed.
+    local function consume()
+      local index = first_index
+      while index <= entry.count do
         if stopped then
-          return
+          break
         end
-        stats.received_messages = stats.received_messages + 1
-        if #line > stats.max_line_bytes_seen then
-          stats.max_line_bytes_seen = #line
+        local element = data[index] or ""
+        local raw = index < entry.count and (element .. "\n") or element
+        if entry.retained then
+          input_bytes = input_bytes - #raw - 64
         end
-        if pending_bytes > stats.pending_high_water then
-          stats.pending_high_water = pending_bytes
+        data[index] = nil
+        callback_bytes = callback_bytes + #raw
+        stats.received_bytes = stats.received_bytes + #raw
+        -- Free room before rejecting the new element: under pressure the queued
+        -- head can be consumed here rather than overflowing on a small line.
+        if head <= tail and self.decoder.buffered + pending_bytes > pump_at then
+          pump(deadline)
         end
-        if pending_limit > 0 and retained() + #line + 64 > pending_limit then
+        local before = self.decoder.buffered + pending_bytes
+        if not fits(#raw) then
+          -- Spilling can free the head before rejecting the new element.
           make_space()
+          before = self.decoder.buffered + pending_bytes
         end
-        if pending_limit > 0 and retained() + #line + 64 > pending_limit then
+        -- One callback element may itself contain many lines and exceed the whole
+        -- budget. It is already in memory, so feed it: the per-line push path can
+        -- spill what it produces. Only a single *message* is bounded by
+        -- max_line_bytes, checked by the decoder.
+        if not fits(#raw) and #raw + 64 <= pending_limit then
           stats.overflow_callback_message = produced
-          overflow(0)
-          return
+          overflow(#raw)
+          break
         end
-        tail = tail + 1
-        pending[tail], pending_bytes = line, pending_bytes + #line + 64
-        make_space()
-      end)
-      if not ok then
-        Log.error(
-          "protocol framing failed (message exceeds max_line_bytes: %d > %d)",
-          self.decoder.failed_size or 0,
-          self.decoder.max
-        )
-        self:stop(1)
-        break
+        local ok = self.decoder:feed(raw, function(line)
+          produced = produced + 1
+          if stopped then
+            return
+          end
+          stats.received_messages = stats.received_messages + 1
+          if #line > stats.max_line_bytes_seen then
+            stats.max_line_bytes_seen = #line
+          end
+          if pending_bytes > stats.pending_high_water then
+            stats.pending_high_water = pending_bytes
+          end
+          if pending_limit > 0 and retained() + #line + 64 > pending_limit then
+            make_space()
+          end
+          if pending_limit > 0 and retained() + #line + 64 > pending_limit then
+            stats.overflow_callback_message = produced
+            overflow(0)
+            return
+          end
+          tail = tail + 1
+          pending[tail], pending_bytes = line, pending_bytes + #line + 64
+          make_space()
+        end)
+        if not ok then
+          Log.error(
+            "protocol framing failed (message exceeds max_line_bytes: %d > %d)",
+            self.decoder.failed_size or 0,
+            self.decoder.max
+          )
+          self:stop(1)
+          break
+        end
+        if stopped then
+          -- feed() may have appended an incomplete tail after its handler stopped
+          -- the connection. Do not retain that tail on a dead process.
+          self.decoder.parts, self.decoder.buffered = {}, 0
+          break
+        end
+        check_memory()
+        if pending_limit > 0 and retained() > pending_limit then
+          overflow(0)
+          break
+        end
+        -- Once the shared deadline expires, leave dispatch to a scheduled drain;
+        -- never run one expensive handler per remaining element of a large burst.
+        if head <= tail and before + #raw > pump_at then
+          pump(deadline)
+        end
+        if vim.uv.hrtime() >= deadline then
+          index = index + 1
+          break
+        end
+        index = index + 1
       end
-      if stopped then
-        -- feed() may have appended an incomplete tail after its handler stopped
-        -- the connection. Do not retain that tail on a dead process.
-        self.decoder.parts, self.decoder.buffered = {}, 0
-        break
-      end
-      check_memory()
-      if pending_limit > 0 and retained() > pending_limit then
-        overflow(0)
-        break
-      end
-      -- Once the shared deadline expires, leave dispatch to a scheduled drain;
-      -- never run one expensive handler per remaining element of a large burst.
-      if head <= tail and before + #raw > pump_at then
-        pump(deadline)
-      end
+      return index
     end
+    first_index = consume()
+    entry.index, entry.bytes, entry.produced = first_index, callback_bytes, produced
 
     if callback_bytes > stats.max_callback_bytes then
       stats.max_callback_bytes = callback_bytes
@@ -697,6 +712,7 @@ function M.spawn(opts)
     if produced > stats.max_callback_messages then
       stats.max_callback_messages = produced
     end
+    stats.input_batches = (stats.input_batches or 0) + 1
     if Log.protocol_enabled() then
       Log.debug(
         "receive callback: %d bytes, %d complete messages, pending %d->%d, %.1fms",
@@ -707,9 +723,79 @@ function M.spawn(opts)
         (vim.uv.hrtime() - started) / 1e6
       )
     end
-    if stopped then
+    return first_index > entry.count
+  end
+
+  -- Only one ordered raw-input queue owns callback tails. Later callbacks and
+  -- the exit event cannot overtake it; every continuation gets a fresh deadline.
+  local function retain_input(entry)
+    entry.retained = true
+    for i = entry.index or 1, entry.count do
+      input_bytes = input_bytes + #(entry.data[i] or "") + (i < entry.count and 1 or 0) + 64
+    end
+    check_memory()
+    if pending_limit > 0 and retained() > pending_limit then
+      overflow(0)
       return
     end
+    input_tail = input_tail + 1
+    inputs[input_tail] = entry
+  end
+  local function input_step()
+    if stopped then
+      return false
+    end
+    local entry = inputs[input_head]
+    if entry and consume_stdout(entry) and not stopped then
+      inputs[input_head], input_head = nil, input_head + 1
+    end
+    if has_more() then
+      schedule_drain()
+    elseif exited ~= nil then
+      finish_exit()
+    end
+    if input_head <= input_tail and not stopped then
+      stats.input_resumes = (stats.input_resumes or 0) + 1
+      return true
+    end
+    return false
+  end
+  local function schedule_input()
+    if input_scheduled or stopped or input_head > input_tail then
+      return
+    end
+    input_scheduled = true
+    local function step()
+      local more = input_step()
+      if not more then
+        input_scheduled = false
+      end
+      return more
+    end
+    if process_scheduler then
+      process_scheduler:enqueue("protocol", step, { label = "receive" })
+    else
+      local function resume()
+        if step() then
+          vim.schedule(resume)
+        end
+      end
+      vim.schedule(resume)
+    end
+  end
+  local function handle_stdout(_, data)
+    if stopped or not data or #data == 0 then
+      return
+    end
+    stats.callbacks = stats.callbacks + 1
+    local entry = { data = vim.list_slice(data), count = #data }
+    if input_head <= input_tail then
+      retain_input(entry)
+    elseif not consume_stdout(entry) and not stopped then
+      stats.input_resumes = (stats.input_resumes or 0) + 1
+      retain_input(entry)
+    end
+    schedule_input()
     if has_more() then
       schedule_drain()
     elseif exited ~= nil then

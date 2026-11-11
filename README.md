@@ -93,6 +93,28 @@ require("acp").setup({})
 | `:AcpLog` | 打开日志 |
 | `:AcpDebug` | 打印控制器状态 |
 
+### 工作指示器
+
+输入区的 spinner 默认每 120ms 更新，使用 libuv timer 并合并 UI 回调；焦点在其他窗口时
+也会明确刷新 ACP winbar。隐藏面板或切到其他标签页时停止，返回后恢复。已停止/关闭的
+timer 会在下一次状态、窗口或焦点同步时重建，不需要重启插件。
+
+卡住时查看 `:AcpDebug` 的 `spinner`：
+
+- `state` / `timer_active`：区分正常动画、隐藏、关闭动画和失效 timer。
+- `ticks` / `frame_changes`：帧推进情况；`max_tick_gap_ms` 是历史最大 tick 间隔，
+  应与 `interval_ms` 比较，而不是当作纯阻塞耗时。
+- `max_schedule_delay_ms` / `max_refresh_delay_ms`：UI 队列等待时间。
+- `bar_evaluations` / `last_evaluated_frame`：winbar 表达式是否在更新，不代表物理屏幕已经绘制。
+- `redraw_backend`、错误计数、`active_errors` / `last_error`：重绘方式及当前/历史错误。
+
+重复错误只在每个错误阶段首次发生时记日志。`last_bar_status=waiting` 是等待权限，
+`state=static` 是关闭了动画，都不是 spinner 卡死。libuv 同样无法在主循环阻塞时绘制：
+JSON 解码、单块排版或 Treesitter 解析很重时仍可能暂停，恢复后会跳过错过的帧。
+可结合 `render.timings`（需 `ui.render.profile=true`）和 transport 统计定位重型任务。
+
+带 UI 的回归：`python3 tests/integration_spinner.py`（额外需要测试依赖 `pynvim`，插件本身不需要）。
+
 ### 输入区
 
 进入 `acp_input` 窗口或缓冲区时自动切换到插入模式，离开时退出插入模式，避免把输入
@@ -149,8 +171,9 @@ ui = {
   render = {
     lazy_syntax = true, -- A：仅在视口附近解析/绘制代码、diff 语法颜色
     profile = false,   -- true 时在 :AcpDebug 的 render.timings 查看分层耗时
-    budget_ms = 4,     -- 装饰和分页排版的软时间片；单次解析不可抢占
+    budget_ms = 4,     -- 共享调度器的主循环软预算；同步操作不可抢占
     overscan = 1,      -- 可见区上下各预加载一屏
+    commit_rows = 2000, -- 超过此行数时提交也分片；0 关闭
     pagination = {
       enabled = false, -- B：需要时显式开启，默认不改变原生搜索/复制语义
       page_blocks = 64,
@@ -163,15 +186,20 @@ ui = {
 
 - **A** 保留完整 buffer 文本、基础高亮、conceal、卡片背景和跳转信息，只延迟语法装饰。
   原生搜索和复制不变；文本仍走已有增量排版路径，不因懒高亮重建稳定历史。
-- **B** 首先显示最近一页。接近边缘时加载相邻页，也可在加载提示上按 `<CR>` / `<Tab>`；
+- **B** 首先显示最近一页，之后的新消息始终自动追加，无论你正在看哪里；只有更早的历史
+  按需加载，接近顶部时自动预取。顶部保留“更早消息”提示，可按键加载。
   `gg` 加载最早保留内容，`G` 回到最新并跟随，`[b` / `]b` 可跨页。
 - 分页只改变显示范围，不修改 Session/Agent 历史。原生 `/` 和 Visual 复制只覆盖当前
   已加载文本，不提供跨未加载历史的原生搜索。`Chat:transcript()` 的显式完整导出仍包含
   Session 保留的全文，但该操作会临时全量排版。
+- 接收尾部、分页排版、语法装饰和大型提交使用共享工作调度器。stdout 解析超出接收预算时，
+  未处理的尾部保序排队，并计入积压限制；溢出时明确断连。分页排版中的表格和 Markdown 在结构行边界让出；
+  超过 `commit_rows` 的首次布局/翻页提交按行分片写入。单个 JSON 解码、单次 Treesitter
+  解析、diff 计算、非分页排版、单条超大消息分帧仍不可抢占。接收首次回调与消息派发仍使用独立接收预算。
 - Visual/Select 选区活动时暂停分页排版与回收，退出后刷新。当前可见块不会因分页而被
   回收，因此受保护范围可能暂时超过预算；单个大块也不会被强行拆开。
-- `page_bytes` 是每次新增页面的源载荷目标，不是 RSS 上限；回收同时参考 `max_blocks`
-  和按页面数推导的载荷预算。A 不减少全文行缓存，B 才减少常驻物化行及对应缓存。
+- `page_bytes` 是每次新增页面的源载荷目标，不是 RSS 上限。为同时保留阅读位置与最新输出，
+  往回加载时窗口可以超过 `max_blocks`；返回底部再收缩。A 不减少全文行缓存，B 减少初始物化范围。
 
 运行 `nvim --headless -u tests/minimal_init.lua -l tests/perf_lazy.lua` 可比较全文、A、B 的
 首个布局提交耗时、语法解析、extmark 数量和 Lua 内存。具体耗时取决于内容和本机环境。
@@ -740,6 +768,10 @@ require("acp").setup({ layout = { backend = "native" } }, { discard_queued = tru
 
 思考进行中会实时展开并显示 `Thinking`，正文随 chunk 更新；思考结束（Agent 转入正文、
 工具、计划，或回合结束）后自动折叠并改为 `Thought`。历史会话和重连重放的思考保持折叠。
+
+跟随输出时，超过一屏的内容在自动折叠后仍保持尾部锚定，保留原有尾部空行，后续消息继续追加。
+内容不足一屏时从顶部正常显示，不添加顶部留白；鼠标到达末尾后不能再将内容向上推移来扩大底部空白。
+上翻阅读历史或手动折叠卡片时不强制跳到最新位置；聊天窗口启用局部 `smoothscroll` 以处理跨屏换行。
 
 `<Tab>` 手动操作始终优先：流式中折叠后不会被后续 chunk 弹开。需要改变默认值时：
 

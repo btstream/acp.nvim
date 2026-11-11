@@ -2,6 +2,7 @@
 -- Sources are shared by all rows; only the viewport owns live syntax extmarks.
 local CodeHL = require("acp.ui.code_hl")
 local metrics = require("acp.ui.render_metrics")
+local work = require("acp.ui.work_scheduler")
 local M = {}
 M.ns = vim.api.nvim_create_namespace("acp_lazy_syntax")
 
@@ -20,6 +21,10 @@ function M.cancel(view)
   view.decoration_epoch = (view.decoration_epoch or 0) + 1
   view.decoration_key = nil
   view.decoration_pending = false
+  if view.decoration_ticket then
+    view.decoration_ticket.cancelled = true
+    view.decoration_ticket = nil
+  end
 end
 
 function M.clear(view)
@@ -33,6 +38,8 @@ function M.schedule(view)
   local cfg = view.config.ui.render
   if
     not cfg
+    or view.commit_job
+    or view.full_rewrite
     or not cfg.lazy_syntax
     or not view:is_visible()
     or not view.meta
@@ -106,6 +113,7 @@ function M.schedule(view)
       for _, item in ipairs(meta and meta.decorations or {}) do
         local by_row = sources[item.source]
         if not by_row then
+          coroutine.yield() -- keep the parser call in its own slot
           local parse_start = metrics.start(view)
           local ranges = CodeHL.highlight(item.source.code, item.source.lang)
           if not current() then
@@ -139,32 +147,34 @@ function M.schedule(view)
     if not current() then
       if view.decoration_epoch == epoch then
         view.decoration_pending, view.decoration_key = false, nil
+        view.decoration_ticket = nil
       end
       return
     end
     local started = metrics.start(view)
-    local deadline = vim.uv.hrtime() + cfg.budget_ms * 1e6
-    repeat
-      local ok, err = coroutine.resume(worker)
-      if not current() then
-        if view.decoration_epoch == epoch then
-          view.decoration_pending, view.decoration_key = false, nil
-        end
-        return
+    local ok, err = coroutine.resume(worker)
+    if not current() then
+      if view.decoration_epoch == epoch then
+        view.decoration_pending, view.decoration_key = false, nil
+        view.decoration_ticket = nil
       end
-      if not ok then
-        view.decoration_pending = false
-        require("acp.log").error("transcript syntax decoration failed: %s", tostring(err))
-        return
-      end
-    until coroutine.status(worker) == "dead" or vim.uv.hrtime() >= deadline
+      return
+    end
+    if not ok then
+      view.decoration_pending = false
+      view.decoration_key = nil
+      view.decoration_ticket = nil
+      require("acp.log").error("transcript syntax decoration failed: %s", tostring(err))
+      return
+    end
     metrics.record(view, "decorate_slice", started)
     if coroutine.status(worker) ~= "dead" then
-      vim.schedule(step)
-    else
-      view.decoration_pending = false
+      return true
     end
+    view.decoration_pending = false
+    view.decoration_ticket = nil
+    return false
   end
-  vim.schedule(step)
+  view.decoration_ticket = work.shared:enqueue("decoration", step, { key = view.buf, label = "decoration" })
 end
 return M

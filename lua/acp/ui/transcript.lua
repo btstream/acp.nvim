@@ -4,6 +4,7 @@
 -- `acp.ui.chat` owns the view and hands the result to `acp.ui.buffer_renderer`.
 local blocks = require("acp.ui.blocks")
 local session_state = require("acp.session.state")
+local metrics = require("acp.ui.render_metrics")
 
 local M = {}
 
@@ -121,6 +122,7 @@ local function context(session, view)
     thoughts = view.thoughts,
     diff = view.diff,
     lazy_syntax = view.config.ui.render and view.config.ui.render.lazy_syntax,
+    checkpoint = view.checkpoint,
   }
 end
 
@@ -139,6 +141,7 @@ end
 ---@return table layout
 function M.full(session, view, opts)
   local ctx = context(session, view)
+  ctx.checkpoint = opts.checkpoint
   local cache = opts.force and {} or view.cache
   local lines, meta = {}, {}
   if session.trimmed then
@@ -189,7 +192,11 @@ function M.full(session, view, opts)
       or (session.tracked and entry.revision ~= block._revision)
       or not signature_equal(entry.sig, sig)
     then
+      local render_start = metrics.start(view)
       entry = { block = block, sig = sig, revision = block._revision, lines = blocks.render_block(block, ctx) }
+      if render_start then
+        metrics.record(view, "block_layout", render_start, metrics.describe(block))
+      end
       -- A buffer line cannot contain a newline. Agent supplied text may, so
       -- fold it once here; cached lines are already clean.
       for _, line in ipairs(entry.lines) do
@@ -217,10 +224,6 @@ function M.full(session, view, opts)
     if opts.checkpoint and index < last then
       opts.checkpoint()
     end
-  end
-  if last < #session.blocks then
-    lines[#lines + 1] = "↓ Load newer messages (<CR>)"
-    meta[#meta + 1] = { kind = "page", page = 1, segments = { { s = 0, e = -1, group = "AcpLink" } } }
   end
 
   -- Drop cache entries for removed blocks.
@@ -283,8 +286,12 @@ function M.dirty(session, view, first_block)
     end
     local entry = view.cache[block.id]
     if not entry or entry.block ~= block or entry.revision ~= block._revision then
+      local render_start = metrics.start(view)
       session_state.block_text(block)
       entry = { block = block, revision = block._revision, lines = blocks.render_block(block, ctx) }
+      if render_start then
+        metrics.record(view, "block_layout", render_start, metrics.describe(block))
+      end
       view.cache[block.id] = entry
     end
     view.line_starts[block.id] = offset + #lines + 1

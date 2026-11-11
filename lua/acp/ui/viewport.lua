@@ -2,6 +2,121 @@
 -- refer to a block plus a rendered-row offset, not an absolute buffer row that
 -- may move when an earlier table wraps differently.
 local M = {}
+local tail_ns = vim.api.nvim_create_namespace("acp_tail_padding")
+
+function M.clear_tail(chat)
+  if chat.buf and vim.api.nvim_buf_is_valid(chat.buf) then
+    vim.api.nvim_buf_clear_namespace(chat.buf, tail_ns, 0, -1)
+  end
+  chat.tail_padding, chat.tail_aligned = nil, nil
+end
+
+local function prepare_tail(chat)
+  local win, buf = chat.win, chat.buf
+  -- Without partial wrapped-line scrolling, zb may put just the trailing blank
+  -- rows at the top when the preceding logical line is taller than the window.
+  vim.wo[win].smoothscroll = true
+  vim.api.nvim_buf_clear_namespace(buf, tail_ns, 0, -1)
+  -- Clear any padding left by an older view. Short transcripts start naturally
+  -- at buffer row 1; unused window space belongs below, never above the text.
+  chat.tail_padding = 0
+end
+
+function M.refresh_tail(chat)
+  if chat.tail_aligned and chat:is_visible() and vim.api.nvim_win_get_buf(chat.win) == chat.buf then
+    prepare_tail(chat)
+  end
+end
+
+local function align_tail(chat)
+  local win = chat.win
+  local count = vim.api.nvim_buf_line_count(chat.buf)
+  vim.api.nvim_win_set_cursor(win, { count, 0 })
+  vim.cmd("normal! zb")
+  if vim.wo[win].wrap and vim.api.nvim_win_text_height then
+    -- For a non-current window Neovim may defer the wrapped topline's skipcol
+    -- until cursor redraw, which never happens while typing in the composer.
+    -- Supply that screen-row offset explicitly instead of moving input focus.
+    local view = vim.fn.winsaveview()
+    local info = vim.fn.getwininfo(win)[1]
+    local height = vim.api.nvim_win_text_height(win, { start_row = view.topline - 1, end_row = count - 1 }).all
+    local skip = math.max(0, height - info.height)
+    if skip > 0 then
+      view.skipcol = skip * math.max(1, info.width - info.textoff)
+      vim.fn.winrestview(view)
+    end
+  end
+end
+
+-- Moving the cursor alone leaves Neovim free to keep a shrink-induced topline
+-- near EOF. Explicitly align the final *display* row, including the existing
+-- trailing blank line, without changing focus, mode, jumplist or scrolloff.
+function M.follow_tail(chat)
+  if not chat:is_visible() or vim.api.nvim_win_get_buf(chat.win) ~= chat.buf then
+    return false
+  end
+  chat.tail_aligned = true
+  prepare_tail(chat)
+  vim.api.nvim_win_call(chat.win, function()
+    align_tail(chat)
+  end)
+  return true
+end
+
+-- Clamp wheel/touchpad overscroll while preserving the user's cursor and
+-- reading mode. The canonical EOF view accounts for wrapping and virtual rows.
+function M.clamp_tail(chat)
+  if not chat:is_visible() or vim.api.nvim_win_get_buf(chat.win) ~= chat.buf then
+    return false
+  end
+  return vim.api.nvim_win_call(chat.win, function()
+    local count = vim.api.nvim_buf_line_count(chat.buf)
+    if vim.fn.line("w$") < count then
+      return false
+    end
+    local info = vim.fn.getwininfo(chat.win)[1]
+    if count <= info.height and vim.api.nvim_win_text_height then
+      local height = vim.api.nvim_win_text_height(chat.win, { start_row = 0, end_row = count - 1 }).all
+      if height <= info.height then
+        local saved = vim.fn.winsaveview()
+        local beyond = saved.topline ~= 1 or saved.skipcol ~= 0 or saved.topfill ~= 0
+        if beyond then
+          saved.topline, saved.skipcol, saved.topfill = 1, 0, 0
+          vim.fn.winrestview(saved)
+        end
+        return beyond
+      end
+    end
+    local text = vim.api.nvim_buf_get_lines(chat.buf, count - 1, count, false)[1] or ""
+    local row = vim.fn.screenpos(chat.win, count, math.max(1, #text)).row
+    -- Do not disturb a correctly aligned view. In particular, zb's wrapped-line
+    -- skipcol is resolved during redraw; saving/restoring it prematurely can
+    -- discard that pending adjustment and hide EOF again.
+    if row == 0 or row >= info.winrow + info.winbar + info.height - 1 then
+      return false
+    end
+    local saved = vim.fn.winsaveview()
+    chat.tail_aligned = true
+    prepare_tail(chat)
+    align_tail(chat)
+    local bottom = vim.fn.winsaveview()
+    if saved.topline == bottom.topline and saved.skipcol == bottom.skipcol and saved.topfill == bottom.topfill then
+      -- Some wrapped/status-column combinations round zb one screen row too
+      -- far. Correct the measured screen gap with native smooth scrolling.
+      local gap = info.winrow + info.winbar + info.height - 1 - row
+      vim.cmd("normal! " .. gap .. string.char(25)) -- <C-y>: scroll up by screen rows
+      bottom = vim.fn.winsaveview()
+    end
+    local beyond = saved.topline > bottom.topline
+      or (saved.topline == bottom.topline and saved.skipcol > bottom.skipcol)
+      or (saved.topline == bottom.topline and saved.skipcol == bottom.skipcol and saved.topfill < bottom.topfill)
+    if beyond then
+      saved.topline, saved.skipcol, saved.topfill = bottom.topline, bottom.skipcol, bottom.topfill
+    end
+    vim.fn.winrestview(saved)
+    return beyond
+  end)
+end
 
 local function anchor(chat, row)
   local entry = chat.meta[row]

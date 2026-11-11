@@ -299,7 +299,7 @@ function M.render_text(text, base_hl, width, cache)
           offset = offset + #raw + 1
         end
       end
-      for _, line in ipairs(Table.render(Table.parse(rows), hl, w)) do
+      for _, line in ipairs(Table.render(Table.parse(rows), hl, w, { checkpoint = cache and cache.checkpoint })) do
         line.source = offsets[line.table_row or 1]
         out[#out + 1] = line
       end
@@ -325,6 +325,9 @@ function M.render_text(text, base_hl, width, cache)
     local raw_start = search
     local raw = text:sub(search, nl - 1)
     search = nl + 1
+    if cache and cache.checkpoint then
+      cache.checkpoint()
+    end
 
     -- Table rows are collected first and drawn once, because column widths
     -- depend on every row.

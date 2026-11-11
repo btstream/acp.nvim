@@ -130,6 +130,7 @@ local function render_block(block, ctx)
   if cache_key then
     block[cache_key] = block[cache_key] or {}
     block[cache_key].lazy_syntax = ctx.lazy_syntax
+    block[cache_key].checkpoint = ctx.checkpoint
   end
   local kind = block.kind
   if kind == "user" then
@@ -184,7 +185,39 @@ local function render_block(block, ctx)
 end
 
 function M.render_block(block, ctx)
+  local original
+  if ctx.checkpoint then
+    -- A cancelled coroutine must not leave published Markdown cache arrays or
+    -- temporary expansion state half-mutated. Publish only a completed render.
+    session_state.block_text(block)
+    original = block
+    block = vim.tbl_extend("force", {}, block)
+    for key, value in pairs(block) do
+      if type(key) == "string" and key:match("^_md_") and type(value) == "table" then
+        block[key] = vim.tbl_extend("force", {}, value)
+        if value.lines then
+          block[key].lines = vim.list_slice(value.lines)
+        end
+      end
+    end
+  end
   local lines = render_block(block, ctx)
+  if original then
+    original._diff_cache = block._diff_cache
+    for key in pairs(original) do
+      if type(key) == "string" and key:match("^_md_") then
+        original[key] = nil
+      end
+    end
+    for key, value in pairs(block) do
+      if type(key) == "string" and key:match("^_md_") then
+        if type(value) == "table" then
+          value.checkpoint = nil
+        end
+        original[key] = value
+      end
+    end
+  end
   if block.truncated and #lines > 0 then
     for _, line in ipairs(lines) do
       if (line.text or ""):find("Truncated by local memory limit", 1, true) then

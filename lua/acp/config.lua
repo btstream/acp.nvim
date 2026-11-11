@@ -132,6 +132,8 @@ M.defaults = {
       profile = false,
       budget_ms = 4,
       overscan = 1,
+      -- Above this many rows a full commit is written in slices. 0 disables.
+      commit_rows = 2000,
       pagination = {
         -- Opt-in: native search/selection see only materialised history.
         enabled = false,
@@ -365,6 +367,7 @@ function M.validate(cfg)
     fail("ui.render.pagination.enabled must be a boolean")
   end
   check_number(render.budget_ms, 1, 100, "ui.render.budget_ms")
+  check_number(render.commit_rows, 0, 1000000, "ui.render.commit_rows")
   check_number(render.overscan, 0, 5, "ui.render.overscan")
   for _, key in ipairs({ "page_blocks", "max_blocks" }) do
     check_number(render.pagination[key], 1, 10000, "ui.render.pagination." .. key)

@@ -10,6 +10,15 @@ local ns = vim.api.nvim_create_namespace("acp_chat")
 -- inline highlight extmarks.
 local ns_bg = vim.api.nvim_create_namespace("acp_chat_bg")
 
+local function set_lines(buf, first, last, lines)
+  vim.bo[buf].modifiable = true
+  local ok, err = pcall(vim.api.nvim_buf_set_lines, buf, first, last, false, lines)
+  vim.bo[buf].modifiable = false
+  if not ok then
+    error(err, 0)
+  end
+end
+
 M.ns = ns
 M.ns_bg = ns_bg
 
@@ -123,9 +132,7 @@ end
 ---@param meta table[]
 ---@param full boolean
 function M.replace(buf, lines, meta, full)
-  vim.bo[buf].modifiable = true
-  vim.api.nvim_buf_set_lines(buf, 0, full and -1 or nil, false, lines)
-  vim.bo[buf].modifiable = false
+  set_lines(buf, 0, full and -1 or nil, lines)
   vim.api.nvim_buf_clear_namespace(buf, ns, 0, -1)
   for i, entry in ipairs(meta) do
     if entry.segments then
@@ -164,14 +171,12 @@ function M.write(buf, lines, meta, old, full)
   local changed = first <= last or #old ~= #lines
 
   if changed then
-    vim.bo[buf].modifiable = true
     -- `#old - suffix` is the exclusive end in the *cache's* coordinates. With
     -- an empty cache that is 0, and `set_lines(buf, 0, 0, ...)` inserts instead
     -- of replacing, leaving the previous transcript in place. Use -1 ("end of
     -- buffer") for a full rewrite.
     local end_line = full and -1 or (#old - suffix)
-    vim.api.nvim_buf_set_lines(buf, prefix, end_line, false, vim.list_slice(lines, first, last))
-    vim.bo[buf].modifiable = false
+    set_lines(buf, prefix, end_line, vim.list_slice(lines, first, last))
 
     if full then
       vim.api.nvim_buf_clear_namespace(buf, ns, 0, -1)
@@ -190,6 +195,82 @@ function M.write(buf, lines, meta, old, full)
     end
   end
   return changed
+end
+
+function M.write_sliced(buf, lines, meta, old, full, chunk_rows)
+  return coroutine.create(function()
+    -- Buffer writes can be refused while text is locked (for example a scheduled
+    -- slice that happens to run during a redraw). Retry on the next slice
+    -- instead of abandoning a half-written transcript.
+    local function guarded(fn)
+      local attempts = 0
+      while true do
+        local ok, err = pcall(fn)
+        if ok then
+          return
+        end
+        attempts = attempts + 1
+        if attempts > 20 or not tostring(err):find("E565", 1, true) then
+          error(err, 0)
+        end
+        coroutine.yield()
+      end
+    end
+    if full then
+      old = {}
+    end
+    local prefix = 0
+    local max_prefix = math.min(#old, #lines)
+    while prefix < max_prefix and old[prefix + 1] == lines[prefix + 1] do
+      prefix = prefix + 1
+    end
+    local suffix = 0
+    local max_suffix = math.min(#old, #lines) - prefix
+    while suffix < max_suffix and old[#old - suffix] == lines[#lines - suffix] do
+      suffix = suffix + 1
+    end
+    local first = prefix + 1
+    local last = #lines - suffix
+    local changed = first <= last or #old ~= #lines
+    if not changed then
+      return false
+    end
+    local end_line = full and -1 or (#old - suffix)
+    local stop = math.min(last, first + chunk_rows - 1)
+    guarded(function()
+      set_lines(buf, prefix, end_line, vim.list_slice(lines, first, stop))
+    end)
+    coroutine.yield()
+    for start = stop + 1, last, chunk_rows do
+      guarded(function()
+        set_lines(buf, start - 1, start - 1, vim.list_slice(lines, start, math.min(last, start + chunk_rows - 1)))
+      end)
+      coroutine.yield()
+    end
+    guarded(function()
+      vim.api.nvim_buf_clear_namespace(buf, ns, full and 0 or prefix, full and -1 or last)
+    end)
+    for i = first, last, chunk_rows do
+      local stop = math.min(last, i + chunk_rows - 1)
+      guarded(function()
+        for row = i, stop do
+          local entry = meta[row]
+          if entry and entry.segments then
+            M.highlight_line(buf, row, entry.segments, lines[row])
+          end
+        end
+      end)
+      coroutine.yield()
+    end
+    vim.bo[buf].modifiable = false
+    return changed
+  end)
+end
+
+---Write a layout with an explicit row budget between yields.
+---@return coroutine
+function M.write_chunked(buf, lines, meta, old, full, chunk_rows)
+  return M.write_sliced(buf, lines, meta, old, full, math.max(1, chunk_rows or 500))
 end
 
 ---Repaint backgrounds if their geometry changed.
@@ -234,9 +315,7 @@ function M.write_suffix(buf, lines, meta, old_lines, old_meta, offset)
   end
   local last = #lines - suffix
   if prefix < last or old_size ~= #lines then
-    vim.bo[buf].modifiable = true
-    vim.api.nvim_buf_set_lines(buf, offset + prefix, old_count - suffix, false, vim.list_slice(lines, prefix + 1, last))
-    vim.bo[buf].modifiable = false
+    set_lines(buf, offset + prefix, old_count - suffix, vim.list_slice(lines, prefix + 1, last))
     vim.api.nvim_buf_clear_namespace(buf, ns, offset + prefix, offset + last)
     for i = prefix + 1, last do
       if meta[i] and meta[i].segments then

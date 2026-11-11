@@ -110,7 +110,50 @@ return function(t)
           controller.open()
         end
         t.eq(timer, s.chrome.timer)
-        t.eq(1, #vim.fn.timer_info(timer))
+        t.truthy(timer:is_active())
+        t.falsy(timer:is_closing())
+      end)
+    end)
+
+    t.it("repairs a stopped animation when the editor regains focus", function()
+      fixture(function(s)
+        controller.open()
+        controller.send_now("run", {})
+        local old = s.chrome.timer
+        old:stop()
+        vim.api.nvim_exec_autocmds("FocusGained", { modeline = false })
+        t.truthy(vim.wait(300, function()
+          return s.chrome.timer ~= old
+        end, 2))
+        t.truthy(old:is_closing())
+        t.truthy(advances(s.chrome))
+      end)
+    end)
+
+    t.it("pauses for an inactive tab and resumes on returning", function()
+      fixture(function(s)
+        controller.open()
+        controller.send_now("run", {})
+        local original_tab = vim.api.nvim_get_current_tabpage()
+        vim.cmd("tabnew")
+        local other = vim.api.nvim_get_current_tabpage()
+        local ok, err = pcall(function()
+          t.truthy(vim.wait(300, function()
+            return s.chrome.timer == nil
+          end, 2))
+          vim.api.nvim_set_current_tabpage(original_tab)
+          t.truthy(vim.wait(300, function()
+            return s.chrome.timer ~= nil
+          end, 2))
+          t.truthy(advances(s.chrome))
+        end)
+        if vim.api.nvim_tabpage_is_valid(other) then
+          vim.api.nvim_set_current_tabpage(other)
+          vim.cmd("tabclose")
+        end
+        if not ok then
+          error(err, 0)
+        end
       end)
     end)
 

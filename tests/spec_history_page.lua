@@ -48,6 +48,19 @@ return function(t)
   end
 
   t.describe("history pagination", function()
+    t.it("can reach old history beyond four times the window budget", function()
+      local s = history(100)
+      local p = Page.new({ page_blocks = 5, max_blocks = 10, page_bytes = 4096 })
+      p:sync(s, true)
+      while p.first > 1 do
+        local before = p.first
+        t.truthy(p:load(s, -1))
+        t.truthy(p.first < before, "older loading stopped making progress")
+        t.eq(100, p.last)
+      end
+      p:trim(s, { first = 4, last = 8 })
+      t.truthy(p.first <= 4, "trim evicted a pinned block")
+    end)
     t.it("materialises only the newest page without changing the Session", function()
       with_view(function(chat)
         local s = history(40)
@@ -76,6 +89,7 @@ return function(t)
         t.truthy(chat:load_page(-1))
         ready(chat, s)
         t.eq(31, chat.page.first)
+        t.eq(40, chat.page.last)
         local after = viewport.capture(chat)
         t.eq(before.cursor.id, after.cursor.id)
         t.eq(before.cursor.offset, after.cursor.offset)
@@ -91,7 +105,7 @@ return function(t)
         chat:scroll_to_top()
         ready(chat, s)
         t.eq(1, chat.page.first)
-        t.eq(5, chat.page.last)
+        t.eq(40, chat.page.last, "the newest block must stay materialised")
         vim.api.nvim_win_set_cursor(chat.win, { chat.line_starts.b5, 0 })
         chat:jump_block(1)
         ready(chat, s)
@@ -100,10 +114,9 @@ return function(t)
         ready(chat, s)
         t.eq(40, chat.page.last)
         t.truthy(chat.follow)
-        t.eq(nil, s.blocks[1]._md_user, "evicted page retained Markdown cache")
+        t.truthy(chat.page.first < 40)
       end)
     end)
-
     t.it("exports the complete transcript while native buffer text remains paged", function()
       with_view(function(chat, cfg)
         local s = history(40)
@@ -140,11 +153,9 @@ return function(t)
         vim.cmd("normal! \27")
         chat:render()
         ready(chat, s)
-        t.eq(40, chat.page.last, "new output displaced the reading page")
-        t.eq(1, chat.meta[#chat.meta].page)
-        chat:scroll_to_bottom()
-        ready(chat, s)
-        t.eq(41, chat.page.last)
+        t.eq(41, chat.page.last, "leaving selection must materialise the new output")
+        t.match("latest", table.concat(chat.lines_cache, "\n"))
+        t.falsy(chat.follow, "leaving selection must not jump to the bottom")
       end)
     end)
 
@@ -175,32 +186,63 @@ return function(t)
       end
       s.blocks = kept
       local first, last = p:sync(s, false)
-      t.truthy(first >= 1 and last <= #kept)
-      t.eq("b5", kept[last].id)
+      t.truthy(first >= 1 and last == #kept)
+      t.eq("b40", kept[last].id)
     end)
 
-    t.it("bounds repeated page loads by block and source budgets, with pin exceptions", function()
+    t.it("always keeps the newest block and trims the old side on budget", function()
       local s = history(100)
       local p = Page.new({ page_blocks = 5, max_blocks = 10, page_bytes = 4096 })
       p:sync(s, true)
+      t.eq(100, p.last)
+      t.truthy(p.last - p.first + 1 <= 10)
       for _ = 1, 10 do
-        t.truthy(p:load(s, -1))
-        t.truthy(p.last - p.first + 1 <= 10)
+        p:load(s, -1)
+        t.eq(100, p.last, "loading older history dropped live output")
       end
-      local pinned = p.last
-      t.truthy(p:load(s, -1, { first = pinned, last = pinned }))
-      t.eq(pinned, p.last)
-      t.truthy(p.last - p.first + 1 > 10, "protected content should not be evicted")
+      -- Loading older pages may grow the window so the reader keeps context;
+      -- returning to the bottom trims it back to the configured budget.
+      t.truthy(p.last - p.first + 1 > 10)
+      p:trim(s)
+      t.eq(100, p.last)
+      t.truthy(p.last - p.first + 1 <= 10, "trim did not return to the budget")
+      -- A block currently visible on the old edge must survive one trim.
+      local pinned = p.first
+      p:load(s, -1)
+      p:trim(s, { first = pinned, last = pinned })
+      t.eq(100, p.last)
       local big = history(20)
       for _, block in ipairs(big.blocks) do
         block._bytes = 2048
       end
       local q = Page.new({ page_blocks = 5, max_blocks = 10, page_bytes = 4096 })
       q:sync(big, true)
+      t.eq(20, q.last)
       for _ = 1, 5 do
         q:load(big, -1)
+        t.eq(20, q.last)
       end
+      q:trim(big)
       t.truthy(q.last - q.first + 1 <= 4, "source-byte budget was ignored")
+    end)
+
+    t.it("appends live output while the user reads older history", function()
+      with_view(function(chat)
+        local s = history(20)
+        chat:set_session(s)
+        ready(chat, s)
+        chat.follow = false
+        t.truthy(chat:load_page(-1))
+        ready(chat, s)
+        local before = chat.page.first
+        s:append({ id = "live", kind = "agent", text = "live tail" })
+        chat:render()
+        ready(chat, s)
+        t.eq(#s.blocks, chat.page.last, "new output was not materialised")
+        t.match("live tail", table.concat(chat.lines_cache, "\n"))
+        t.truthy(chat.page.first <= before)
+        t.falsy(chat.follow, "reading older history must not jump to the bottom")
+      end)
     end)
 
     t.it("keeps source anchors on the same table row across resize", function()
@@ -234,15 +276,17 @@ return function(t)
       end)
     end)
 
-    t.it("activates boundary hints and prefetches on reaching an edge", function()
+    t.it("loads one older page and prefetches on reaching the top edge", function()
       with_view(function(chat)
         local s = history(40)
         chat:set_session(s)
         ready(chat, s)
+        t.eq(36, chat.page.first)
         vim.api.nvim_win_set_cursor(chat.win, { 1, 0 })
         t.truthy(chat:activate_page())
         ready(chat, s)
         t.eq(31, chat.page.first)
+        t.eq(40, chat.page.last)
         vim.api.nvim_win_set_cursor(chat.win, { 1, 0 })
         vim.api.nvim_win_call(chat.win, function()
           vim.cmd("normal! zt")
@@ -251,7 +295,17 @@ return function(t)
         chat:on_scroll()
         ready(chat, s)
         t.truthy(chat.page.first < 31)
-      end)
+        t.eq(40, chat.page.last)
+      end, {
+        ui = {
+          render = {
+            lazy_syntax = true,
+            profile = true,
+            budget_ms = 1,
+            pagination = { enabled = true, page_blocks = 5, max_blocks = 30, page_bytes = 4096 },
+          },
+        },
+      })
     end)
 
     t.it("rejects superseded width and theme jobs before committing", function()
@@ -271,21 +325,26 @@ return function(t)
       end)
     end)
 
-    t.it("does not resume following at the bottom of an older page", function()
+    t.it("does not follow live output from the middle of older history", function()
       with_view(function(chat)
         local s = history(40)
         chat:set_session(s)
         ready(chat, s)
         chat:scroll_to_top()
         ready(chat, s)
-        vim.api.nvim_win_set_cursor(chat.win, { #chat.lines_cache, 0 })
+        -- Scroll to the middle of the loaded window: not at the newest edge.
+        local mid = math.max(1, math.floor(#chat.lines_cache / 2))
+        vim.api.nvim_win_set_cursor(chat.win, { mid, 0 })
         chat:on_enter()
         t.falsy(chat.follow)
-        local last = chat.page.last
+        local first = chat.page.first
         s:append({ id = "extra", kind = "agent", text = "new output" })
         chat:render()
         ready(chat, s)
-        t.eq(last, chat.page.last)
+        t.eq(#s.blocks, chat.page.last, "new output must still be materialised")
+        t.truthy(chat.page.first <= first)
+        t.match("new output", table.concat(chat.lines_cache, "\n"))
+        t.falsy(chat.follow, "reading older history must not resume following")
       end)
     end)
   end)

@@ -35,67 +35,70 @@ function Page:sync(session, follow)
     self:set(blocks, 1, 0)
     return 1, 0
   end
-  local first, last
+  local first
   for i, block in ipairs(blocks) do
     if block.id == self.first_id then
       first = i
-    end
-    if block.id == self.last_id then
-      last = i
-    end
-  end
-  if not first or not last or follow then
-    last = follow and n or last or n
-    first = edge(blocks, last, -1, self.cfg)
-  end
-  self:set(blocks, first, last)
-  return first, last
-end
-
-function Page:load(session, direction, pins)
-  self:sync(session, false)
-  local blocks, first, last = session.blocks, self.first, self.last
-  if #blocks == 0 then
-    return false
-  end
-  if direction < 0 then
-    if first == 1 then
-      return false
-    end
-    first = edge(blocks, first - 1, -1, self.cfg)
-  else
-    if last == #blocks then
-      return false
-    end
-    last = edge(blocks, last + 1, 1, self.cfg)
-  end
-  local bytes = 0
-  for i = first, last do
-    bytes = bytes + cost(blocks[i])
-  end
-  local max_bytes = self.cfg.page_bytes * math.ceil(self.cfg.max_blocks / self.cfg.page_blocks)
-  local over = last - first + 1 > self.cfg.max_blocks or bytes > max_bytes
-  local low_blocks = math.max(self.cfg.page_blocks, math.floor(self.cfg.max_blocks * 0.9))
-  local low_bytes = math.max(self.cfg.page_bytes, math.floor(max_bytes * 0.9))
-  while over and last > first and (last - first + 1 > low_blocks or bytes > low_bytes) do
-    local index = direction < 0 and last or first
-    if pins and index >= pins.first and index <= pins.last then
       break
     end
-    bytes = bytes - cost(blocks[index])
-    if direction < 0 then
-      last = last - 1
-    else
-      first = first + 1
-    end
   end
-  self:set(blocks, first, last)
+  -- The newest block is always materialised: new output must appear without a
+  -- manual "load newer" step. Only the older side is paged.
+  if follow or not first then
+    first = edge(blocks, n, -1, self.cfg)
+  end
+  self:set(blocks, first, n)
+  return self.first, self.last
+end
+
+---Load one older page. The newest edge never moves, so live output keeps
+---arriving. The window grows while the user is reading old history; it is
+---trimmed when they return to the bottom. A contiguous range cannot both keep
+---the live tail and enforce a hard cap while loading arbitrarily old history.
+---@param session AcpSessionState
+---@param direction integer only negative directions load more history
+---@param pins {first: integer, last: integer}|nil
+---@return boolean changed
+function Page:load(session, direction, pins)
+  self:sync(session, false)
+  local blocks = session.blocks
+  if direction >= 0 or #blocks == 0 or self.first == 1 then
+    return false
+  end
+  local first = edge(blocks, self.first - 1, -1, self.cfg)
+  self:set(blocks, first, self.last)
   return true
 end
 
 function Page:beginning(session)
   local blocks = session.blocks
-  self:set(blocks, 1, #blocks == 0 and 0 or edge(blocks, 1, 1, self.cfg))
+  self:set(blocks, 1, #blocks)
+end
+
+---Return to the newest window, dropping older pages the user no longer reads.
+function Page:trim(session, pins)
+  local blocks, n = session.blocks, #session.blocks
+  if n == 0 then
+    self:set(blocks, 1, 0)
+    return
+  end
+  local first = edge(blocks, n, -1, self.cfg)
+  if pins then
+    first = math.min(first, pins.first)
+  end
+  local bytes = 0
+  for i = first, n do
+    bytes = bytes + cost(blocks[i])
+  end
+  local max_bytes = self.cfg.page_bytes * math.ceil(self.cfg.max_blocks / self.cfg.page_blocks)
+  while first < n and (n - first + 1 > self.cfg.max_blocks or bytes > max_bytes) do
+    if pins and first <= pins.last and first >= pins.first then
+      break
+    end
+    bytes = bytes - cost(blocks[first])
+    first = first + 1
+  end
+  self:set(blocks, first, n)
 end
 
 function M.selected(view)

@@ -125,6 +125,7 @@ function Client:do_start(generation)
     max_pending_bytes = limits.max_pending_bytes,
     spill_bytes = limits.spill_bytes,
     dispatch_budget_ms = limits.dispatch_budget_ms,
+    scheduler = require("acp.ui.work_scheduler").shared,
     on_line = function(line)
       return self:on_line(line)
     end,

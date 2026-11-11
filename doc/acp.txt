@@ -41,6 +41,32 @@ acp.nvim 是一个 Neovim 原生的 Agent Client Protocol 客户端。
 :AcpDebug                                                  *:AcpDebug*
     在命令行打印控制器状态。
 
+工作指示器                                                  *acp-spinner*
+
+输入区 spinner 使用 libuv timer，默认 ui.toolbar.animation_interval=120ms；UI 回调合并，
+明确刷新 ACP 窗口 winbar，必要时回退 redrawstatus!。不切换窗口焦点。隐藏面板/切换到
+其他标签页时停止，返回后恢复；已停止/关闭的 handle 在下一次状态、窗口、焦点同步时重建。
+
+:AcpDebug 的 spinner 包含：
+  state / timer_active            动画状态及 handle 是否存活
+  ticks / frame_changes           主线程 tick 和帧变化计数
+  last_tick_age_ms                距最近一次 tick 的时间
+  max_tick_gap_ms                 历史最大 tick 间隔，不只包含解析耗时
+  max_schedule_delay_ms           UV 回调到 scheduled UI 上下文的最大等待
+  max_refresh_delay_ms            合并刷新任务在队列中的最大等待
+  bar_evaluations                 winbar 表达式求值次数，不是物理屏幕绘制次数
+  last_evaluated_frame            最近求值的运行中 spinner 帧
+  redraw_backend                 targeted_winbar 或 redrawstatus!
+  active_errors / last_error      当前错误阶段 / 最近历史错误
+
+apply、redraw、tick、start 错误分别计数，每个连续错误阶段仅首次记日志，成功后允许再次报告。
+API 版本不支持定向重绘时会记录 targeted_fallbacks / last_targeted_error 并使用兼容路径。
+state=static 表示 ui.toolbar.animate=false，last_bar_status=waiting 表示等待权限，不是卡死。
+动画按单调时间选择帧，不补放积压。主循环忙时仍会暂停；libuv 不提供后台线程上的 UI 绘制。
+可结合 render.timings（ui.render.profile=true）和 transport 统计定位重型同步工作。
+
+python3 tests/integration_spinner.py 是带 UI 的回归，需要额外测试依赖 pynvim。
+
 ==============================================================================
 3. 输入区                                                    *acp-composer*
 
@@ -426,6 +452,7 @@ memory.* 限制本地保留载荷，不是 Lua/Neovim RSS 硬上限。超大 blo
       profile = false,
       budget_ms = 4,
       overscan = 1,
+      commit_rows = 2000,
       pagination = {
         enabled = false,
         page_blocks = 64,
@@ -436,25 +463,37 @@ memory.* 限制本地保留载荷，不是 Lua/Neovim RSS 硬上限。超大 blo
 <
 A 保留全文文本、conceal、基础高亮和背景，只按视口延迟代码及 diff 的语法装饰；
 原生搜索、复制、位置跳转不变。语法缓存有独立预算，远处的语法 extmark 会清理。
-B 按连续 block 范围物化历史，分页排版逐 block 让出主循环。接近顶部/底部时预取相邻页，
-也可在加载提示上按 <CR>/<Tab>。gg 加载最早保留内容，G 回到最新并跟随，[b/]b 可跨页。
+B 按连续 block 范围物化历史，分页排版逐 block 让出主循环。最新消息始终自动追加；只有更早
+的历史按需加载，接近顶部时预取相邻页，顶部保留“更早消息”提示，可按键加载。
+gg 加载最早保留内容，G 回到最新并跟随，[b/]b 可跨页。
+
+接收尾部、分页排版、语法装饰与大型提交使用共享调度器；接收首次回调与消息派发仍有独立预算。
+stdout 未处理尾部保序排队并计入积压限制，溢出时明确断连；分页中的表格、Markdown 在结构行边界让出；
+超过 commit_rows 的首次布局或翻页提交按行分片，期间可继续响应输入与刷新 spinner。
+分片依赖协作式让出，单个 JSON 解码、一次 Treesitter 解析、diff 计算、非分页排版和单条消息分帧仍不可抢占。
 
 分页开启后，原生 /、Visual 复制只覆盖已加载文本；不提供全历史原生搜索。Session 与
 Agent 历史不变，Chat:transcript() 显式全文导出仍完整，但会临时执行全量文本排版。
-Visual/Select 选区活动时暂停分页排版及回收，退出后刷新；可见内容、操作中的卡片会被
-保护，因此预算不是硬上限。单个 block 不做块内分页，继续受原有 memory.* 限制。
-page_bytes 是每次新增页面的源载荷目标，回收同时参考 max_blocks 和页面数量推导的字节
-预算；不是 RSS 上限。完整 JSON 解码、单块排版及单次 Treesitter 解析仍不可抢占。
+最新消息不受分页限制，始终物化并自动追加；往回加载只会扩展旧侧窗口，不会隐藏新内容。
+返回底部时旧侧窗口收回预算，可见内容与操作中的卡片受保护，因此预算不是硬上限。
+Visual/Select 选区活动时暂停分页物化修改，退出后自动补齐最新内容。
+单个 block 不做块内分页，继续受原有 memory.* 限制。
+page_bytes 是旧侧每页的源载荷目标；回收同时参考 max_blocks 和页面数量推导的字节预算，
+不是 RSS 上限。完整 JSON 解码、单块排版及单次 Treesitter 解析仍不可抢占。
 
 profile=true 时 :AcpDebug 的 render 展示分层 timings、物化行数、缓存块数、语法 extmark
-数量及分页范围。first_paint 是首个布局提交耗时，不是物理屏幕绘制耗时；layout_slice 是
-分页排版时间片，syntax 是实际装饰解析调用耗时。可运行 tests/perf_lazy.lua 比较三种模式。
+数量及分页范围。每个阶段除 count/total/max 外还有按 1/2/4/…/1024ms 的延迟桶与溢出计数；
+slow_tasks 保留最近 20 条超过 8ms 的任务（名称、耗时、block id/kind/工具类型/载荷规模，
+不含正文）。first_paint 是首个布局提交耗时，不是物理屏幕绘制耗时；layout_slice 是分页
+排版时间片，block_layout 是单块排版，syntax 是实际装饰解析调用耗时，write 含分片提交。
+transport 统计另有输入重入计数，可与 spinner 的 max_tick_gap_ms 交叉定位。
 
 transport.max_pending_bytes 默认 64 MiB，限制尚未消费接收数据（不完整消息、待分发
 消息、尚未完成的文本分片、在途写入与已读缓冲）的估算开销；设为 0 关闭积压上限。
 spill_bytes 默认 64 MiB，是完整 JSON 行异步落盘的工作集目标；设为 0 则只占内存。
 两者为正时，落盘阈值最多为上限的 75%。磁盘旧消息优先于内存新消息，当前文本分片
-又优先于所有后续消息。回调时间预算到期后不再逐元素同步派发，留待下一次调度。
+又优先于所有后续消息。回调时间预算到期后，未处理的输入尾部进入共享调度队列，
+下一片继续解析，保持顺序且不丢弃；输出批次超出预算时同样让出。
 阈值不是 RSS 硬上限：输入回调、JSON 对象和临时复制仍有额外开销；磁盘慢于输入时，
 有限预算仍可能触发断连。单条 JSON 解码、工具替换更新或单块排版仍不可抢占。
 
@@ -475,7 +514,10 @@ spill_bytes 默认 64 MiB，是完整 JSON 行异步落盘的工作集目标；�
 通知归约在该预算内执行；权限 UI 单独调度，旧连接的模型/权限选择器不会影响新状态。
 
 思考块在流式期间实时展开并显示 Thinking，结束后自动折叠并显示 Thought；历史与重连
-重放保持折叠。手动 <Tab> 优先。ui.thoughts.expand_while_streaming / collapse_on_finish
+重放保持折叠。跟随时超过一屏的内容保持尾部锚定，保留原有尾部空行，后续内容继续追加。
+不足一屏时从顶部显示，不添加顶部留白；鼠标不能继续下滚来扩大自然剩余空白。聊天窗口启用
+局部 smoothscroll，处理高于一屏的换行文本；不改变其它窗口的滚动设置。
+手动 <Tab> 优先。ui.thoughts.expand_while_streaming / collapse_on_finish
 可关闭对应行为。
 
 权限选择器按 Esc 或 q 关闭视为拒绝；若 Agent 没有提供 reject 选项，则返回

@@ -83,21 +83,23 @@ function Input:destroy()
   self.win = nil
 end
 
+---@return boolean ok
+---@return string|nil err observable by the chrome owner; focus events may ignore it
 function Input:apply_winbar()
   local win = self.win
   if not win or not vim.api.nvim_win_is_valid(win) then
-    return
+    return false, "composer window is not visible"
   end
   local placement = self.config.ui.toolbar.placement
   if placement == "off" then
-    pcall(vim.api.nvim_set_option_value, "winbar", "", { win = win })
-    return
+    return pcall(vim.api.nvim_set_option_value, "winbar", "", { win = win })
   end
   -- Set once: the expression re-renders on every redraw with the real window
   -- width, so resizes and layout managers can never leave a stale bar behind.
   if vim.api.nvim_get_option_value("winbar", { win = win }) ~= "%{%v:lua.AcpComposerBar()%}" then
-    pcall(vim.api.nvim_set_option_value, "winbar", "%{%v:lua.AcpComposerBar()%}", { win = win })
+    return pcall(vim.api.nvim_set_option_value, "winbar", "%{%v:lua.AcpComposerBar()%}", { win = win })
   end
+  return true
 end
 
 ---@param parts string[]

@@ -6,7 +6,7 @@ local blocks = require("acp.ui.blocks")
 
 local cfg = config.validate(config.merge(config.defaults, { ui = {} }))
 local chat = Chat.new({ config = cfg })
-chat.width = 80
+chat.win = vim.api.nvim_open_win(chat.buf, true, { relative = "editor", row = 0, col = 0, width = 82, height = 12 })
 
 local session = state.new("perf", "/tmp")
 session:track_changes()
@@ -46,9 +46,22 @@ for i = 1, 1000 do
   end
 end
 
+local function settle(view, timeout)
+  assert(
+    vim.wait(timeout or 5000, function()
+      return not view.layout_job
+        and not view.commit_job
+        and not view.needs_render
+        and view.render_version == view.session.version
+    end, 1),
+    "render did not settle"
+  )
+end
+
 local elapsed = ms(function()
   chat:set_session(session)
   chat:render()
+  settle(chat)
 end)
 all_ok = check("initial render of 1000 blocks", elapsed, 1500) and all_ok
 
@@ -60,6 +73,7 @@ elapsed = ms(function()
     session:append_text("agent", "chunk " .. i .. " ", "stream")
     chat:render()
   end
+  settle(chat)
 end)
 all_ok = check("200 streaming updates with 1000 blocks", elapsed, 1500) and all_ok
 
@@ -69,6 +83,7 @@ elapsed = ms(function()
   target.expanded = true
   session:touch(target, false)
   chat:render()
+  settle(chat)
 end)
 all_ok = check("expand one block in a long transcript", elapsed, 300) and all_ok
 
@@ -95,7 +110,10 @@ for i = 1, 1000 do
   long:append({ id = "long" .. i, kind = "agent", text = string.rep("History line.\n", 20) })
 end
 local long_chat = Chat.new({ config = cfg })
+long_chat.win =
+  vim.api.nvim_open_win(long_chat.buf, false, { relative = "editor", row = 0, col = 0, width = 82, height = 12 })
 long_chat:set_session(long)
+settle(long_chat)
 elapsed = ms(function()
   for _ = 1, 100 do
     long_chat:render()
@@ -103,6 +121,8 @@ elapsed = ms(function()
 end)
 all_ok = check("100 unchanged renders / 21000 history lines", elapsed, 100) and all_ok
 long:append_text("agent", "", "tail")
+long_chat:render()
+settle(long_chat)
 local frames = {}
 for i = 1, 100 do
   frames[i] = ms(function()
