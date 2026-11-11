@@ -132,6 +132,7 @@ JSON 解码、单块排版或 Treesitter 解析很重时仍可能暂停，恢复
 | `m` / `<M-b>` | `pick_mode` | 普通模式 / 输入时选择模式 |
 | `L`（普通模式） | `pick_session` | 历史会话 |
 | `<C-x><C-u>` | — | 补全 `/命令` 或 `@文件`（Vim 内置触发，不受 `keymaps` 控制） |
+| `<leader>ai`（任意 buffer） | `keymaps.inline` | 在光标/选区上开始内联编辑 |
 | `@path/to/file` | — | 发送时自动作为附件 |
 | 点击 winbar 的模型 / 模式 | — | 打开选择器（鼠标区域，不是键位） |
 
@@ -317,6 +318,42 @@ Neovim；OSC 5522 需要终端专用协商并改变普通粘贴处理，本插�
 清理时保护草稿（含持久化）、内存队列与会话块仍引用的图片；活跃引用可能使缓存超过预算。
 `path_mode = "inline"` 时 `@shot.png` 会内嵌字节；默认 `link` 只发送引用，避免每次提及
 都把整张图重新编码。协议日志会把 base64 载荷替换为 `<base64 N bytes>`。
+
+### 内联编辑
+
+`require("acp").inline()`（默认 `<leader>ai`，普通和 Visual 模式）在光标处或选区上方
+打开输入框，让 Agent 修改当前 buffer。Visual 选区按整行处理；无选区时在光标处插入，
+`inline.scope = "context"` 时改为允许修改光标周围的上下文窗口。
+
+Agent 编辑的是同目录下的私有副本（`.acp-inline-*`），不是真实文件：
+
+- 只允许读、搜索、思考和编辑该副本；编辑其它文件或运行命令默认拒绝。
+- 副本外的改动按行过滤掉，并提示丢弃数量。
+- 等待期间 buffer 被修改时，结果不会覆盖当前内容。
+- 副本在完成、取消或失败后删除；目录不可写时退回 `stdpath("state")`。
+
+审查方式可配置，默认逐块审查：
+
+```lua
+inline = {
+  review = {
+    mode = "diff", -- "diff" 逐块确认；"write" 直接写回（仍可一次撤销）
+    by_filetype = {
+      markdown = "write",
+      text = "write",
+      ["*"] = "diff",
+    },
+  },
+},
+keymaps = { inline = { normal = "<leader>ai", visual = "<leader>ai" } },
+```
+
+解析顺序是精确 filetype、复合 filetype 的第一段、`"*"`、默认值。在 diff 中按 `g1`
+对该 buffer 永久改用直接写回，`:Acp inline-reset` 清除。`g2` / `g3` 全部接受或拒绝，
+`q` 拒绝剩余部分。
+
+`:Acp inline [diff|write]`、`:Acp inline-stop`、`:Acp inline-reset` 是对应命令。
+内联编辑使用独立 ACP 会话，不进入聊天队列；同一时间只运行一个。
 
 ### 可选的懒渲染与历史分页
 

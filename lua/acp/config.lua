@@ -252,6 +252,12 @@ M.defaults = {
       scroll_bottom = "G",
       scroll_top = "gg",
     },
+    -- Inline editing. `visual` applies to the captured selection, `normal`
+    -- inserts at the cursor.
+    inline = {
+      normal = "<leader>ai",
+      visual = "<leader>ai",
+    },
   },
 
   permissions = {
@@ -285,6 +291,35 @@ M.defaults = {
       ttl_hours = 24,
       max_cache_bytes = 64 * 1024 * 1024,
     },
+  },
+
+  inline = {
+    enabled = true,
+    -- How a finished inline request is returned to the buffer.
+    --   "diff"  review every hunk before it is applied
+    --   "write" apply immediately, still as one undoable change
+    -- `by_filetype` overrides `mode` for exact filetypes, then for the first
+    -- component of a compound filetype, then for "*". A buffer marked with the
+    -- diff UI's "always accept" wins over all of them.
+    review = {
+      mode = "diff",
+      by_filetype = {},
+    },
+    -- "cursor" inserts at the cursor when there is no selection; "context"
+    -- lets the agent edit the visible context window instead.
+    scope = "cursor",
+    -- Whole-line selections are what both Zed and CodeCompanion use for inline
+    -- edits; turn this off to replace only the exact characters.
+    expand_selection = true,
+    -- Context shared above and below the selection, in bytes.
+    context_bytes = 50000,
+    -- A sibling copy keeps relative imports and project-root detection working.
+    -- "state" writes to the state directory instead.
+    copy_dir = "sibling",
+    -- Allow the agent's write tools on files other than the copy.
+    allow_writes = false,
+    -- Allow commands and other non-read tools.
+    allow_commands = false,
   },
 
   -- Show timeline notices sent by the agent (requires the session.notices capability).
@@ -537,6 +572,55 @@ function M.validate(cfg)
 
   check_number(cfg.context.max_file_bytes, 0, 1024 * 1024 * 1024, "context.max_file_bytes")
   check_number(cfg.context.max_selection_lines, 0, 1000000, "context.max_selection_lines")
+
+  local inline = cfg.inline
+  if type(inline) ~= "table" then
+    fail("inline must be a table")
+  end
+  if type(inline.enabled) ~= "boolean" then
+    fail("inline.enabled must be a boolean")
+  end
+  check_enum(inline.scope, { "cursor", "context" }, "inline.scope")
+  check_enum(inline.copy_dir, { "sibling", "state" }, "inline.copy_dir")
+  if type(inline.expand_selection) ~= "boolean" then
+    fail("inline.expand_selection must be a boolean")
+  end
+  if type(inline.allow_writes) ~= "boolean" then
+    fail("inline.allow_writes must be a boolean")
+  end
+  if type(inline.allow_commands) ~= "boolean" then
+    fail("inline.allow_commands must be a boolean")
+  end
+  check_number(inline.context_bytes, 1024, 8 * 1024 * 1024, "inline.context_bytes")
+  local review = inline.review
+  if type(review) ~= "table" then
+    fail("inline.review must be a table")
+  end
+  check_enum(review.mode, { "diff", "write" }, "inline.review.mode")
+  local overrides = review.by_filetype
+  if overrides == nil then
+    overrides = {}
+  end
+  if type(overrides) ~= "table" or (next(overrides) ~= nil and vim.islist(overrides)) then
+    fail("inline.review.by_filetype must be a table of filetype -> mode")
+  end
+  local count = 0
+  for pattern, value in pairs(overrides) do
+    count = count + 1
+    if type(pattern) ~= "string" or pattern == "" or pattern:find("%s") then
+      fail("inline.review.by_filetype keys must be non-empty filetypes without whitespace")
+    end
+    if type(value) == "table" then
+      if (next(value) ~= nil and vim.islist(value)) or type(value.mode) ~= "string" then
+        fail("inline.review.by_filetype[%q] must be a mode or a table with a mode", pattern)
+      end
+      value = value.mode
+    end
+    check_enum(value, { "diff", "write" }, "inline.review.by_filetype[" .. pattern .. "]")
+  end
+  if count > 256 then
+    fail("inline.review.by_filetype has %d entries; at most 256 are supported", count)
+  end
 
   local images = cfg.context.images
   if type(images) ~= "table" then

@@ -274,13 +274,16 @@ end
 ---@param attachment {kind: string, label: string, path?: string, uri?: string, text?: string}
 function Input:add_attachment(attachment, position)
   self:sync_images()
-  if attachment.kind == "image" then
+  if attachment.kind == "image" or attachment.kind == "selection" then
     attachment.input_position = position or self:cursor_position()
+  end
+  if attachment.kind == "selection" and not attachment.input_token then
+    attachment.input_token = "[" .. (attachment.label or "selection") .. "]"
   end
   for i, existing in ipairs(self.attachments) do
     if existing.kind == attachment.kind and existing.path == attachment.path and existing.uri == attachment.uri then
-      if existing.kind == "image" then
-        return false -- Pasting the same image does not leave an orphaned token.
+      if existing.kind == "image" or existing.kind == "selection" then
+        return false -- Keeping the existing token avoids an orphan.
       end
       self.attachments[i] = attachment
       self:refresh()
@@ -379,7 +382,7 @@ function Input:sync_images()
   end
   local attachments, images = {}, {}
   for _, att in ipairs(self.attachments) do
-    if att.kind ~= "image" or not self.image_marks[att] then
+    if (att.kind ~= "image" and att.kind ~= "selection") or not self.image_marks[att] then
       attachments[#attachments + 1] = att
     end
   end
@@ -410,11 +413,12 @@ function Input:render_images()
   end
   local image_index = 0
   for att in pairs(self.image_marks) do
-    image_index = math.max(image_index, tonumber((att.input_token or ""):match("%d+")) or 0)
+    if att.kind == "image" then
+      image_index = math.max(image_index, tonumber((att.input_token or ""):match("%d+")) or 0)
+    end
   end
   for _, att in ipairs(self.attachments) do
-    if att.kind == "image" and not self.image_marks[att] then
-      image_index = image_index + 1
+    if (att.kind == "image" or att.kind == "selection") and not self.image_marks[att] then
       local p = type(att.input_position) == "table" and att.input_position or {}
       local row = math.min(coordinate(p[1]), #lines - 1)
       local col = math.min(coordinate(p[2]), #lines[row + 1])
@@ -425,6 +429,9 @@ function Input:render_images()
         and lines[row + 1]:byte(col + 1) < 192
       do
         col = col - 1 -- clamp restored positions to a UTF-8 boundary
+      end
+      if att.kind == "image" then
+        image_index = image_index + 1
       end
       local label = att.input_token or string.format("[Image %d]", image_index)
       local current = vim.api.nvim_buf_get_text(self.buf, row, col, row, math.min(col + #label, #lines[row + 1]), {})[1]

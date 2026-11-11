@@ -87,6 +87,38 @@ def finish(msg_id, stop_reason="end_turn"):
 
 def run_prompt(msg_id, text):
     """Runs in a worker thread so stdin stays responsive."""
+    # Inline editing: the prompt names a private copy. Make one deterministic
+    # change so tests can prove the copy, the permission gate and the hunk
+    # filter all ran.
+    if "acp-inline-" in text:
+        import re
+
+        match = re.search(r"`([^`]*acp-inline-[^`]*)`", text)
+        if match and os.path.isfile(match.group(1)):
+            path = match.group(1)
+            with open(path, "r", encoding="utf-8") as handle:
+                content = handle.read()
+            if "INLINE_OLD" in content:
+                with open(path, "w", encoding="utf-8") as handle:
+                    handle.write(content.replace("INLINE_OLD", "INLINE_NEW", 1))
+                update(
+                    {
+                        "sessionUpdate": "agent_message_chunk",
+                        "messageId": "inline",
+                        "content": {"type": "text", "text": "edited"},
+                    }
+                )
+                finish(msg_id)
+                return
+        update(
+            {
+                "sessionUpdate": "agent_message_chunk",
+                "messageId": "inline",
+                "content": {"type": "text", "text": "nothing to change"},
+            }
+        )
+        finish(msg_id)
+        return
     if text.startswith("ORDER_PROBE"):
         update({"sessionUpdate": "agent_message_chunk", "messageId": "order_probe", "content": {"type": "text", "text": text}})
         finish(msg_id)

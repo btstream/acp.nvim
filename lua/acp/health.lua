@@ -80,6 +80,25 @@ Add to your edgy config:
     health.info("image cache: " .. require("acp.context.image").dir())
   end
 
+  local ok_inline, inline = pcall(function()
+    return require("acp.config").validate(require("acp.config").merge(require("acp.config").defaults, {}))
+  end)
+  if ok_inline and inline then
+    local mode = inline.inline.review.mode
+    health.ok("inline editing, default review: " .. mode)
+    local overrides = inline.inline.review.by_filetype
+    local names = vim.tbl_keys(overrides or {})
+    if #names > 0 then
+      table.sort(names)
+      local parts = {}
+      for _, name in ipairs(names) do
+        local value = overrides[name]
+        parts[#parts + 1] = name .. "=" .. (type(value) == "table" and value.mode or value)
+      end
+      health.info("inline review overrides: " .. table.concat(parts, ", "))
+    end
+  end
+
   local has_json = vim.json ~= nil
   if has_json then
     health.ok("vim.json available")

@@ -114,23 +114,40 @@ function M.file(path, config)
   }
 end
 
----Build an attachment for the current visual selection.
+---Build an attachment for the last visual selection.
+---
+---With `include_current_line` and no selection the cursor's line is used
+---instead. `embedded` picks an embedded resource for agents that advertise
+---`promptCapabilities.embeddedContext`, otherwise a link plus the text block.
 ---@param config table
+---@param opts {bufnr?: integer, include_current_line?: boolean, embedded?: boolean}|nil
 ---@return table|nil attachment
 ---@return string|nil err
-function M.selection(config)
-  local bufnr = vim.api.nvim_get_current_buf()
+function M.selection(config, opts)
+  opts = opts or {}
+  local bufnr = opts.bufnr or vim.api.nvim_get_current_buf()
   local path = buffer_path(bufnr)
   if not path then
     return nil, "current buffer has no file"
   end
   local start_pos = vim.fn.getpos("'<")
   local end_pos = vim.fn.getpos("'>")
-  if start_pos[2] == 0 or end_pos[2] == 0 then
-    return nil, "no visual selection"
-  end
   local start_line, start_col = start_pos[2], start_pos[3]
   local end_line, end_col = end_pos[2], end_pos[3]
+  if start_line == 0 or end_line == 0 then
+    if not opts.include_current_line then
+      return nil, "no visual selection"
+    end
+    local line = opts.line
+    if not line and vim.api.nvim_get_current_buf() == bufnr then
+      line = vim.api.nvim_win_get_cursor(0)[1]
+    end
+    if not line then
+      return nil, "no visual selection"
+    end
+    start_line, end_line = line, line
+    start_col, end_col = 1, #(vim.api.nvim_buf_get_lines(bufnr, line - 1, line, false)[1] or "")
+  end
   if start_line > end_line then
     start_line, end_line = end_line, start_line
     start_col, end_col = end_col, start_col
@@ -151,19 +168,27 @@ function M.selection(config)
   if #text > limit then
     return nil, "selection is too large to attach"
   end
-  local label = string.format("%s %d-%d", vim.fn.fnamemodify(path, ":t"), start_line, end_line)
+  local fragment = string.format("#L%d:%d", start_line, end_line)
+  local uri = to_uri(path) .. fragment
+  local label = string.format("%s:%d-%d", vim.fn.fnamemodify(path, ":t"), start_line, end_line)
+  local block
+  if opts.embedded then
+    block = {
+      type = "resource",
+      resource = { uri = uri, mimeType = "text/plain", text = text },
+      annotations = { audience = { "assistant" } },
+    }
+  else
+    block = { type = "resource_link", uri = uri, name = label, mimeType = "text/plain", size = #text }
+  end
   return {
     kind = "selection",
     label = label,
     path = path,
-    uri = to_uri(path),
+    uri = uri,
     text = text,
     range = { start_line = start_line, end_line = end_line },
-    block = {
-      type = "resource",
-      resource = { uri = to_uri(path), mimeType = "text/plain", text = text },
-      annotations = { audience = { "assistant" } },
-    },
+    block = block,
   }
 end
 
@@ -374,7 +399,11 @@ function M.sequence(text, attachments)
     local offset = att.prompt_offset
     local valid = type(offset) == "number" and offset >= 0 and offset <= #text and offset % 1 == 0
     local next_byte = valid and offset < #text and text:byte(offset + 1) or nil
-    if att.kind == "image" and valid and (not next_byte or next_byte < 128 or next_byte >= 192) then
+    if
+      (att.kind == "image" or att.kind == "selection")
+      and valid
+      and (not next_byte or next_byte < 128 or next_byte >= 192)
+    then
       positioned[#positioned + 1] = { attachment = att, offset = offset, index = index }
     else
       tail[#tail + 1] = { attachment = att }

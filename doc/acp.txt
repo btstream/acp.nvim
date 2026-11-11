@@ -747,4 +747,34 @@ path_mode = "inline" 时 @shot.png 会内嵌字节；默认 link 只发引用。
 缓存清理保护当前草稿、持久化草稿、内存队列与会话块仍引用的图片，因此这些引用
 可能使缓存超过配置预算。文件被外部删除后，发送会明确报错，而不是静默丢掉图像。
 
+==============================================================================
+19. 内联编辑                                            *acp-inline*
+
+require("acp").inline() 在光标处或 Visual 选区打开输入框，由 Agent 修改当前
+buffer。默认绑定 <leader>ai（普通和 Visual 模式）。Visual 选区按整行处理；
+无选区时在光标处插入；inline.scope = "context" 允许修改光标周围的上下文。
+
+Agent 编辑同目录的私有副本（.acp-inline-*），不是真实文件。只允许读取、搜索、
+思考和编辑该副本；其它文件的写入或命令默认拒绝。副本外的改动会被过滤并提示，
+等待期间 buffer 被修改时结果不会覆盖当前内容。副本在结束时删除，目录不可写时
+退回 stdpath("state")。
+
+审查方式：
+
+    inline.review.mode = "diff" | "write"
+
+diff 逐块确认（ga 接受、gr 拒绝、g2/g3 全部、g1 对本 buffer 永久接受、q 拒绝
+剩余）；write 直接写回，但仍可一次撤销。filetype 可单独覆盖：
+
+    inline = {
+      review = {
+        mode = "diff",
+        by_filetype = { markdown = "write", text = "write", ["*"] = "diff" },
+      },
+    }
+
+解析顺序：精确 filetype、复合 filetype 第一段、"*"、默认值。
+:Acp inline [diff|write]、:Acp inline-stop、:Acp inline-reset 是对应命令。
+内联使用独立 ACP 会话，不进入聊天队列；同一时间只运行一个。
+
 vim:tw=78:ts=8:noet:ft=help:norl:

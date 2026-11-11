@@ -38,6 +38,7 @@ local S = {
   input = nil,
   connection = "stopped", -- stopped | starting | ready | disconnected
   pending_permissions = {},
+  pending_selections = nil,
   replaying = false,
 }
 local operations = Tasks.new(function()
@@ -365,6 +366,19 @@ local function set_input_keymaps()
   })
 end
 
+local function set_inline_keymaps()
+  local spec = cfg().keymaps.inline or {}
+  local function install(value, modes)
+    for _, entry in ipairs(keymaps.expand(value, modes)) do
+      vim.keymap.set(entry.mode, entry.lhs, function()
+        require("acp.inline").open()
+      end, { desc = "acp.nvim: inline prompt" })
+    end
+  end
+  install(spec.normal, { "n" })
+  install(spec.visual, { "x" })
+end
+
 local function set_chat_keymaps()
   keymaps.attach_chat(S.chat.buf, {
     keymaps = cfg().keymaps.chat,
@@ -482,6 +496,9 @@ function M.connect()
 end
 
 function M.disconnect()
+  pcall(function()
+    require("acp.inline").stop()
+  end)
   S.connection_service:disconnect()
 end
 
@@ -594,6 +611,10 @@ end
 ---@param name string
 ---@param payload any
 function M.on_client_event(name, payload)
+  -- Inline requests own a private session and answer their own permissions.
+  if require("acp.inline").handle(name, payload) then
+    return
+  end
   if name == "starting" then
     S.connection = "starting"
     refresh_chrome()
@@ -892,9 +913,24 @@ function M.add_file(path)
 end
 
 function M.add_selection()
-  local attachment, err = context.selection(cfg())
+  -- The composer has focus, so the selection lives in the last real editor
+  -- window. With no visual marks, take its current line instead.
+  local source = layout.saved_focus()
+  local bufnr = source and vim.api.nvim_win_is_valid(source) and vim.api.nvim_win_get_buf(source) or nil
+  local line = source and vim.api.nvim_win_is_valid(source) and vim.api.nvim_win_get_cursor(source)[1] or nil
+  local attachment, err = context.selection(cfg(), {
+    bufnr = bufnr,
+    line = line,
+    include_current_line = true,
+    embedded = S.client and S.client:supports_prompt("embeddedContext") or false,
+  })
   if not attachment then
     notify(err or "unable to attach selection", vim.log.levels.WARN)
+    return
+  end
+  if not S.input then
+    S.pending_selections = S.pending_selections or {}
+    S.pending_selections[#S.pending_selections + 1] = attachment
     return
   end
   S.input:add_attachment(attachment)
@@ -1297,11 +1333,18 @@ function M.setup(opts, action)
     end
     drafts.put(session.cwd, session.id, text, attachments)
   end
+  if S.pending_selections then
+    for _, selection in ipairs(S.pending_selections) do
+      S.input:add_attachment(selection)
+    end
+    S.pending_selections = nil
+  end
 
   -- Mappings and completion belong to buffers, not windows. Hiding, reopening
   -- or repairing a missing view reuses these buffers and needs no reattachment.
   set_input_keymaps()
   set_chat_keymaps()
+  set_inline_keymaps()
   S.panel:set_views(S.chat, S.input)
 
   -- Re-attach the active session to the freshly created views.

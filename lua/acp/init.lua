@@ -66,6 +66,22 @@ function M.paste_image(opts)
   return ensure().paste_image(opts)
 end
 
+---Start an inline edit at the cursor or visual selection.
+---@param opts {review?: "diff"|"write"}|nil
+function M.inline(opts)
+  require("acp.inline").open(opts)
+end
+
+---Stop the active inline edit.
+function M.inline_stop()
+  return require("acp.inline").stop()
+end
+
+---Forget the current buffer's "always accept" inline state.
+function M.inline_reset()
+  require("acp.inline").reset()
+end
+
 function M.refresh_completion()
   require("acp.completion").refresh()
 end

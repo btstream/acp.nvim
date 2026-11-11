@@ -48,6 +48,12 @@ M.actions = {
     { action = "paste_image", desc = "paste image from clipboard", modes = { "n", "i" }, handler = "on_paste_image" },
     { action = "pick_session", desc = "sessions", modes = { "n" }, handler = "on_pick_session" },
   },
+  -- Not a composer/transcript view: these are global maps installed once, but
+  -- they use the same validation table so unknown actions cannot be configured.
+  inline = {
+    { action = "normal", desc = "inline prompt at cursor", modes = { "n" }, handler = "on_inline" },
+    { action = "visual", desc = "inline prompt for selection", modes = { "x" }, handler = "on_inline" },
+  },
   chat = {
     { action = "close_panel", desc = "hide panel", modes = { "n" }, handler = "on_hide" },
     { action = "focus_input", desc = "focus composer", modes = { "n" }, handler = "on_focus_input" },

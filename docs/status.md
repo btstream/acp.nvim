@@ -516,3 +516,24 @@ native/edgy/reconnect、性能 smoke、tail/spinner 附加 UI 回归通过。
 边界：不接入 OSC 5522 的终端协商（不是“Lua 无法观察 OSC 回复”）；
 未做图像转码，非 PNG/JPEG/GIF/WebP 直接拒绝；未内联预览；未在真实 X11/WSL/macOS 剪贴板上运行，
 只用真实 `wl-paste`（空剪贴板与桩输出两种）和命令桩验证。临时目录预算不是 RSS 上限。
+
+## 内联编辑（2026-11-11）
+
+参考 Zed 的 `<rewrite_this>`/单事务模型与 CodeCompanion 的 ACP 临时副本实现后，采用后者作为
+架构基础：Agent 只能编辑私有副本，权限按工具种类过滤，结果按 hunk 过滤回可编辑范围。ACP
+不能临时注册工具，因此不使用 Zed 的自定义工具协议。
+
+- `inline/selection`：在映射内用 `getregionpos()` 捕获；字符/行选择默认扩成整行，块选择逐行；
+  合并连续范围；空选区是插入点。
+- `inline/copy`：同目录 `.acp-inline-*` 私有副本（0600），目录不可写时退回 state；行尾符跟随源 buffer。
+- `inline/result`：行级 diff、越界 hunk 丢弃、`changedtick` 与内容双重冲突检查。
+- `inline/apply`：两种审查方式共用的单次写入、undo 折叠与光标定位。
+- `inline/diff_session`：buffer 内逐 hunk 审查，`ga`/`gr`/`g2`/`g3`/`g1`，结束后单次撤销。
+- `inline/review`：`diff` / `write` 策略，精确 ft → 复合 ft 首段 → `*` → 默认；always-accept 优先。
+- 权限：读/搜索/思考/取回放行，仅副本的 edit 放行，其余拒绝；可配置放开写和命令。
+- 控制器转发内联会话事件并在断开时停止；聊天选区使用同一 token 机制，按位置发送
+  `resource` 或 `resource_link`，空光标取整行，无输入框时排队。
+
+验证：801 项单元测试、`tests/integration_inline.lua`（直接写回、逐块接受/拒绝、always-accept、
+副本清理）及既有集成通过。边界：未在真实 OpenCode/其它 Agent 上验证副本路径与权限请求形状；
+未实现多选区、冲突重定位、问题回复浮窗、撤销审查期间的 buffer 编辑。

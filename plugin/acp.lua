@@ -59,13 +59,23 @@ local function setup()
         else
           acp.paste_image()
         end
+      elseif sub == "inline" then
+        if rest == "diff" or rest == "write" then
+          acp.inline({ review = rest })
+        else
+          acp.inline()
+        end
+      elseif sub == "inline-stop" then
+        acp.inline_stop()
+      elseif sub == "inline-reset" then
+        acp.inline_reset()
       elseif sub == "diagnostics" then
         acp.add_diagnostics()
       else
         vim.notify("acp.nvim: unknown subcommand " .. sub, vim.log.levels.WARN)
       end
     end,
-    "open|hide|toggle|new|stop|reconnect|disconnect|permission|sessions|delete|model|mode|file|files|image|diagnostics"
+    "open|hide|toggle|new|stop|reconnect|disconnect|permission|sessions|delete|model|mode|file|files|image|inline|inline-stop|inline-reset|diagnostics"
   )
 
   define("AcpCompletionRefresh", function()

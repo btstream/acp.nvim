@@ -46,6 +46,15 @@ M.groups = {
   AcpUser = { link = "Function" },
   AcpUserChip = { link = "Visual" },
   AcpInputImage = { fg = "#292929", bg = "#ffcc80", bold = true },
+
+  -- Inline editing. The prompt is a modal-looking float; pending hunks take the
+  -- warning colour and the current one the info colour.
+  AcpInlinePrompt = { link = "NormalFloat" },
+  AcpInlineBorder = { link = "FloatBorder" },
+  AcpInlineBanner = { link = "Comment" },
+  AcpInlinePending = { link = "DiffDelete" },
+  AcpInlineCurrent = { link = "DiffChange" },
+  AcpInlineApplied = { link = "DiffAdd" },
   AcpAssistant = { link = "Normal" },
   -- The block header is split in two so the glyph and the label can be coloured
   -- independently: the icon marks who is speaking, the title names the turn.
