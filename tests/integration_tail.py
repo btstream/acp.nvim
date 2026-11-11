@@ -61,6 +61,7 @@ def phase(label, action, marker=None, align="bottom"):
             first_row = vim.fn.screenpos(c.win, 1, 1).row,
             eof_row = vim.fn.screenpos(c.win, count, 1).row,
             follow = c.follow,
+            pending_new = c.pending_new,
             mode = vim.fn.mode(), focused_win = vim.api.nvim_get_current_win(), chat_win = c.win,
             width = info.width, textoff = info.textoff, screen_height = info.height,
             topline = view.topline, topfill = view.topfill, skipcol = view.skipcol,
@@ -77,7 +78,9 @@ def phase(label, action, marker=None, align="bottom"):
         deadline.cancel()
     assert not expired.is_set() and result, f"{label}: editor did not respond"
     stats = result[0]
-    if align == "top":
+    if align == "reading":
+        assert not stats["follow"], f"{label}: history reading unexpectedly resumed following: {stats}"
+    elif align == "top":
         assert stats["first_row"] == stats["top"] and stats["topline"] == 1, f"{label}: short text not at top: {stats}"
         assert stats["topfill"] == 0 and stats["skipcol"] == 0, f"{label}: artificial top space: {stats}"
     else:
@@ -137,10 +140,21 @@ try:
     again = phase("repeated mouse wheel down at EOF", wheel("down", 15), "next reply")
     for key in ("topline", "topfill", "skipcol"):
         assert baseline[key] == again[key], f"continued scrolling after EOF changed {key}"
-    nvim.exec_lua(wheel("up", 5))
-    nvim.exec_lua("vim.wait(40)")
-    assert not nvim.exec_lua("return tail_test.follow"), "scrolling up did not leave follow mode"
-    phase("mouse returns from history to EOF", wheel("down", 40))
+    paused = phase("mouse scrolling up pauses following", wheel("up", 5), align="reading")
+    arrived = phase(
+        "new messages still append without moving the history reader",
+        "tail_state:append_text('agent', string.rep('arrived while reading\\n', 35), 'a'); tail_test:render()\n",
+        align="reading",
+    )
+    assert arrived["count"] > paused["count"] and arrived["pending_new"]
+    assert (arrived["topline"], arrived["skipcol"]) == (paused["topline"], paused["skipcol"])
+    resumed = phase("mouse returns from history to EOF", wheel("down", 40))
+    assert resumed["follow"] and not resumed["pending_new"], "returning to EOF did not resume following"
+    live = phase(
+        "new messages follow automatically after mouse return",
+        "tail_state:append_text('agent', 'live after resume\\n', 'a'); tail_test:render()\n",
+    )
+    assert live["follow"] and live["count"] > resumed["count"] and not live["pending_new"]
     phase(
         "short collapsed thought",
         r"""

@@ -63,6 +63,26 @@ function M.follow_tail(chat)
   return true
 end
 
+-- Following is determined by the visible tail, not by the reading cursor.
+function M.at_tail(chat)
+  if not chat:is_visible() or vim.api.nvim_win_get_buf(chat.win) ~= chat.buf then
+    return false
+  end
+  if chat.page and chat.session and chat.page.last ~= #chat.session.blocks then
+    return false
+  end
+  return vim.api.nvim_win_call(chat.win, function()
+    local count = vim.api.nvim_buf_line_count(chat.buf)
+    if vim.fn.line("w$") < count then
+      return false
+    end
+    local text = vim.api.nvim_buf_get_lines(chat.buf, count - 1, count, false)[1] or ""
+    local row = vim.fn.screenpos(chat.win, count, math.max(1, #text)).row
+    local info = vim.fn.getwininfo(chat.win)[1]
+    return row >= info.winrow + info.winbar and row < info.winrow + info.winbar + info.height
+  end)
+end
+
 -- Clamp wheel/touchpad overscroll while preserving the user's cursor and
 -- reading mode. The canonical EOF view accounts for wrapping and virtual rows.
 function M.clamp_tail(chat)

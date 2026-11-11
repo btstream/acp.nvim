@@ -16,7 +16,7 @@ return function(t)
         if committed then
           vim.cmd("redraw")
         end
-        return committed and not chat.tail_follow_pending
+        return committed and not chat.tail_follow_pending and not chat.scroll_restore_pending
       end, 1),
       "tail render did not settle"
     )
@@ -79,6 +79,131 @@ return function(t)
   end
 
   t.describe("transcript tail anchoring", function()
+    for _, paged in ipairs({ false, true }) do
+      t.it("resumes from the visible EOF independently of the cursor, paged=" .. tostring(paged), function()
+        fixture({
+          ui = { render = { pagination = { enabled = paged, page_blocks = 12, max_blocks = 40, page_bytes = 4096 } } },
+        }, function(chat, s, win)
+          for i = 1, 60 do
+            s:append({ id = "h" .. i, kind = "agent", text = "history " .. i })
+          end
+          chat:set_session(s)
+          ready(chat)
+          vim.api.nvim_win_call(win, function()
+            vim.fn.winrestview({ topline = 5, lnum = 7 })
+          end)
+          vim.cmd("redraw")
+          chat:on_scroll()
+          t.falsy(chat.follow)
+          local before = viewport.capture(chat)
+          local badges = {}
+          chat.on_pending_new = function(value)
+            badges[#badges + 1] = value
+          end
+          s:append_text("agent", "arrived while reading\n", "live")
+          chat:render()
+          ready(chat)
+          t.falsy(chat.follow)
+          t.truthy(chat.pending_new)
+          t.eq(before.top.id, viewport.capture(chat).top.id)
+          local count = #chat.lines_cache
+          local height = vim.fn.getwininfo(win)[1].height
+          vim.api.nvim_win_call(win, function()
+            vim.fn.winrestview({ topline = count - height + 1, lnum = count - 6 })
+          end)
+          vim.cmd("redraw")
+          local cursor = vim.api.nvim_win_get_cursor(win)
+          chat:on_scroll()
+          t.truthy(chat.follow)
+          t.falsy(chat.pending_new)
+          t.eq(cursor, vim.api.nvim_win_get_cursor(win), "resuming must not require moving the reading cursor")
+          t.eq({ true, false }, badges)
+          s:append_text("agent", "live after returning\n", "live")
+          chat:render()
+          ready(chat)
+          at_bottom(chat)
+          t.falsy(chat.pending_new)
+        end)
+      end)
+    end
+
+    t.it("does not resume following from a programmatic view restoration", function()
+      fixture(nil, function(chat, s)
+        s:append_text("agent", "short reply", "a")
+        chat:set_session(s)
+        ready(chat)
+        chat.follow, chat.pending_new = false, true
+        chat:guard_scroll_restore()
+        chat:on_scroll()
+        t.falsy(chat.follow)
+        t.truthy(chat.pending_new)
+        t.truthy(vim.wait(1000, function()
+          return not chat.scroll_restore_pending
+        end, 1))
+        -- An unrelated window's event cannot resume this view either.
+        vim.api.nvim_exec_autocmds("WinScrolled", { modeline = false })
+        t.falsy(chat.follow)
+        chat:on_scroll()
+        t.truthy(chat.follow)
+        t.falsy(chat.pending_new)
+      end)
+    end)
+
+    t.it("resumes on focus when the visible tail is at EOF, even with a reading cursor", function()
+      fixture(nil, function(chat, s, win)
+        for i = 1, 40 do
+          s:append({ id = "h" .. i, kind = "agent", text = "history " .. i })
+        end
+        chat:set_session(s)
+        ready(chat)
+        local count = #chat.lines_cache
+        local height = vim.fn.getwininfo(win)[1].height
+        -- Cursor left in the middle by a mouse scroll while the viewport
+        -- still shows the tail.
+        vim.api.nvim_win_call(win, function()
+          vim.fn.winrestview({ topline = count - height + 1, lnum = count - 8 })
+        end)
+        vim.cmd("redraw")
+        t.eq(
+          count,
+          vim.api.nvim_win_call(win, function()
+            return vim.fn.line("w$")
+          end)
+        )
+        chat.follow = false
+        chat:on_enter()
+        t.truthy(chat.follow)
+        -- A viewport scrolled away from the tail pauses even though the cursor
+        -- did not move.
+        vim.api.nvim_win_call(win, function()
+          vim.fn.winrestview({ topline = 5, lnum = count - 8 })
+        end)
+        vim.cmd("redraw")
+        chat.follow = true
+        chat:on_enter()
+        t.falsy(chat.follow, "focus resumed following a scrolled-up viewport")
+      end)
+    end)
+
+    t.it("does not mistake a partly visible wrapped final line for EOF", function()
+      fixture(nil, function(chat, _, win)
+        vim.bo[chat.buf].modifiable = true
+        vim.api.nvim_buf_set_lines(chat.buf, 0, -1, false, { string.rep("wrapped tail ", 300) })
+        vim.bo[chat.buf].modifiable = false
+        vim.api.nvim_win_call(win, function()
+          vim.fn.winrestview({ topline = 1, lnum = 1, col = 0, skipcol = 0 })
+        end)
+        vim.cmd("redraw")
+        t.eq(
+          1,
+          vim.api.nvim_win_call(win, function()
+            return vim.fn.line("w$")
+          end)
+        )
+        t.falsy(viewport.at_tail(chat))
+      end)
+    end)
+
     for _, mode in ipairs({ "incremental", "paged", "chunked" }) do
       t.it("keeps Thought and its blank tail at the bottom: " .. mode, function()
         local render = mode == "paged"
@@ -166,7 +291,7 @@ return function(t)
         chat:on_scroll()
         t.eq(cursor, vim.api.nvim_win_get_cursor(win))
         t.eq(2, vim.wo[win].scrolloff)
-        t.falsy(chat.follow)
+        t.truthy(chat.follow, "reaching EOF must resume following even with a reading cursor")
         local info = vim.fn.getwininfo(win)[1]
         t.eq(info.winrow + info.winbar + info.height - 1, vim.fn.screenpos(win, count, 1).row)
         local before = vim.api.nvim_win_call(win, vim.fn.winsaveview)

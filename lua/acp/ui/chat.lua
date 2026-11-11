@@ -118,7 +118,10 @@ function M.new(opts)
     group = group,
     callback = function()
       decoration.schedule(self)
-      self:on_scroll()
+      local change = self.win and vim.v.event[tostring(self.win)]
+      if change and ((change.topline or 0) ~= 0 or (change.topfill or 0) ~= 0 or (change.skipcol or 0) ~= 0) then
+        self:on_scroll()
+      end
     end,
   })
   vim.api.nvim_create_autocmd("ModeChanged", {
@@ -160,6 +163,7 @@ function Chat:set_session(session)
   decoration.cancel(self)
   viewport.clear_tail(self)
   self.tail_follow_pending, self.tail_clamp_pending = nil, nil
+  self.scroll_restore_pending = nil
   if self.buf then
     work.shared:cancel(function(job)
       return job.key == self.buf
@@ -212,6 +216,7 @@ function Chat:render_dirty(first_block)
 end
 
 function Chat:apply_dirty(layout, saved_view)
+  self:guard_scroll_restore()
   local session = self.session
   decoration.clear(self)
   local started = metrics.start(self)
@@ -257,12 +262,9 @@ function Chat:on_enter()
   if not self.session or self.render_version == nil or self.layout_job or self.commit_job then
     return
   end
-  local ok, cursor = pcall(vim.api.nvim_win_get_cursor, 0)
-  if not ok then
-    return
-  end
-  local line_count = vim.api.nvim_buf_line_count(self.buf)
-  self.follow = cursor[1] >= line_count - 1 and (not self.page or self.page.last == #self.session.blocks)
+  -- Focus changes are not scrolls: compare the visible tail so a cursor that
+  -- happens to sit near EOF cannot resume following a scrolled-up viewport.
+  self.follow = viewport.at_tail(self)
 end
 
 function Chat:cancel_resize()
@@ -435,6 +437,7 @@ end
 
 ---Commit only completed, current layouts. Shared by eager and batched paths.
 function Chat:apply_layout(layout, layout_only, saved_view)
+  self:guard_scroll_restore()
   decoration.clear(self)
   local old = self.lines_cache or {}
   local full_rewrite = self.full_rewrite == true
@@ -534,6 +537,7 @@ function Chat:commit_layout_async(layout, layout_only, saved_view, chunk_rows, o
 end
 
 function Chat:finish_layout(layout, layout_only, saved_view)
+  self:guard_scroll_restore()
   self.meta = layout.meta
   self.lines_cache = layout.lines
   self.line_starts = layout.starts
@@ -720,6 +724,45 @@ function Chat:activate_page()
   return entry and entry.page and entry.page < 0 and self:load_page(entry.page) or false
 end
 
+-- Buffer writes, folding and anchor restoration can also emit WinScrolled.
+-- Do not interpret those events as a reader returning to the live tail.
+function Chat:guard_scroll_restore()
+  -- Only a reader is at risk: while following, a programmatic scroll to the
+  -- tail has the same outcome as a user scroll, so it need not be filtered.
+  if self.follow or self.scroll_restore_pending then
+    return
+  end
+  local request = {}
+  self.scroll_restore_pending = request
+  vim.defer_fn(function()
+    if self.scroll_restore_pending == request then
+      self.scroll_restore_pending = nil
+    end
+  end, 1)
+end
+
+function Chat:update_scroll_follow()
+  if
+    self.destroyed
+    or not self:is_visible()
+    or self.layout_job
+    or self.commit_job
+    or self.resize_timer
+    or self.scroll_restore_pending
+    or self.tail_follow_pending
+    or HistoryPage.selected(self)
+  then
+    return
+  end
+  self.follow = viewport.at_tail(self)
+  if self.follow and self.pending_new then
+    self.pending_new = false
+    if self.on_pending_new then
+      self.on_pending_new(false)
+    end
+  end
+end
+
 function Chat:on_scroll()
   if
     self.destroyed
@@ -752,15 +795,14 @@ function Chat:on_scroll()
         and not self.layout_job
       then
         viewport.clamp_tail(self)
+        self:update_scroll_follow()
       end
     end)
   end
   local rows = vim.api.nvim_win_call(self.win, function()
     return { vim.fn.line("w0"), vim.fn.line("w$") }
   end)
-  if rows[2] < #self.lines_cache or vim.api.nvim_win_get_cursor(self.win)[1] < #self.lines_cache - 1 then
-    self.follow = false
-  end
+  self:update_scroll_follow()
   if not self.page then
     return
   end
@@ -978,6 +1020,7 @@ end
 function Chat:destroy()
   self.destroyed = true
   self.tail_follow_pending, self.tail_clamp_pending = nil, nil
+  self.scroll_restore_pending = nil
   decoration.cancel(self)
   self.layout_epoch = (self.layout_epoch or 0) + 1
   self.layout_job = nil
