@@ -351,18 +351,26 @@ M.defaults = {
         follow_cursor = true,
       },
       review = {
-        -- "center" mirrors the old review float; "cursor" anchors above the
-        -- selection instead.
+        -- Where the review opens. "buffer" puts it in a new tabpage with a
+        -- scratch buffer; "float" keeps the floating window.
+        target = "buffer",
+        -- "split2" is the whole-file two-column view; "hunks" limits it to
+        -- context around each change; "unified" is the -/+ list. "hunks" and
+        -- "unified" are also used automatically as fallbacks.
+        layout = "split2",
+        -- Below this many columns a two-column view is unreadable.
+        min_split_width = 40,
+        -- The whole-file view is used while it fits; past this many rows it
+        -- falls back to "hunks".
+        max_rows = 4000,
+        -- Unchanged lines kept around each change in the "hunks" layout.
+        context = 3,
+        -- Jump to the next pending hunk after accepting/rejecting one.
+        advance = false,
+        -- Float geometry. Ignored when target = "buffer".
         placement = "center",
         width = 140,
         height = 25,
-        -- "side_by_side" shows old | result | new; "unified" keeps the
-        -- single-column -/+ layout. Narrow screens fall back to "unified".
-        layout = "side_by_side",
-        -- Below this many columns a side-by-side review is unreadable.
-        min_split_width = 60,
-        -- Ceiling on rendered review rows.
-        max_rows = 2000,
       },
     },
   },
@@ -720,11 +728,16 @@ function M.validate(cfg)
     fail("inline.window.review must be a table")
   end
   check_enum(review_window.placement, { "center", "cursor" }, "inline.window.review.placement")
+  check_enum(review_window.target, { "buffer", "float" }, "inline.window.review.target")
   check_number(review_window.width, 20, 2000, "inline.window.review.width")
   check_number(review_window.height, 3, 500, "inline.window.review.height")
-  check_enum(review_window.layout, { "side_by_side", "unified" }, "inline.window.review.layout")
+  check_enum(review_window.layout, { "split2", "hunks", "unified" }, "inline.window.review.layout")
   check_number(review_window.min_split_width, 10, 2000, "inline.window.review.min_split_width")
   check_number(review_window.max_rows, 10, 1000000, "inline.window.review.max_rows")
+  check_number(review_window.context, 0, 1000, "inline.window.review.context")
+  if type(review_window.advance) ~= "boolean" then
+    fail("inline.window.review.advance must be a boolean")
+  end
 
   local images = cfg.context.images
   if type(images) ~= "table" then

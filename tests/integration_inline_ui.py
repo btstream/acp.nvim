@@ -69,29 +69,54 @@ try:
 
     nvim.exec_lua("vim.api.nvim_buf_call(source,function() vim.cmd('silent undo') end)")
     wait("vim.api.nvim_buf_get_lines(source,1,2,false)[1] == 'INLINE_OLD'")
+    tabs_before = len(nvim.exec_lua("return vim.api.nvim_list_tabpages()"))
     nvim.command("2,2Acp inline diff")
     wait("vim.bo.filetype == 'acp_inline' and vim.fn.mode() == 'i'")
     nvim.input("replace marker<CR>")
     wait("require('acp.inline.diff_session').active(source)")
+    wait("vim.bo.filetype == 'acp_inline_review'")
     review = nvim.exec_lua("""
         local lines = vim.api.nvim_buf_get_lines(0, 0, -1, false)
-        local text = table.concat(lines, '\\n')
-        return {text = text, wide = text:find('│', 1, true) ~= nil,
-          previews_new = text:find('INLINE_NEW', 1, true) ~= nil,
+        local text = table.concat(lines, "\\n")
+        return {text = text, two_columns = text:find("│", 1, true) ~= nil,
+          unchanged_left = text:find("before", 1, true) ~= nil,
+          proposal_right = text:find("INLINE_NEW", 1, true) ~= nil,
+          tabs = #vim.api.nvim_list_tabpages(),
           marks = #vim.api.nvim_buf_get_extmarks(0,
-            vim.api.nvim_get_namespaces()['acp.inline.review'], 0, -1, {})}
+            vim.api.nvim_get_namespaces()["acp.inline.review"], 0, -1, {})}
     """)
-    assert review["wide"], review
-    assert review["previews_new"], review
+    assert review["two_columns"], review
+    assert review["unchanged_left"], review
+    assert review["proposal_right"], review
     assert review["marks"] > 0, review
-    nvim.ui_try_resize(50, 25)
-    wait("vim.api.nvim_buf_get_lines(0,0,-1,false)[1]:find('│',1,true) == nil")
-    print("ok: review uses old | result | new columns and falls back on a narrow UI")
+    assert review["tabs"] == tabs_before + 1, review
+    print("ok: review opens in its own tab as a whole-file two-column buffer")
+
+    # The cursor starts on the only changed row, so gr rejects that hunk.
     nvim.input("gr")
     wait("not require('acp.inline.diff_session').active(source)")
+    wait("vim.bo.filetype ~= 'acp_inline_review'")
+    assert len(nvim.exec_lua("return vim.api.nvim_list_tabpages()")) == tabs_before, "review tab was left open"
     assert nvim.exec_lua("return vim.api.nvim_buf_get_lines(source,0,-1,false)") == ["before", "INLINE_OLD", "after"]
-    nvim.ui_try_resize(100, 30)
-    print("ok: rejecting a three-column hunk leaves the source untouched")
+    print("ok: rejecting the hunk leaves the source untouched and closes the review tab")
+
+    nvim.exec_lua("""
+        local config = require('acp.controller').state().config
+        config.inline.window.review.target = 'float'
+        vim.api.nvim_set_current_win(source_win)
+        vim.api.nvim_win_set_cursor(0,{2,0})
+        require('acp.inline').open({review='diff',mode='V',pos1={0,2,1,0},pos2={0,2,1,0}})
+    """)
+    wait("vim.bo.filetype == 'acp_inline' and vim.fn.mode() == 'i'")
+    nvim.input("replace marker<CR>")
+    wait("require('acp.inline.diff_session').active(source)")
+    wait("vim.bo.filetype == 'acp_inline_review'")
+    assert nvim.exec_lua("return vim.api.nvim_win_get_config(0).relative") == "editor"
+    assert len(nvim.exec_lua("return vim.api.nvim_list_tabpages()")) == tabs_before, "float review opened a tab"
+    nvim.input("gr")
+    wait("not require('acp.inline.diff_session').active(source)")
+    nvim.exec_lua("require('acp.controller').state().config.inline.window.review.target = 'buffer'")
+    print("ok: review.target chooses between a tab buffer and a float")
 
     nvim.command("Acp inline")
     wait("vim.bo.filetype == 'acp_inline' and vim.fn.mode() == 'i'")

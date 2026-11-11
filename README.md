@@ -356,13 +356,16 @@ inline = {
 keymaps = { inline = { normal = "<leader>ai", visual = "<leader>ai" } },
 ```
 
-diff 在独立只读浮窗显示三列对比：**旧行 | 最终结果预览 | 新行**，各自带行号。
-源 buffer 在审查期间不变，决定完毕后一次应用接受的块。中间列在 pending/accepted 时
-显示 Agent 的结果，改为 rejected 时立即变回原文；窗口过窄时自动回退为上下 `-`/`+` 布局。
-`ga`/`gr` 接受/拒绝当前块，当前块以 `AcpInlineCurrent` 背景标出。按结果到达时的
-filetype 解析：精确 filetype、复合 filetype 的第一段、`"*"`、默认值。在 diff 中按 `g1`
-对该 buffer 永久改用直接写回，`:Acp inline-reset` 清除。`g2` / `g3` 全部接受或拒绝，
-`q` 拒绝剩余部分。
+diff 默认在新 tabpage 的只读 buffer 中打开，显示整份文件的左右两栏对比：
+左侧原文、右侧 Agent 提案，未修改行两侧都显示，变更行带 `-`/`+`。最左列是状态标记
+（`▸` 当前、`✓` 已接受、`✗` 已拒绝）。源 buffer 在审查期间不变，全部决定后一次应用
+接受的块。文件过大时自动只显示每个变更块及其上下文；窗口过窄时回退为上下 `-`/`+`。
+
+- 光标停在某个变更块上，`ga`/`gr` 接受/拒绝该块；Visual 选区可一次处理被覆盖的所有块。
+- `]c` / `[c` 跳到下一个/上一个块；`u` 把当前块的决定清回 pending。
+- `g2` / `g3` 全部接受 / 全部拒绝，`g1` 全部接受并永久改用直接写回，
+  `q` / `<Esc>` 拒绝剩余部分并关闭；`:Acp inline-reset` 清除 always-accept。
+- 按结果到达时的 filetype 解析：精确 filetype、复合 filetype 的第一段、`"*"`、默认值。
 
 `:Acp inline [diff|write]`、`:Acp inline-stop`、`:Acp inline-reset` 是对应命令。
 命令支持行范围（如 `:'<,'>Acp inline diff`）。显式 `diff|write` 优先于 always-accept
@@ -389,20 +392,24 @@ inline = {
       follow_cursor = true,
     },
     review = {
-      placement = "center",      -- center | cursor
+      placement = "center",      -- center | cursor（仅 target = "float" 时生效）
       width = 140,
       height = 25,
-      layout = "side_by_side",   -- side_by_side | unified
-      min_split_width = 60,      -- 更窄时自动回退 unified
-      max_rows = 2000,
+      target = "buffer",         -- buffer（新 tab 只读 buffer）| float（浮窗）
+      layout = "split2",         -- split2 | hunks | unified
+      context = 3,               -- hunks 布局保留的上下文行
+      advance = false,           -- 决定后跳到下一个 pending 块
+      max_rows = 4000,           -- 超过后自动切到 hunks 布局
+      min_split_width = 40,      -- 更窄时自动回退 unified
     },
   },
 },
 ```
 
 `placement = "cursor"` 优先放在光标下方，空间不足时翻到上方，水平位置跟随光标列，
-并始终夹在屏幕内；`follow_cursor = false` 可让输入框停在打开时的位置。三列视图使用
-`AcpInlineDiffOld/New/Result/ResultOld/Num/Divider` 和 `AcpInlineCurrent/Applied/Pending`。
+并始终夹在屏幕内；`follow_cursor = false` 可让输入框停在打开时的位置。审查 buffer 用
+`winbar` 显示 hunk 计数与状态。两栏使用 `AcpInlineDiffOld/New/Num/Divider/Context`、
+状态标记 `AcpInlineAccepted/Rejected` 和当前块 `AcpInlineCurrent`。
 
 ### 可选的懒渲染与历史分页
 

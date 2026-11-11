@@ -531,9 +531,13 @@ native/edgy/reconnect、性能 smoke、tail/spinner 附加 UI 回归通过。
 - `inline/diff_session`：独立只读 scratch 审查，`ga`/`gr`/`g2`/`g3`/`g1`；全部决定后才写源。
 - `inline/anchor`：纯几何；`cursor` 优先下方、空间不足翻上方，记录屏幕格并夹进屏幕；
   源窗口滚动/光标移动/resize 重算，`window` 保留窗口左上锚点。
-- `inline/render`：纯渲染；`side_by_side` 为“旧行号 旧内容 │ 结果预览 │ 新行号 新内容”，
-  pending/accepted 预览 Agent 文本、rejected 预览原文；窄于 `min_split_width` 回退 `unified`。
-  Tab 按源 `tabstop` 展开，长行按显示宽度截断，`max_rows` 截断并提示。
+- `inline/render`：纯渲染；`split2` 为整文件的“旧行号 旧内容 │ 新行号 新内容”，未修改行
+  两侧都显示、变更行配对并留空对齐；超过 `max_rows` 切 `hunks`（块头 + `context` 行），
+  窄于 `min_split_width` 回退 `unified`。同时输出 `row_hunk`/`rows` 供选中与跳转。
+  Tab 按源 `tabstop` 展开，长行按显示宽度截断。
+- `inline/diff_session`：默认新 tabpage 的只读 buffer（`review.target = "float"` 可改浮窗）；
+  光标选中当前块、Visual 多选，`ga/gr/g2/g3/g1/q`/`]c`/`[c`/`u`，`advance` 默认关闭；
+  决定只更新标记与 winbar 计数，关闭时清理 tabpage 和 scratch buffer。
 - `inline/ui`：从 `inline.window` 读取 border、title_pos、style、highlight 组、尺寸与
   offset；`follow_cursor` 控制是否随源光标移动；review 窗 resize 后重新渲染。
 - `inline/review`：`diff` / `write` 策略，精确 ft → 复合 ft 首段 → `*` → 默认；always-accept 优先。
@@ -543,11 +547,12 @@ native/edgy/reconnect、性能 smoke、tail/spinner 附加 UI 回归通过。
   断开/重配置时失效并清理；聊天选区使用同一 token 机制，按位置发送
   `resource` 或 `resource_link`，空光标取整行，无输入框时排队。
 
-验证：829 项单元测试通过，新增精确范围、冲突、元数据变化、资源限制、extmark 回归、
-普通模式提示与自由编辑、锚点翻转/夹取、三列与 unified 回退、Tab/宽字符截断与外观配置校验；
+验证：835 项单元测试通过，新增精确范围、冲突、元数据变化、资源限制、extmark 回归、
+普通模式提示与自由编辑、锚点翻转/夹取、双栏与 hunks/unified 回退、光标与 Visual 选块、
+Tab/宽字符截断与外观配置校验；
 16 项 inline 集成检查覆盖当前 session、普通模式按请求编辑、Visual 越界丢弃、
 真实权限 RPC、取消/排队/断开、迟到结果、filetype 变化及单次覆盖。附加 UI 测试覆盖 Visual
-映射、行范围命令、草稿恢复、窄窗口、三列审查、配置化边框/标题/高亮与光标跟随；
+映射、行范围命令、草稿恢复、窄窗口、双栏审查、tab/浮窗目标、配置化边框/标题/高亮与光标跟随；
 既有集成另行回归。
 边界：未在真实 OpenCode/其它 Agent 上验证工具副作用；权限不是 OS 沙箱。未实现多选区、
 冲突重定位或问题回复浮窗（回复在当前聊天记录）。崩溃孤儿仅按命名、PID 和一天 TTL 尝试清理。

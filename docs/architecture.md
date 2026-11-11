@@ -169,11 +169,16 @@ session 的 `Prompts:send`、scoped task、取消和 outbox 结算，不创建�
 `placement = "window"` 保留旧的窗口左上锚点。`inline/ui` 负责把
 `inline.window` 的 border、title_pos、style 和 highlight 组映射到浮窗。
 
-`inline/render` 是审阅行的纯函数：`side_by_side` 输出“旧行号 旧内容 │ 结果预览 │
-新行号 新内容”，中间的预览取该块决定后的文本（pending/accepted 为 Agent 文本，
-rejected 立即回到原文）；宽度不足 `min_split_width` 时返回 `unified`，逐行 `-`/`+`。
+`inline/render` 是审阅行的纯函数：`split2` 输出整份文件的“旧行号 旧内容 │ 新行号
+新内容”，未修改行两侧都显示，变更行带符号，按两侧行数配对、缺行留空以保持列对齐；
+文件超过 `max_rows` 时切到 `hunks`（每个块加 `@@` 头与 `context` 行），宽度不足
+`min_split_width` 时返回 `unified`。它还输出 `row_hunk`（每行所属块）与 `rows`
+（每块首行），供 `diff_session` 把光标或 Visual 选区换算成 hunk 集合。
 Tab 按源 `tabstop` 展开，长行按显示宽度截断，行数受 `max_rows` 约束。
-`diff_session` 只负责写 buffer、extmark 和按键，应用语义没有变化。
+
+`diff_session` 默认新建 tabpage 放一个只读 scratch buffer（`review.target = "float"`
+可改回浮窗），只负责写 buffer、extmark、winbar 计数与按键；接受/拒绝只改状态标记，
+不移动文本，全部决定后才 `apply.hunks`。
 
 ## 验证
 

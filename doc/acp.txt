@@ -767,10 +767,12 @@ inline.max_copy_bytes 默认 8 MiB，限制副本/结果大小。
 
     inline.review.mode = "diff" | "write"
 
-diff 在独立只读浮窗中做三列对比：旧行 | 最终结果预览 | 新行，各自带行号。中间列在
-pending/accepted 时显示 Agent 的结果，reject 后立即变回原文；窗口窄于
-inline.window.review.min_split_width 时自动回退为上下 -/+ 布局。ga 接受、gr 拒绝、
-g2/g3 全部、g1 对本 buffer 永久接受、q 拒绝剩余；当前块以 AcpInlineCurrent 标出。
+diff 默认在新 tabpage 的只读 buffer 中打开，显示整份文件的左右两栏对比：左侧原文、
+右侧 Agent 提案，未修改行两侧都显示。最左列是状态标记（▸ 当前、✓ 接受、✗ 拒绝）。
+光标停在变更块上时 ga 接受、gr 拒绝；Visual 选区可一次处理覆盖的所有块。
+]c/[c 跳到下/上一个块，u 清除当前块的决定。g2/g3 全部，g1 对本 buffer 永久接受，
+q/<Esc> 拒绝剩余并关闭。文件超过 max_rows 时只显示每个块及 context 行；窗口窄于
+min_split_width 时回退为上下 -/+。
 write 直接写回，但仍可一次撤销。filetype 可单独覆盖：
 
     inline = {
@@ -804,16 +806,19 @@ write 直接写回，但仍可一次撤销。filetype 可单独覆盖：
           placement = "center", -- center | cursor
           width = 140,
           height = 25,
-          layout = "side_by_side", -- side_by_side | unified
-          min_split_width = 60,
-          max_rows = 2000,
+          target = "buffer",    -- buffer | float
+          layout = "split2",    -- split2 | hunks | unified
+          context = 3,
+          advance = false,
+          max_rows = 4000,
+          min_split_width = 40,
         },
       },
     }
 
 placement = "cursor" 优先放在光标下方，空间不足时翻到上方，并始终夹在屏幕内；
-follow_cursor = false 让输入框停在打开时的位置。审查窗 resize 后重新计算布局。
-三列视图使用 AcpInlineDiffOld/New/Result/ResultOld/Num/Divider。
+follow_cursor = false 让输入框停在打开时的位置。审查内容随窗口尺寸自动重排。
+两栏使用 AcpInlineDiffOld/New/Num/Divider/Context，状态标记 AcpInlineAccepted/Rejected。
 :Acp inline [diff|write]、:Acp inline-stop、:Acp inline-reset 是对应命令。
 内联通过当前 session 的正常 prompt 回合执行，回复保留在聊天记录，不创建新会话。
 当前回合或队列未完成时拒绝 inline 提交；inline 期间普通聊天仍可排队。

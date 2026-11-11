@@ -56,14 +56,18 @@ M.groups = {
   AcpInlinePending = { link = "DiffDelete" },
   AcpInlineCurrent = { link = "DiffChange" },
   AcpInlineApplied = { link = "DiffAdd" },
-  -- Side-by-side review: the old column, the merged result column and the new
-  -- column, plus their line numbers and the divider between them.
+  -- Side-by-side review. The gutter marks hunk state; the two content columns
+  -- use the diff backgrounds, and unchanged context stays quiet.
   AcpInlineDiffOld = { link = "DiffDelete" },
   AcpInlineDiffNew = { link = "DiffAdd" },
-  AcpInlineDiffResult = { link = "DiagnosticInfo" },
-  AcpInlineDiffResultOld = { link = "Comment" },
+  AcpInlineDiffOldSign = { link = "DiffDelete" },
+  AcpInlineDiffNewSign = { link = "DiffAdd" },
   AcpInlineDiffNum = { link = "LineNr" },
   AcpInlineDiffDivider = { link = "NonText" },
+  AcpInlineDiffGutter = { link = "NonText" },
+  AcpInlineDiffContext = { link = "Normal" },
+  AcpInlineAccepted = { link = "DiagnosticOk" },
+  AcpInlineRejected = { link = "ErrorMsg" },
   AcpAssistant = { link = "Normal" },
   -- The block header is split in two so the glyph and the label can be coloured
   -- independently: the icon marks who is speaking, the title names the turn.
