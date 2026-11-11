@@ -77,6 +77,20 @@ local function start(review, text)
   vim.api.nvim_feedkeys(vim.keycode("<CR>"), "x", false)
 end
 
+-- Normal mode: no visual range. The cursor is only a hint and the request
+-- decides the scope.
+local function start_cursor(line, text)
+  vim.api.nvim_set_current_win(source_win)
+  vim.api.nvim_win_set_cursor(source_win, { line, 0 })
+  require("acp.inline").open({ review = "write" })
+  wait(function()
+    local buf = vim.api.nvim_get_current_buf()
+    return vim.bo[buf].filetype == "acp_inline"
+  end, 3000, "inline prompt")
+  vim.api.nvim_buf_set_lines(vim.api.nvim_get_current_buf(), 0, -1, false, { text or "replace the marker" })
+  vim.api.nvim_feedkeys(vim.keycode("<CR>"), "x", false)
+end
+
 local function lines()
   return vim.api.nvim_buf_get_lines(source_buf, 0, -1, false)
 end
@@ -94,6 +108,34 @@ check("direct mode rewrites only the selected line", function()
   wait(function()
     return lines()[2] == "local INLINE_OLD = 2"
   end, 3000, "undo")
+end)
+
+check("normal mode follows the request instead of an insert-only point", function()
+  require("acp.inline.review").reset(source_buf)
+  -- The cursor is on line 3 but the request edits line 2: no range filtering.
+  start_cursor(3, "INLINE_NORMAL replace the marker")
+  wait(function()
+    return lines()[2] == "local INLINE_NEW = 2"
+  end, 10000, "normal-mode edit")
+  assert(lines()[3] == "local c = 3", "unrelated line changed: " .. vim.inspect(lines()))
+  vim.cmd("silent undo")
+  wait(function()
+    return lines()[2] == "local INLINE_OLD = 2"
+  end, 3000, "normal-mode undo")
+end)
+
+check("visual mode drops edits outside the selected range", function()
+  require("acp.inline.review").reset(source_buf)
+  start("write", "INLINE_VISUAL replace the marker INLINE_OUTSIDE")
+  wait(function()
+    return lines()[2] == "local INLINE_NEW = 2"
+  end, 10000, "visual edit")
+  vim.wait(200)
+  assert(#lines() == 4, "out-of-range appended line was applied: " .. vim.inspect(lines()))
+  vim.cmd("silent undo")
+  wait(function()
+    return lines()[2] == "local INLINE_OLD = 2"
+  end, 3000, "visual undo")
 end)
 
 check("diff mode applies only after accepting the hunk", function()

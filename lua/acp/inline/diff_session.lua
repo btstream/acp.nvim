@@ -4,9 +4,39 @@ local M = {}
 local sessions = {}
 local result = require("acp.inline.result")
 local apply = require("acp.inline.apply")
+local render = require("acp.inline.render")
+local anchor = require("acp.inline.anchor")
 local ns = vim.api.nvim_create_namespace("acp.inline.review")
 local Session = {}
 Session.__index = Session
+
+local function window_opts(cfg)
+  return (cfg and cfg.inline and cfg.inline.window) or {}
+end
+
+---Review window size and position, clamped to the current screen. Reused by
+---the resize handler so a shrunken UI cannot leave the float off-screen.
+---@param config table|nil
+---@param source_win integer
+---@return table
+local function review_geometry(config, source_win)
+  local review = window_opts(config).review or {}
+  local columns = math.max(1, vim.o.columns)
+  local width = math.max(1, math.min(math.floor(review.width or 140), columns - 2))
+  local height = math.max(1, math.min(math.floor(review.height or 25), math.max(3, vim.o.lines - 4)))
+  if (review.placement or "center") == "cursor" then
+    local placed = anchor.place({ source = source_win, placement = "cursor", width = width, height = height })
+    if placed then
+      return { row = placed.row, col = placed.col, width = placed.width, height = placed.height }
+    end
+  end
+  return {
+    row = math.max(0, math.floor((vim.o.lines - height) / 2) - 1),
+    col = math.max(0, math.floor((columns - width) / 2)),
+    width = width,
+    height = height,
+  }
+end
 
 function Session:close()
   if self.closed then
@@ -106,44 +136,75 @@ function Session:reject_all()
   end
 end
 
-function Session:render()
-  local lines, rows, decorations = {}, {}, {}
-  for i, h in ipairs(self.hunks) do
-    rows[i] = #lines + 1
-    lines[#lines + 1] = string.format(
-      "@@ Hunk %d/%d · %s @@ -%d,%d +%d,%d",
-      i,
-      #self.hunks,
-      h.decided and (h.accepted and "accept" or "reject") or "pending",
-      h.start + 1,
-      #h.old_lines,
-      h.new_start + 1,
-      #h.new_lines
-    )
-    for _, line in ipairs(h.old_lines) do
-      lines[#lines + 1] = "- " .. line
-      decorations[#decorations + 1] = { #lines - 1, "DiffDelete" }
-    end
-    for _, line in ipairs(h.new_lines) do
-      lines[#lines + 1] = "+ " .. line
-      decorations[#decorations + 1] = { #lines - 1, "DiffAdd" }
-    end
-    lines[#lines + 1] = ""
+---Line range of one hunk in the rendered view (1-based, inclusive).
+---@param view table
+---@param index integer
+---@param fallback integer
+---@return integer from, integer to
+local function hunk_rows(view, index, fallback)
+  local from = view.rows[index]
+  if not from then
+    -- The hunk was cut by `max_rows`; anchor the highlight on the notice row
+    -- instead of pretending it starts at the top.
+    return fallback, fallback
   end
+  local next_row = view.rows[index + 1]
+  -- The row before the next header is the blank separator, which is not part of
+  -- this hunk.
+  local to = next_row and (next_row - 2) or #view.lines
+  return from, math.max(from, to)
+end
+
+function Session:render()
+  local opts = window_opts(self.config)
+  local review = opts.review or {}
+  local view = render.render(self.hunks, {
+    width = math.max(1, vim.api.nvim_win_get_width(self.win)),
+    layout = review.layout,
+    tabstop = self.tabstop,
+    max_rows = review.max_rows,
+    min_split_width = review.min_split_width,
+  })
   vim.bo[self.preview].modifiable = true
-  vim.api.nvim_buf_set_lines(self.preview, 0, -1, false, lines)
+  vim.api.nvim_buf_set_lines(self.preview, 0, -1, false, view.lines)
   vim.bo[self.preview].modifiable = false
   vim.api.nvim_buf_clear_namespace(self.preview, ns, 0, -1)
-  for _, d in ipairs(decorations) do
-    vim.api.nvim_buf_set_extmark(self.preview, ns, d[1], 0, { line_hl_group = d[2] })
+  for _, span in ipairs(view.spans) do
+    local line = view.lines[span.row + 1] or ""
+    local start = math.min(span.start, #line)
+    local stop = span.stop == -1 and #line or math.min(span.stop, #line)
+    vim.api.nvim_buf_set_extmark(self.preview, ns, span.row, start, {
+      end_col = stop,
+      hl_group = span.group,
+      priority = 1,
+    })
   end
-  vim.api.nvim_win_set_cursor(self.win, { rows[self.index], 0 })
-  self.rows = rows
+  -- The current hunk gets a background so `[h`/`]h` and `ga`/`gr` have an
+  -- unambiguous target even when several hunks are visible at once.
+  local from, to = hunk_rows(view, self.index, math.max(1, #view.lines))
+  for row = from, math.min(to, #view.lines) do
+    vim.api.nvim_buf_set_extmark(self.preview, ns, row - 1, 0, {
+      line_hl_group = "AcpInlineCurrent",
+      priority = 0,
+    })
+  end
+  local first = view.rows[self.index] or #view.lines
+  if first > 0 and first <= #view.lines then
+    pcall(vim.api.nvim_win_set_cursor, self.win, { first, 0 })
+  end
+  self.rows = view.rows
+  self.layout = view.layout
+  self.rendered = view.rendered
   if self.on_status then
-    self.on_status(self.index, #self.hunks)
+    self.on_status(self.index, #self.hunks, view.layout)
   end
 end
 
+---@param opts {bufnr: integer, original: string[], lines: string[], selection: table|nil,
+---  config: table|nil, on_finish: fun(accepted: integer, total: integer)|nil,
+---  on_status: fun(index: integer, total: integer, layout: string)|nil}
+---@return boolean ok
+---@return string|nil reason
 function M.open(opts)
   if sessions[opts.bufnr] then
     return false, "a review is already open"
@@ -164,26 +225,41 @@ function M.open(opts)
   if #hunks == 0 then
     return false, "no changes"
   end
+  local config = opts.config
   local buf = vim.api.nvim_create_buf(false, true)
   vim.bo[buf].bufhidden = "wipe"
-  vim.bo[buf].filetype = "diff"
+  vim.bo[buf].filetype = "acp_inline_review"
   vim.bo[buf].swapfile = false
-  local width = math.max(1, math.min(100, vim.o.columns - 4))
-  local height = math.max(1, math.min(25, vim.o.lines - 6))
   local source_win = vim.api.nvim_get_current_win()
-  local win = vim.api.nvim_open_win(buf, true, {
+  local geometry = review_geometry(config, source_win)
+  local appearance = window_opts(config)
+  local ok, win = pcall(vim.api.nvim_open_win, buf, true, {
     relative = "editor",
-    row = 1,
-    col = math.max(0, math.floor((vim.o.columns - width) / 2)),
-    width = width,
-    height = height,
-    style = "minimal",
-    border = "rounded",
+    row = geometry.row,
+    col = geometry.col,
+    width = geometry.width,
+    height = geometry.height,
+    style = (appearance.style == "default") and nil or "minimal",
+    border = appearance.border or "rounded",
     title = " ACP Inline · ga/gr · g2/g3 · g1 always · q discard remaining ",
+    title_pos = appearance.title_pos or "left",
   })
+  if not ok then
+    vim.api.nvim_buf_delete(buf, { force = true })
+    return false, tostring(win)
+  end
   vim.cmd("stopinsert")
+  local groups = appearance.highlights or {}
+  vim.wo[win].winhighlight = table.concat({
+    "Normal:" .. (groups.normal or "AcpInlinePrompt"),
+    "NormalNC:" .. (groups.normal or "AcpInlinePrompt"),
+    "FloatBorder:" .. (groups.border or "AcpInlineBorder"),
+    "FloatTitle:" .. (groups.title or "AcpInlineTitle"),
+  }, ",")
+  vim.wo[win].wrap = false
   local s = setmetatable({
     bufnr = opts.bufnr,
+    config = config,
     preview = buf,
     win = win,
     source_win = source_win,
@@ -191,6 +267,7 @@ function M.open(opts)
     original = vim.deepcopy(original),
     snapshot = snapshot,
     index = 1,
+    tabstop = vim.bo[opts.bufnr].tabstop > 0 and vim.bo[opts.bufnr].tabstop or 8,
     on_finish = opts.on_finish,
     on_status = opts.on_status,
   }, Session)
@@ -208,6 +285,18 @@ function M.open(opts)
     pattern = tostring(win),
     callback = function()
       s:reject_all()
+    end,
+  })
+  -- A narrower screen falls back to `unified`, so a resize changes layout and,
+  -- for centre/cursor placement, has to move the window back inside the screen.
+  vim.api.nvim_create_autocmd("VimResized", {
+    group = s.group,
+    callback = function()
+      if not vim.api.nvim_win_is_valid(win) then
+        return
+      end
+      pcall(vim.api.nvim_win_set_config, win, review_geometry(s.config, s.source_win))
+      s:render()
     end,
   })
   local function map(key, fn)

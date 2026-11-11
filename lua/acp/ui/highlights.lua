@@ -51,10 +51,19 @@ M.groups = {
   -- warning colour and the current one the info colour.
   AcpInlinePrompt = { link = "NormalFloat" },
   AcpInlineBorder = { link = "FloatBorder" },
+  AcpInlineTitle = { link = "FloatTitle" },
   AcpInlineBanner = { link = "Comment" },
   AcpInlinePending = { link = "DiffDelete" },
   AcpInlineCurrent = { link = "DiffChange" },
   AcpInlineApplied = { link = "DiffAdd" },
+  -- Side-by-side review: the old column, the merged result column and the new
+  -- column, plus their line numbers and the divider between them.
+  AcpInlineDiffOld = { link = "DiffDelete" },
+  AcpInlineDiffNew = { link = "DiffAdd" },
+  AcpInlineDiffResult = { link = "DiagnosticInfo" },
+  AcpInlineDiffResultOld = { link = "Comment" },
+  AcpInlineDiffNum = { link = "LineNr" },
+  AcpInlineDiffDivider = { link = "NonText" },
   AcpAssistant = { link = "Normal" },
   -- The block header is split in two so the glyph and the label can be coloured
   -- independently: the icon marks who is speaking, the title names the turn.

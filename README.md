@@ -323,8 +323,9 @@ Neovim；OSC 5522 需要终端专用协商并改变普通粘贴处理，本插�
 
 `require("acp").inline()`（默认 `<leader>ai`，普通和 Visual 模式）在光标处或选区上方
 打开输入框，让 Agent 修改当前 buffer。字符/行选区默认按整行处理，块选区保留列范围；
-`inline.expand_selection = false` 保留字符选区的精确范围。无选区时只允许在光标处插入，
-`inline.scope = "context"` 时改为允许修改光标周围的上下文窗口。
+`inline.expand_selection = false` 保留字符选区的精确范围。无选区（普通模式）时不会把请求
+限制成“只能在光标处插入”：Agent 按用户请求修改副本，光标位置只作为提示。
+`inline.scope = "context"` 时改为只允许修改光标周围的上下文窗口。
 
 通过当前 session 提交正常 prompt 回合，回复保留在聊天记录中，不创建新 session。
 当前回合或队列未完成时拒绝 inline 提交；inline 运行时，普通聊天仍可排队。
@@ -355,15 +356,53 @@ inline = {
 keymaps = { inline = { normal = "<leader>ai", visual = "<leader>ai" } },
 ```
 
-diff 在独立只读浮窗显示删除/新增行，源 buffer 在审查期间不变，决定完毕后一次应用接受的块。
-`ga`/`gr` 接受/拒绝当前块。按结果到达时的 filetype 解析：精确 filetype、复合 filetype
-的第一段、`"*"`、默认值。在 diff 中按 `g1`
+diff 在独立只读浮窗显示三列对比：**旧行 | 最终结果预览 | 新行**，各自带行号。
+源 buffer 在审查期间不变，决定完毕后一次应用接受的块。中间列在 pending/accepted 时
+显示 Agent 的结果，改为 rejected 时立即变回原文；窗口过窄时自动回退为上下 `-`/`+` 布局。
+`ga`/`gr` 接受/拒绝当前块，当前块以 `AcpInlineCurrent` 背景标出。按结果到达时的
+filetype 解析：精确 filetype、复合 filetype 的第一段、`"*"`、默认值。在 diff 中按 `g1`
 对该 buffer 永久改用直接写回，`:Acp inline-reset` 清除。`g2` / `g3` 全部接受或拒绝，
 `q` 拒绝剩余部分。
 
 `:Acp inline [diff|write]`、`:Acp inline-stop`、`:Acp inline-reset` 是对应命令。
 命令支持行范围（如 `:'<,'>Acp inline diff`）。显式 `diff|write` 优先于 always-accept
 和 filetype 配置；`<C-d>` 切换本次模式。同一时间只运行一个 inline 请求。
+
+浮窗外观可配置；颜色仍由 highlight group 决定：
+
+```lua
+inline = {
+  window = {
+    border = "rounded",     -- none/single/double/rounded/solid/shadow，或 8 个字符
+    title_pos = "left",     -- left | center | right
+    style = "minimal",      -- minimal | default
+    highlights = {          -- 只映射窗口 chrome，可用 ui.highlights 改颜色
+      normal = "AcpInlinePrompt",
+      border = "AcpInlineBorder",
+      title = "AcpInlineTitle",
+    },
+    prompt = {
+      placement = "cursor", -- cursor（跟随光标）| window（窗口左上）
+      width = 72,
+      height = 3,
+      offset = { row = 0, col = 0 },
+      follow_cursor = true,
+    },
+    review = {
+      placement = "center",      -- center | cursor
+      width = 140,
+      height = 25,
+      layout = "side_by_side",   -- side_by_side | unified
+      min_split_width = 60,      -- 更窄时自动回退 unified
+      max_rows = 2000,
+    },
+  },
+},
+```
+
+`placement = "cursor"` 优先放在光标下方，空间不足时翻到上方，水平位置跟随光标列，
+并始终夹在屏幕内；`follow_cursor = false` 可让输入框停在打开时的位置。三列视图使用
+`AcpInlineDiffOld/New/Result/ResultOld/Num/Divider` 和 `AcpInlineCurrent/Applied/Pending`。
 
 ### 可选的懒渲染与历史分页
 

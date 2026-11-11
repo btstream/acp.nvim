@@ -68,17 +68,16 @@ return function(t)
       t.truthy(got.ranges[1].start_row < 29)
       t.truthy(got.ranges[1].end_row > 29)
       t.eq(0, got.ranges[1].start_col)
-      t.falsy(got.insertion)
       vim.api.nvim_buf_delete(buf, { force = true })
     end)
 
-    t.it("records an insertion point without a visual range", function()
+    t.it("keeps cursor mode unrestricted instead of an insertion point", function()
       local win, buf = win_with({ "abc" })
       vim.api.nvim_win_set_cursor(win, { 1, 1 })
       local c = cfg()
       local got = assert(selection.capture(win, c))
-      t.eq(0, #got.text)
-      t.truthy(got.insertion)
+      t.truthy(got.free)
+      t.falsy(got.linewise)
       vim.api.nvim_buf_delete(buf, { force = true })
     end)
   end)
@@ -173,7 +172,10 @@ return function(t)
       })
       t.truthy(ok)
       t.eq({ "a", "b", "c", "d" }, vim.api.nvim_buf_get_lines(buf, 0, -1, false))
-      t.truthy(table.concat(vim.api.nvim_buf_get_lines(0, 0, -1, false), "\n"):find("- a", 1, true))
+      -- Side-by-side rows: old number | old | result | new | new number.
+      local preview = table.concat(vim.api.nvim_buf_get_lines(0, 0, -1, false), "\n")
+      t.match("1%s+a%s+│%s+A%s+│%s+1%s+A", preview)
+      t.match("pending", preview)
       vim.api.nvim_feedkeys("gr", "x", false)
       t.eq({ "a", "b", "c", "d" }, vim.api.nvim_buf_get_lines(buf, 0, -1, false))
       vim.api.nvim_feedkeys("ga", "x", false)
@@ -345,10 +347,22 @@ return function(t)
       t.eq({ "abc XYZ ghi" }, p.lines)
       t.truthy(p.dropped > 0)
     end)
-    t.it("limits cursor requests to insertion", function()
+    t.it("limits an exact zero-width range to insertion", function()
       local r = { start_row = 0, start_col = 1, end_row = 0, end_col = 1 }
       t.eq({ "aXbc" }, plan({ "abc" }, { "aXbc" }, r).lines)
       t.eq({ "abc" }, plan({ "abc" }, { "aXc" }, r).lines)
+    end)
+    t.it("applies normal-mode changes anywhere without filtering", function()
+      local free = {
+        original = { "a", "b", "c" },
+        ranges = { { start_row = 1, start_col = 0, end_row = 1, end_col = 0 } },
+        free = true,
+      }
+      local p = result.plan(free, { "A", "b", "C" })
+      t.eq({ "A", "b", "C" }, p.lines)
+      t.eq(0, p.dropped)
+      local inserted = result.plan(free, { "a", "x", "b", "c" })
+      t.eq({ "a", "x", "b", "c" }, inserted.lines)
     end)
     t.it("handles insertion into and deletion of empty lines", function()
       local r = { start_row = 0, start_col = 0, end_row = 0, end_col = 0 }
@@ -455,12 +469,205 @@ return function(t)
     end)
   end)
 
+  t.describe("inline prompt text", function()
+    local prompt = require("acp.inline.prompt")
+    local function selection(over)
+      return vim.tbl_extend("force", {
+        original = { "local a = 1", "local b = 2", "local c = 3" },
+        ranges = { { start_row = 1, start_col = 0, end_row = 1, end_col = 11 } },
+        first = 2,
+        last = 2,
+        text = "local b = 2",
+        linewise = true,
+        filetype = "lua",
+      }, over or {})
+    end
+    local function built(sel)
+      return prompt.build({
+        selection = sel,
+        config = cfg(),
+        copy = "/tmp/.acp-inline-test.lua",
+        prompt = "rename this variable",
+      })
+    end
+
+    t.it("only constrains a visual selection", function()
+      local visual = built(selection())
+      t.match("Rewrite only these whole lines", visual)
+      t.match("byte column", visual)
+      t.match("<selection>", visual)
+      local cursor = built(selection({
+        free = true,
+        linewise = false,
+        text = "",
+        ranges = {
+          { start_row = 1, start_col = 4, end_row = 1, end_col = 4 },
+        },
+      }))
+      t.falsy(cursor:find("INSERT ONLY", 1, true))
+      t.falsy(cursor:find("through line", 1, true))
+      t.falsy(cursor:find("Out-of-range", 1, true))
+      t.falsy(cursor:find("<selection>", 1, true))
+      t.match("No selection", cursor)
+      t.match("line 2, byte column 4", cursor)
+      t.match("rename this variable", cursor)
+    end)
+  end)
+
   t.describe("inline review reset", function()
     t.it("clears always-accept", function()
       review.always_accept(9999)
       t.truthy(review.is_always_accepted(9999))
       review.reset(9999)
       t.falsy(review.is_always_accepted(9999))
+    end)
+  end)
+
+  t.describe("inline prompt placement", function()
+    local anchor = require("acp.inline.anchor")
+    t.it("keeps the float inside the screen at every edge", function()
+      local config = anchor.config(-5, -5, 10000, 10000)
+      t.eq(0, config.row)
+      t.eq(0, config.col)
+      t.truthy(config.width <= vim.o.columns - 2)
+      local bottom = anchor.config(10000, 10000, 20, 3)
+      t.truthy(bottom.row + bottom.height <= vim.o.lines)
+      t.truthy(bottom.col + bottom.width <= vim.o.columns)
+    end)
+    t.it("flips above the cursor when there is no room below", function()
+      local win, buf = win_with({ "a", "b", "c" })
+      vim.api.nvim_win_set_cursor(win, { 1, 0 })
+      local top =
+        anchor.place({ source = win, placement = "cursor", width = 40, height = 3, offset = { row = -10000 } })
+      local bottom =
+        anchor.place({ source = win, placement = "cursor", width = 40, height = 3, offset = { row = 10000 } })
+      t.truthy(top.row <= bottom.row)
+      t.truthy(top.row >= 0)
+      vim.api.nvim_buf_delete(buf, { force = true })
+    end)
+    t.it("anchors at the window when placement is window", function()
+      local win, buf = win_with({ "a" })
+      local pos = vim.api.nvim_win_get_position(win)
+      local config = anchor.place({ source = win, placement = "window", width = 20, height = 3 })
+      t.eq(pos[1], config.row)
+      t.eq(pos[2], config.col)
+      vim.api.nvim_buf_delete(buf, { force = true })
+    end)
+    t.it("applies the configured offset", function()
+      local win, buf = win_with({ "a" })
+      local base = anchor.place({ source = win, placement = "cursor", width = 20, height = 2 })
+      local moved = anchor.place({
+        source = win,
+        placement = "cursor",
+        width = 20,
+        height = 2,
+        offset = { row = 2, col = 1 },
+      })
+      t.eq(math.min(base.row + 2, vim.o.lines - 4), moved.row)
+      t.truthy(moved.col >= base.col)
+      vim.api.nvim_buf_delete(buf, { force = true })
+    end)
+  end)
+
+  t.describe("inline review rendering", function()
+    local render = require("acp.inline.render")
+    local hunks = result.hunks({ "a", "b", "c", "d" }, { "A", "b", "c", "D" })
+    t.it("shows old, result and new columns and falls back on narrow width", function()
+      local wide = render.render(hunks, { width = 120 })
+      t.eq("side_by_side", wide.layout)
+      local row = wide.lines[2]
+      t.match("^1%s+a%s+│%s+A%s+│%s+1%s+A", row)
+      local narrow = render.render(hunks, { width = 40 })
+      t.eq("unified", narrow.layout)
+      t.truthy(table.concat(narrow.lines, "\n"):find("- a", 1, true))
+    end)
+    t.it("previews the original text for a rejected hunk", function()
+      local rejected = vim.deepcopy(hunks)
+      rejected[1].decided, rejected[1].accepted = true, false
+      local view = render.render(rejected, { width = 120 })
+      t.match("rejected · preview: original", view.lines[1])
+      t.match("^1%s+a%s+│%s+a%s+│%s+1%s+A", view.lines[2])
+    end)
+    t.it("pairs inserts and deletes of different lengths", function()
+      local uneven = result.hunks({ "a", "b" }, { "a", "x", "y", "b" })
+      local view = render.render(uneven, { width = 120 })
+      local text = table.concat(view.lines, "\n")
+      t.match("│%s+x", text)
+      t.match("│%s+y", text)
+      t.eq(hunks[1].start, render.render(hunks, { width = 120 }).rows[1] - 1)
+    end)
+    t.it("expands tabs and truncates long lines within the column", function()
+      local tabbed = { { start = 0, old_lines = { "\told" }, new_lines = { "\tnew" }, new_start = 0 } }
+      local view = render.render(tabbed, { width = 80, tabstop = 4 })
+      t.falsy(view.lines[2]:find("\t", 1, true))
+      local long = { { start = 0, old_lines = { string.rep("x", 500) }, new_lines = { "y" }, new_start = 0 } }
+      local clipped = render.render(long, { width = 80 })
+      t.truthy(vim.fn.strdisplaywidth(clipped.lines[2]) <= 80)
+      t.match("…", clipped.lines[2])
+    end)
+    t.it("caps rendered rows and reports truncation", function()
+      local many = {}
+      for i = 1, 40 do
+        many[i] = { start = i - 1, old_lines = { "old" .. i }, new_lines = { "new" .. i }, new_start = i - 1 }
+      end
+      local view = render.render(many, { width = 120, max_rows = 12 })
+      t.truthy(#view.lines <= 12)
+      t.truthy(view.rendered < #many)
+      t.match("truncated", view.lines[#view.lines])
+      t.falsy(view.lines[#view.lines]:find("@@ Hunk", 1, true))
+    end)
+  end)
+
+  t.describe("inline window config", function()
+    t.it("accepts custom borders, titles and highlight groups", function()
+      local c = cfg({
+        inline = {
+          window = {
+            border = "double",
+            title_pos = "center",
+            style = "default",
+            highlights = { normal = "MyNormal", border = "MyBorder", title = "MyTitle" },
+            prompt = {
+              placement = "cursor",
+              width = 40,
+              height = 2,
+              offset = { row = 1, col = 2 },
+              follow_cursor = false,
+            },
+            review = {
+              placement = "cursor",
+              width = 100,
+              height = 10,
+              layout = "unified",
+              min_split_width = 70,
+              max_rows = 50,
+            },
+          },
+        },
+      })
+      t.eq("double", c.inline.window.border)
+      t.eq("MyTitle", c.inline.window.highlights.title)
+      t.eq("unified", c.inline.window.review.layout)
+    end)
+    t.it("accepts an explicit border character list", function()
+      local c = cfg({ inline = { window = { border = { "a", "b", "c", "d", "e", "f", "g", "h" } } } })
+      t.eq(8, #c.inline.window.border)
+    end)
+    t.it("rejects invalid appearance values", function()
+      for _, over in ipairs({
+        { inline = { window = { border = "wavy" } } },
+        { inline = { window = { border = { "a", "b" } } } },
+        { inline = { window = { title_pos = "middle" } } },
+        { inline = { window = { style = "fancy" } } },
+        { inline = { window = { highlights = { title = "" } } } },
+        { inline = { window = { prompt = { width = 2 } } } },
+        { inline = { window = { prompt = { follow_cursor = "yes" } } } },
+        { inline = { window = { review = { layout = "columns" } } } },
+        { inline = { window = { review = { min_split_width = 2 } } } },
+      }) do
+        local ok = pcall(Config.validate, Config.merge(Config.defaults, over))
+        t.falsy(ok, vim.inspect(over))
+      end
     end)
   end)
 end

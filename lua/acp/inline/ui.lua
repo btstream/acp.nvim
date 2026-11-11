@@ -1,21 +1,61 @@
 -- One scoped prompt float. Closing it by any route notifies the owner; all
 -- autocmds/buffers are destroyed together. No global redraw hooks accumulate.
 local M = {}
+local anchor = require("acp.inline.anchor")
 local state
+
+local function window_opts(cfg)
+  return (cfg and cfg.inline and cfg.inline.window) or {}
+end
+
+---Float geometry for the current state. With `follow_cursor` the source cursor is
+---sampled on every call; otherwise the cell captured at open time is reused so
+---scrolling does not drag the prompt along.
+---@param s table
+---@return table|nil
 local function geometry(s)
-  if not vim.api.nvim_win_is_valid(s.source) then
+  local opts = window_opts(s.config)
+  local prompt = opts.prompt or {}
+  s.prompt = prompt
+  local g = anchor.place({
+    source = s.source,
+    cursor = s.cursor,
+    anchor_cell = (prompt.follow_cursor == false) and s.anchor_cell or nil,
+    placement = prompt.placement or "cursor",
+    width = prompt.width or 72,
+    height = prompt.height or 3,
+    offset = prompt.offset,
+  })
+  if not g then
     return nil
   end
-  local p = vim.api.nvim_win_get_position(s.source)
-  local screen = vim.fn.screenpos(s.source, s.row + 1, 1)
-  local height = math.max(1, math.min(3, vim.o.lines - 5))
-  local width = math.max(1, math.min(72, vim.api.nvim_win_get_width(s.source) - 2, vim.o.columns - 4))
-  local anchor = screen.row > 0 and screen.row - 1 or p[1]
-  local row = anchor >= height + 2 and anchor - height - 2 or anchor + 1
-  row = math.max(0, math.min(row, vim.o.lines - height - 3))
-  local col = math.max(0, math.min(p[2], vim.o.columns - width - 2))
-  return { relative = "editor", row = row, col = col, width = width, height = height }
+  g.style = (opts.style == "default") and nil or "minimal"
+  g.border = opts.border or "rounded"
+  g.title_pos = opts.title_pos or "left"
+  return g
 end
+
+---`winhighlight` mapping for the chrome. `style = "minimal"` installs its own
+---Normal/FloatBorder mapping, so this must be assigned after the window exists.
+---@param cfg table|nil
+---@return string
+local function winhighlight(cfg)
+  local groups = window_opts(cfg).highlights or {}
+  local normal = groups.normal or "AcpInlinePrompt"
+  local border = groups.border or "AcpInlineBorder"
+  local title = groups.title or "AcpInlineTitle"
+  return table.concat({
+    "Normal:" .. normal,
+    "NormalNC:" .. normal,
+    "FloatBorder:" .. border,
+    "FloatTitle:" .. title,
+  }, ",")
+end
+
+local function title_text(s, status)
+  return " ACP Inline · " .. (status or s.status or "") .. " "
+end
+
 function M.text()
   if not state or not vim.api.nvim_buf_is_valid(state.buf) then
     return ""
@@ -55,23 +95,35 @@ function M.reposition()
   if not g or not vim.api.nvim_win_is_valid(state.win) then
     return M.close()
   end
+  g.title = title_text(state)
+  -- Avoid a `set_config` (and its redraw work) when nothing moved.
+  local last = state.geometry
+  if last and last.row == g.row and last.col == g.col and last.width == g.width and last.height == g.height then
+    return
+  end
+  state.geometry = g
   pcall(vim.api.nvim_win_set_config, state.win, g)
 end
 function M.set_status(text)
-  if M.is_open() then
-    vim.api.nvim_win_set_config(state.win, { title = " ACP Inline · " .. text .. " ", title_pos = "left" })
+  if not M.is_open() then
+    return
   end
+  state.status = text
+  local opts = window_opts(state.config)
+  pcall(vim.api.nvim_win_set_config, state.win, { title = title_text(state), title_pos = opts.title_pos or "left" })
 end
 function M.open(opts)
   if not vim.api.nvim_win_is_valid(opts.source) then
     return false
   end
   M.close()
-  local s = { source = opts.source, row = opts.row, on_close = opts.on_close }
+  local s = { source = opts.source, config = opts.config, status = opts.title, on_close = opts.on_close }
+  s.anchor_cell = anchor.anchor(opts.source)
   local g = geometry(s)
   if not g then
     return false
   end
+  s.geometry = g
   s.buf = vim.api.nvim_create_buf(false, true)
   vim.bo[s.buf].bufhidden = "wipe"
   vim.bo[s.buf].buftype = "nofile"
@@ -80,10 +132,7 @@ function M.open(opts)
   if opts.text then
     vim.api.nvim_buf_set_lines(s.buf, 0, -1, false, vim.split(opts.text, "\n", { plain = true }))
   end
-  g.style = "minimal"
-  g.border = "rounded"
-  g.title = " ACP Inline · " .. opts.title .. " "
-  g.title_pos = "left"
+  g.title = title_text(s)
   local ok, win = pcall(vim.api.nvim_open_win, s.buf, true, g)
   if not ok then
     vim.api.nvim_buf_delete(s.buf, { force = true })
@@ -93,7 +142,7 @@ function M.open(opts)
   s.group = vim.api.nvim_create_augroup("AcpInlineUI" .. s.buf, { clear = true })
   state = s
   vim.wo[win].wrap = true
-  vim.wo[win].winhighlight = "Normal:AcpInlinePrompt,FloatBorder:AcpInlineBorder"
+  vim.wo[win].winhighlight = winhighlight(s.config)
   local function send()
     local text = M.text()
     if vim.trim(text) ~= "" then
@@ -113,11 +162,30 @@ function M.open(opts)
       M.set_status(opts.on_toggle_review())
     end
   end, { buffer = s.buf })
-  vim.api.nvim_create_autocmd({ "WinScrolled", "VimResized" }, { group = s.group, callback = M.reposition })
+  -- Re-anchor when the source scrolls or the layout changes. `WinScrolled`
+  -- fires for the float too, so only the source window is honoured.
+  vim.api.nvim_create_autocmd({ "WinScrolled", "VimResized" }, {
+    group = s.group,
+    callback = function(event)
+      if event.match == nil or event.match == "" or tonumber(event.match) == s.source then
+        M.reposition()
+      end
+    end,
+  })
+  if s.prompt.follow_cursor ~= false then
+    vim.api.nvim_create_autocmd("CursorMoved", {
+      group = s.group,
+      callback = function()
+        if vim.api.nvim_get_current_win() == s.source then
+          M.reposition()
+        end
+      end,
+    })
+  end
   vim.api.nvim_create_autocmd("WinClosed", {
     group = s.group,
-    callback = function(e)
-      if state == s and (tonumber(e.match) == s.win or tonumber(e.match) == s.source) then
+    callback = function(event)
+      if state == s and (tonumber(event.match) == s.win or tonumber(event.match) == s.source) then
         M.close()
       end
     end,

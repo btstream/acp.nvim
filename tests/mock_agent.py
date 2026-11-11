@@ -93,6 +93,20 @@ def run_prompt(msg_id, text):
     if text.startswith("INLINE_BUFFER_EDIT:"):
         import re
 
+        # The scope instruction depends on how the request was opened. Visual
+        # mode gets a byte range; normal mode must not be described as an
+        # insert-only point.
+        if "INLINE_NORMAL" in text and "INSERT ONLY" in text:
+            error(msg_id, -32000, "normal-mode inline was described as insert-only")
+            with permissions_lock:
+                active_prompts.pop(msg_id, None)
+            return
+        if "INLINE_VISUAL" in text and "Rewrite only" not in text:
+            error(msg_id, -32000, "visual inline lost its range instruction")
+            with permissions_lock:
+                active_prompts.pop(msg_id, None)
+            return
+
         match = re.search(r"`([^`]*acp-inline-[^`]*)`", text)
         if match and os.path.isfile(match.group(1)):
             path = match.group(1)
@@ -128,7 +142,9 @@ def run_prompt(msg_id, text):
             if "INLINE_OLD" in content:
                 content = content.replace("INLINE_OLD", "INLINE_NEW", 1)
                 if "INLINE_OUTSIDE" in text:
-                    content = "OUTSIDE\n" + content
+                    # Appending keeps the selected line's edit intact, so a
+                    # visual range can be checked to drop only this line.
+                    content = content.rstrip("\n") + "\nOUTSIDE\n"
                 with open(path, "w", encoding="utf-8") as handle:
                     handle.write(content)
                 update(

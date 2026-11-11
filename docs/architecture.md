@@ -158,10 +158,22 @@ session 的 `Prompts:send`、scoped task、取消和 outbox 结算，不创建�
 由 inline 接管。权限严格匹配本次登记的副本，不能以文件名前缀或 allow_always 替代授权。
 这不是 OS 沙箱；真实 Agent 的直接副作用仍需另行验证。
 
-结果按行/UTF-8 字符范围过滤，块选择保持列边界，光标模式仅插入。原始文本、文件名和
+结果按行/UTF-8 字符范围过滤，块选择保持列边界；普通模式没有选区，按用户请求决定修改
+范围（`scope = "context"` 时限制在上下文窗口）。原始文本、文件名和
 换行约定用于冲突检查；不刷新快照来绕过冲突。`diff_session` 在独立 scratch 浮窗审查，
 全部决定后才通过 `apply.hunks` 一次写入接受的块，不 rewind 用户 undo 历史。
 策略按结果到达时的 filetype 解析，显式单次覆盖优先于 always-accept。
+
+`inline/anchor` 只做几何计算：它用 `screenpos()` 取光标所在屏幕格，优先放在下方，
+空间不足时翻到上方，再夹进屏幕；源窗口滚动、光标移动和 `VimResized` 触发重算，
+`placement = "window"` 保留旧的窗口左上锚点。`inline/ui` 负责把
+`inline.window` 的 border、title_pos、style 和 highlight 组映射到浮窗。
+
+`inline/render` 是审阅行的纯函数：`side_by_side` 输出“旧行号 旧内容 │ 结果预览 │
+新行号 新内容”，中间的预览取该块决定后的文本（pending/accepted 为 Agent 文本，
+rejected 立即回到原文）；宽度不足 `min_split_width` 时返回 `unified`，逐行 `-`/`+`。
+Tab 按源 `tabstop` 展开，长行按显示宽度截断，行数受 `max_rows` 约束。
+`diff_session` 只负责写 buffer、extmark 和按键，应用语义没有变化。
 
 ## 验证
 

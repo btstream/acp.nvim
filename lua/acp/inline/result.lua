@@ -179,6 +179,12 @@ end
 function M.plan(selection, edited)
   local original = selection.original
   local hunks = M.hunks(original, edited)
+  -- Normal-mode requests have no preselected range; the user's request decides
+  -- what changes. Only snapshot/newline checks apply, so keep every hunk.
+  if selection.free then
+    local lines = #edited == 0 and { "" } or vim.deepcopy(edited)
+    return { lines = lines, hunks = M.hunks(original, lines), dropped = 0 }
+  end
   if selection.linewise then
     local split = {}
     for _, h in ipairs(hunks) do

@@ -35,7 +35,7 @@ function M.capture(win, config, override)
   end
   local mode = override and override.mode or vim.fn.mode()
   local visual = override ~= nil or mode == "v" or mode == "V" or mode == "\22"
-  local ranges, linewise = {}, false
+  local ranges, linewise, free = {}, false, false
   if visual then
     if mode ~= "v" and mode ~= "V" and mode ~= "\22" then
       return nil, "unsupported selection mode"
@@ -115,7 +115,11 @@ function M.capture(win, config, override)
       ranges[1] = { start_row = first, start_col = 0, end_row = last, end_col = #lines[last + 1] }
       linewise = true
     else
+      -- No visual selection. The scope is the cursor's line, but unlike a
+      -- visual selection this is not an insertion point: the request decides
+      -- what to change, so `free` lifts result filtering (see result.plan).
       ranges[1] = { start_row = row, start_col = p[2], end_row = row, end_col = p[2] }
+      free = true
     end
   end
   local texts, count = {}, 0
@@ -137,9 +141,11 @@ function M.capture(win, config, override)
     bufnr = buf,
     win = win,
     ranges = ranges,
-    mode = visual and mode or "v",
+    mode = visual and mode or "n",
     linewise = linewise,
-    insertion = not visual and not linewise,
+    -- Cursor mode has no selection: the request decides what changes, so the
+    -- result is not filtered down to an insert point.
+    free = free == true,
     original = lines,
     text = text,
     first = ranges[1].start_row + 1,

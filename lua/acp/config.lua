@@ -305,8 +305,9 @@ M.defaults = {
       mode = "diff",
       by_filetype = {},
     },
-    -- "cursor" inserts at the cursor when there is no selection; "context"
-    -- lets the agent edit the visible context window instead.
+    -- No visual selection: "cursor" lets the request decide what to change
+    -- (the cursor is only a hint). "context" instead bounds edits to the
+    -- visible context window around the cursor.
     scope = "cursor",
     -- Whole-line selections are what both Zed and CodeCompanion use for inline
     -- edits; turn this off to replace only the exact characters.
@@ -321,6 +322,49 @@ M.defaults = {
     allow_writes = false,
     -- Allow commands and other non-read tools.
     allow_commands = false,
+    -- Floating windows used by inline editing. Colours are not set here: the
+    -- groups named below are defined by `ui.highlights` and can be overridden
+    -- there or with `nvim_set_hl`.
+    window = {
+      -- Any `nvim_open_win()` border: "none", "single", "double", "rounded",
+      -- "solid", "shadow", or an 8-element table of characters.
+      border = "rounded",
+      -- "left" | "center" | "right"
+      title_pos = "left",
+      -- "minimal" hides the number/sign columns; "default" keeps window options.
+      style = "minimal",
+      highlights = {
+        normal = "AcpInlinePrompt",
+        border = "AcpInlineBorder",
+        title = "AcpInlineTitle",
+      },
+      prompt = {
+        -- "cursor" anchors near the cursor (flipping above when there is no
+        -- room below); "window" anchors at the source window's top-left.
+        placement = "cursor",
+        -- Requested size. The result is clamped to the screen.
+        width = 72,
+        height = 3,
+        -- Screen-cell offset from the anchor, applied before clamping.
+        offset = { row = 0, col = 0 },
+        -- Re-anchor when the cursor moves in the source window.
+        follow_cursor = true,
+      },
+      review = {
+        -- "center" mirrors the old review float; "cursor" anchors above the
+        -- selection instead.
+        placement = "center",
+        width = 140,
+        height = 25,
+        -- "side_by_side" shows old | result | new; "unified" keeps the
+        -- single-column -/+ layout. Narrow screens fall back to "unified".
+        layout = "side_by_side",
+        -- Below this many columns a side-by-side review is unreadable.
+        min_split_width = 60,
+        -- Ceiling on rendered review rows.
+        max_rows = 2000,
+      },
+    },
   },
 
   -- Show timeline notices sent by the agent (requires the session.notices capability).
@@ -594,6 +638,54 @@ function M.validate(cfg)
   end
   check_number(inline.context_bytes, 1024, 8 * 1024 * 1024, "inline.context_bytes")
   check_number(inline.max_copy_bytes, 1024, 64 * 1024 * 1024, "inline.max_copy_bytes")
+  local window = inline.window
+  if type(window) ~= "table" then
+    fail("inline.window must be a table")
+  end
+  local border_ok = type(window.border) == "table"
+  if border_ok then
+    if vim.islist(window.border) then
+      if #window.border ~= 8 then
+        fail("inline.window.border must be a name or a table of 8 characters")
+      end
+      for _, char in ipairs(window.border) do
+        if type(char) ~= "string" or vim.fn.strdisplaywidth(char) > 1 then
+          fail("inline.window.border characters must be strings of at most one display cell")
+        end
+      end
+    else
+      border_ok = false
+    end
+  end
+  if not border_ok then
+    check_enum(window.border, { "none", "single", "double", "rounded", "solid", "shadow" }, "inline.window.border")
+  end
+  check_enum(window.title_pos, { "left", "center", "right" }, "inline.window.title_pos")
+  check_enum(window.style, { "minimal", "default" }, "inline.window.style")
+  if type(window.highlights) ~= "table" then
+    fail("inline.window.highlights must be a table")
+  end
+  for _, name in ipairs({ "normal", "border", "title" }) do
+    local group = window.highlights[name]
+    if type(group) ~= "string" or group == "" or group:find("%s") then
+      fail("inline.window.highlights.%s must be a non-empty highlight group name", name)
+    end
+  end
+  local prompt = window.prompt
+  if type(prompt) ~= "table" then
+    fail("inline.window.prompt must be a table")
+  end
+  check_enum(prompt.placement, { "cursor", "window" }, "inline.window.prompt.placement")
+  check_number(prompt.width, 10, 1000, "inline.window.prompt.width")
+  check_number(prompt.height, 1, 100, "inline.window.prompt.height")
+  if type(prompt.offset) ~= "table" then
+    fail("inline.window.prompt.offset must be a table")
+  end
+  check_number(prompt.offset.row, -1000, 1000, "inline.window.prompt.offset.row")
+  check_number(prompt.offset.col, -1000, 1000, "inline.window.prompt.offset.col")
+  if type(prompt.follow_cursor) ~= "boolean" then
+    fail("inline.window.prompt.follow_cursor must be a boolean")
+  end
   local review = inline.review
   if type(review) ~= "table" then
     fail("inline.review must be a table")
@@ -623,6 +715,16 @@ function M.validate(cfg)
   if count > 256 then
     fail("inline.review.by_filetype has %d entries; at most 256 are supported", count)
   end
+  local review_window = window.review
+  if type(review_window) ~= "table" then
+    fail("inline.window.review must be a table")
+  end
+  check_enum(review_window.placement, { "center", "cursor" }, "inline.window.review.placement")
+  check_number(review_window.width, 20, 2000, "inline.window.review.width")
+  check_number(review_window.height, 3, 500, "inline.window.review.height")
+  check_enum(review_window.layout, { "side_by_side", "unified" }, "inline.window.review.layout")
+  check_number(review_window.min_split_width, 10, 2000, "inline.window.review.min_split_width")
+  check_number(review_window.max_rows, 10, 1000000, "inline.window.review.max_rows")
 
   local images = cfg.context.images
   if type(images) ~= "table" then

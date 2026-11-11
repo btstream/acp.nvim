@@ -8,6 +8,7 @@ local apply = require("acp.inline.apply")
 local review = require("acp.inline.review")
 local diff = require("acp.inline.diff_session")
 local ui = require("acp.inline.ui")
+local prompt_builder = require("acp.inline.prompt")
 local M = {}
 local current
 local drafts = {}
@@ -41,53 +42,6 @@ local function release(inv)
   if current == inv then
     current = nil
   end
-end
-
-local function build_prompt(inv)
-  local sel = inv.selection
-  local lines = sel.original
-  local first, last = sel.first, sel.last
-  local start, finish = first, last
-  local used = 0
-  while start > 1 and used + #lines[start - 1] + 1 <= inv.config.inline.context_bytes / 2 do
-    start = start - 1
-    used = used + #lines[start] + 1
-  end
-  used = 0
-  while finish < #lines and used + #lines[finish + 1] + 1 <= inv.config.inline.context_bytes / 2 do
-    finish = finish + 1
-    used = used + #lines[finish] + 1
-  end
-  local scope = {}
-  for _, r in ipairs(sel.ranges) do
-    scope[#scope + 1] = string.format(
-      "line %d byte column %d through line %d byte column %d (zero-based columns, end exclusive)",
-      r.start_row + 1,
-      r.start_col,
-      r.end_row + 1,
-      r.end_col
-    )
-  end
-  local kind = sel.insertion and "INSERT ONLY at this exact point; preserve ALL existing text"
-    or sel.linewise and "Rewrite only these whole lines"
-    or "Rewrite only the exact selected bytes; preserve every other byte"
-  local excerpt = {}
-  for i = start, finish do
-    excerpt[#excerpt + 1] = string.format("%d\t%s", i, lines[i])
-  end
-  return table.concat({
-    "INLINE_BUFFER_EDIT: This is an inline edit in our current conversation, not a new session.",
-    "Edit only the private buffer copy at `" .. inv.copy .. "`. Do not edit the original file or run commands.",
-    "The copy contains the current UNSAVED editor contents. Read that copy, not a stale file from earlier turns.",
-    kind .. ":\n" .. table.concat(scope, "\n"),
-    "Do not change the final-newline convention or the indentation of untouched text. Out-of-range changes will be discarded.",
-    "Source filetype: " .. sel.filetype,
-    "Nearby context (line numbers are annotations, never copy them into the file):\n<document>\n"
-      .. table.concat(excerpt, "\n")
-      .. "\n</document>",
-    "Selected text (possibly empty for insertion):\n<selection>\n" .. sel.text .. "\n</selection>",
-    "User request:\n" .. inv.prompt,
-  }, "\n\n")
 end
 
 -- Strict identity: NEVER authorize by basename/prefix or by state directory.
@@ -223,6 +177,7 @@ function M.finish(inv, ok, response)
       original = inv.selection.original,
       selection = inv.selection,
       lines = plan.lines,
+      config = inv.config,
       on_finish = function(accepted, total)
         notify(string.format("inline: accepted %d/%d hunks", accepted, total))
       end,
@@ -258,7 +213,7 @@ function M.submit(inv, prompt)
     return false
   end
   inv.copy, inv.prompt = path, prompt
-  local request = build_prompt(inv)
+  local request = prompt_builder.build(inv)
   if #request + 65536 > inv.config.transport.max_line_bytes then
     copy.remove(path)
     inv.copy = nil
@@ -350,9 +305,9 @@ function M.open(opts)
   local agent = s.config.agent
   local opened = ui.open({
     source = sel.win,
-    row = sel.ranges[1].start_row,
     text = drafts[sel.bufnr],
     title = agent .. " · " .. mode,
+    config = s.config,
     on_close = function(text)
       if current == inv and inv.phase == "prompt" then
         drafts[sel.bufnr] = text
