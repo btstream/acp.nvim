@@ -209,7 +209,7 @@ end
 ---the other body lines. `bg` is the line-wide highlight group; text rows keep
 ---it `nil` so the card's own background shows through.
 ---@param entries AcpDiffEntry[]
----@param opts {context?: integer, max_lines?: integer, max_bytes?: integer, summary?: string, cwd?: string, syntax?: boolean, max_rows?: integer}|nil
+---@param opts {context?: integer, max_lines?: integer, max_bytes?: integer, summary?: string, cwd?: string, syntax?: boolean, max_rows?: integer, width?: integer}|nil
 ---@return AcpRenderedLine[]
 function M.lines(entries, opts)
   opts = opts or {}
@@ -259,6 +259,8 @@ function M.lines(entries, opts)
   local out = {}
   local emitted = 0
   local skipped = 0
+  local width = math.max(1, opts.width or 40)
+  local first_file = true
 
   -- Each file is rendered as its own section so syntax highlighting can parse
   -- one language at a time. A multi-file patch is the only case with more than
@@ -306,6 +308,12 @@ function M.lines(entries, opts)
     end
 
     if shown then
+      -- Several files in one patch need a visible boundary, otherwise the last
+      -- row of one file reads as context for the next header.
+      if not first_file then
+        push(string.rep("─", width), nil, { { s = 0, e = -1, group = "AcpDiffMeta" } })
+      end
+      first_file = false
       push(label, nil, { { s = 0, e = -1, group = "AcpDiffFile" } })
     end
     for _, row in ipairs(item.rows) do
@@ -360,6 +368,7 @@ function M.signature(block, opts)
     -- them too.
     opts.summary or "",
     opts.cwd or "",
+    tostring(opts.width or 0),
   }
   for _, entry in ipairs(M.from_block(block)) do
     parts[#parts + 1] = table.concat({

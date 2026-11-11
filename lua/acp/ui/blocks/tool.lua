@@ -319,6 +319,7 @@ function M.render_tool(block, ctx)
     local opts = vim.tbl_extend("force", {}, ctx.diff or {})
     opts.summary = block.detail
     opts.cwd = ctx.cwd
+    opts.width = math.max(1, ctx.width - 4)
     opts.max_rows = (ctx.diff or {}).max_syntax_rows
     local entries = diff_layout.from_block(block)
     if #entries > 0 then

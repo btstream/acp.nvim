@@ -244,6 +244,36 @@ return function(t)
       t.match("/proj/b%.lua", text)
     end)
 
+    t.it("separates multiple files without leading with a rule", function()
+      local lines = diff.lines({
+        { path = "/proj/a.lua", oldText = "a\n", newText = "b\n" },
+        { path = "/proj/b.lua", oldText = "c\n", newText = "d\n" },
+      })
+      local rules = {}
+      for i, line in ipairs(lines) do
+        if line.text:sub(1, 6) == "──" then
+          rules[#rules + 1] = i
+          t.eq("AcpDiffMeta", line.segments[1].group)
+        end
+      end
+      t.eq(1, #rules, "exactly one rule belongs between two files")
+      local second_header
+      for i, line in ipairs(lines) do
+        if line.segments and line.segments[1].group == "AcpDiffFile" and line.text:find("b%.lua") then
+          second_header = i
+        end
+      end
+      t.eq(second_header - 1, rules[1], "the rule must sit right before the second header")
+      t.eq("AcpDiffFile", lines[1].segments[1].group, "the first file must not start with a rule")
+    end)
+
+    t.it("does not add a rule for a single file", function()
+      local lines = diff.lines({ { path = "/proj/a.lua", oldText = "a\n", newText = "b\n" } })
+      for _, line in ipairs(lines) do
+        t.falsy(line.text:sub(1, 6) == "──")
+      end
+    end)
+
     t.it("labels a derived write as new content", function()
       local lines = diff.lines({ { path = "/proj/notes.txt", oldText = "", newText = "x\n", synthetic = true } })
       t.match("notes%.txt %(new content%)", text_of(lines))

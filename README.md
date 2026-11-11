@@ -152,7 +152,8 @@ require("acp").setup({})
 
 `edit` / `write` / `patch` 的卡片展开后直接在卡片里画出 diff：删除行用主题的
 `DiffDelete` 背景、新增行用 `DiffAdd`，`+` / `-` 号单独配色，上下文行沿用卡片底色。
-只有一个 hunk 时不显示 `@@` 头，多个 hunk 才用它分隔；行数超过 `ui.diff.max_lines`
+只有一个 hunk 时不显示 `@@` 头，多个 hunk 才用它分隔；一次涉及多个文件时，文件之间
+画一条分隔线。行数超过 `ui.diff.max_lines`
 或体积超过 `ui.diff.max_bytes` 时以一行提示收尾，不会把整个文件倒进 buffer。
 
 diff 行还会按**被编辑文件自己的文件类型**着色：`.lua` 用 Lua 语法、`.py` 用 Python

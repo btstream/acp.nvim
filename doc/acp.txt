@@ -120,7 +120,8 @@ Edit，只有新内容（content 等）的是 Write；输入未到达时退回�
 
 edit / write / patch 的卡片展开后直接画出 diff：删除行用 DiffDelete 背景，新增
 行用 DiffAdd，+/- 号单独配色，上下文行沿用卡片底色。只有一个 hunk 时不显示 @@
-头，多个 hunk 才用它分隔。超过 ui.diff.max_lines 或 ui.diff.max_bytes 时以一行
+头，多个 hunk 才用它分隔。一次涉及多个文件时，文件之间画一条分隔线。超过
+ui.diff.max_lines 或 ui.diff.max_bytes 时以一行
 提示收尾，不会把整个文件倒进 buffer。
 
 diff 行按被编辑文件自身的文件类型着色（.lua 用 Lua、.py 用 Python），颜色来自
