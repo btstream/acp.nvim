@@ -60,6 +60,26 @@ Add to your edgy config:
   local log = require("acp.log")
   health.info("log file: " .. log.path())
 
+  -- Image attachments are optional: report the reader that would be used, and
+  -- stay quiet when the user turned the feature off.
+  local ok_images, images = pcall(function()
+    return require("acp.config").defaults.context.images
+  end)
+  if ok_images and images and images.enabled then
+    local tool = require("acp.context.clipboard").tool()
+    if images.clipboard == false then
+      health.info("clipboard images disabled (context.images.clipboard = false)")
+    elseif images.clipboard ~= "auto" then
+      health.ok("clipboard images use a custom command: " .. table.concat(images.clipboard, " "))
+    elseif tool then
+      health.ok("clipboard image reader: " .. tool)
+    else
+      health.warn("no clipboard image tool found; :Acp image will ask for a file path")
+      health.info("Install wl-clipboard (Wayland), xclip (X11), pngpaste (macOS) or use PowerShell (Windows)")
+    end
+    health.info("image cache: " .. require("acp.context.image").dir())
+  end
+
   local has_json = vim.json ~= nil
   if has_json then
     health.ok("vim.json available")

@@ -172,7 +172,7 @@ function M.status_text(status, ic, spinner)
 end
 
 ---Build the composer toolbar.
----@param info {mode: string|nil, model: string|nil, status: string, waiting: boolean|nil, queued: integer|nil, usage: table|nil, spinner: string|nil, show_usage: boolean|nil}
+---@param info {mode: string|nil, model: string|nil, status: string, waiting: boolean|nil, queued: integer|nil, usage: table|nil, spinner: string|nil, show_usage: boolean|nil, chips: string[]|nil}
 ---@param width integer available cells (the whole window width)
 ---@return string
 function M.render(info, width)
@@ -194,6 +194,45 @@ function M.render(info, width)
     local group = M.mode_hl(info.mode)
     badge = badge .. clickable(" " .. glyph .. " ", group, "AcpPickMode")
     badge_width = dw(glyph) + 2
+  end
+
+  -- Attachment chips follow the badge rather than preceding it: they are
+  -- variable-width and would otherwise push the mode off the left edge and be
+  -- truncated from the front on a narrow composer. Each label is clipped so a
+  -- long filename cannot swallow the model name.
+  local chip_text, chip_width = "", 0
+  local chip_labels = {}
+  for _, label in ipairs(info.chips or {}) do
+    if label ~= "" then
+      chip_labels[#chip_labels + 1] = "[" .. label .. "]"
+    end
+  end
+  if #chip_labels > 0 then
+    -- Leave room for the badge and for at least the status glyph on the right.
+    local budget = math.max(4, width_ok - badge_width - 6)
+    local rendered, used = {}, 0
+    for _, label in ipairs(chip_labels) do
+      if used >= budget then
+        -- Signal the rest without spending cells on them.
+        rendered[#rendered + 1] = "…"
+        used = used + 1
+        break
+      end
+      local per_label = math.max(3, budget - used - (#rendered > 0 and 1 or 0))
+      local piece = M.truncate(label, per_label)
+      if piece ~= "" then
+        rendered[#rendered + 1] = piece
+        used = used + dw(piece) + (#rendered > 1 and 1 or 0)
+      end
+      if dw(piece) < dw(label) then
+        break
+      end
+    end
+    if #rendered > 0 then
+      local plain = table.concat(rendered, " ")
+      chip_text = M.highlight("AcpUserChip") .. M.escape(plain) .. M.highlight("AcpToolbar") .. " "
+      chip_width = dw(plain) + 1
+    end
   end
 
   -- The rest of the left side is kept as structured segments so truncation can
@@ -252,11 +291,11 @@ function M.render(info, width)
   local right_w = dw(right_text)
 
   -- The status side always wins: drop the left side entirely when needed.
-  if right_w + badge_width >= width_ok then
+  if right_w + badge_width + chip_width >= width_ok then
     return "%#AcpToolbar#" .. hl(M.truncate(right_text, math.max(1, width)), nil)
   end
 
-  local budget = width_ok - right_w - badge_width - 2
+  local budget = width_ok - right_w - badge_width - chip_width - 2
   local body
   if budget <= 0 or left_text == "" then
     body = table.concat(right_parts)
@@ -284,8 +323,9 @@ function M.render(info, width)
   end
 
   -- The badge is emitted with no surrounding spaces of its own, so its
-  -- background starts at column 0 of the window.
-  return badge .. "%#AcpToolbar# " .. body .. " "
+  -- background starts at column 0 of the window. Chips sit between the badge
+  -- and the model so a narrow composer truncates the labels, not the badge.
+  return badge .. "%#AcpToolbar# " .. chip_text .. body .. " "
 end
 
 ---Build the transcript window title.

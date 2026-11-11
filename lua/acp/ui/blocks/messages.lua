@@ -1,6 +1,7 @@
 -- User, assistant and thought blocks.
 local text_layout = require("acp.ui.text")
 local decoration = require("acp.ui.decoration")
+local context = require("acp.context")
 
 local M = {}
 
@@ -24,10 +25,13 @@ local HEADING_GROUPS = {
 
 function M.render_user(block, ctx)
   local ic = ctx.icons
+  local text, placed = context.display_text(block.text, block.attachments)
   local chips = {}
   if block.attachments then
     for _, att in ipairs(block.attachments) do
-      chips[#chips + 1] = "[" .. one_line(att.label or att.path or "?") .. "]"
+      if not placed[att] then
+        chips[#chips + 1] = "[" .. one_line(att.label or att.path or "?") .. "]"
+      end
     end
   end
   -- The glyph and the name are separate regions: the icon marks who is
@@ -49,7 +53,7 @@ function M.render_user(block, ctx)
     { text = header, segments = segments },
   }
   block._md_user = block._md_user or {}
-  local body = indent_lines(render_text(block.text or "", "AcpUser", ctx.width, block._md_user), "  ")
+  local body = indent_lines(render_text(text, "AcpUser", ctx.width, block._md_user), "  ")
   for _, line in ipairs(body) do
     out[#out + 1] = line
   end

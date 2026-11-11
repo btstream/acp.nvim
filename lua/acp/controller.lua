@@ -353,6 +353,12 @@ local function set_input_keymaps()
     on_pick_file = function()
       M.pick_file()
     end,
+    on_paste_image = function()
+      M.paste_image()
+    end,
+    on_paste_image_path = function(path)
+      return M.add_image(path)
+    end,
     on_pick_session = function()
       M.pick_session()
     end,
@@ -707,6 +713,159 @@ function M.pick_file(opts)
     return require("acp.completion.picker").open(S.input.buf, S.input.win, opts)
   end
   notify("Open the ACP composer before choosing a file", vim.log.levels.WARN)
+end
+
+---Attach an image file to the composer.
+---@param path string
+---@return boolean
+function M.add_image(path)
+  local attachment, err = context.image(path, cfg())
+  if not attachment then
+    notify(err or "unable to attach image", vim.log.levels.WARN)
+    return false
+  end
+  return M.add_image_attachment(attachment)
+end
+
+---Drop expired clipboard images. Runs when the composer gains an image, so the
+---cache is cleaned at the moment it is being used rather than on a timer.
+local function prune_image_cache()
+  local images = cfg().context.images
+  local protected = require("acp.storage.drafts").image_paths()
+  local seen = {}
+  local function collect(value)
+    if type(value) ~= "table" or seen[value] then
+      return
+    end
+    seen[value] = true
+    if value.kind == "image" and value.path then
+      protected[value.path] = true
+    end
+    for _, child in pairs(value) do
+      if type(child) == "table" then
+        collect(child)
+      end
+    end
+  end
+  if S.input then
+    collect(S.input.attachments)
+    collect(S.input.drafts)
+    for att in pairs(S.input.image_marks) do
+      collect(att)
+    end -- undoable deletions
+  end
+  for _, session in pairs(S.sessions) do
+    collect(session.queue)
+    collect(session.blocks)
+  end
+  local ok, removed = pcall(require("acp.context.image").prune, images.ttl_hours, images.max_cache_bytes, protected)
+  if ok and removed and removed > 0 then
+    require("acp.log").debug("pruned %d cached image(s)", removed)
+  end
+end
+
+---Add an already-built image attachment, enforcing the shared limits.
+---@param attachment table
+---@return boolean
+function M.add_image_attachment(attachment, position)
+  local images = cfg().context.images
+  if images.enabled == false then
+    notify("Image attachments are disabled (context.images.enabled)", vim.log.levels.WARN)
+    return false
+  end
+  if not S.input then
+    notify("Open the ACP composer before attaching an image", vim.log.levels.WARN)
+    return false
+  end
+  if not S.session then
+    notify("No active session", vim.log.levels.WARN)
+    return false
+  end
+  local count = 0
+  S.input:sync_images()
+  local duplicate = false
+  for _, att in ipairs(S.input.attachments) do
+    if att.kind == "image" then
+      count = count + 1
+      if att.path == attachment.path and att.uri == attachment.uri then
+        duplicate = true
+      end
+    end
+  end
+  if not duplicate and count >= images.max_per_message then
+    notify(string.format("At most %d images per message", images.max_per_message), vim.log.levels.WARN)
+    return false
+  end
+  S.input:add_attachment(attachment, position)
+  refresh_chrome()
+  prune_image_cache()
+  notify(string.format("image: %s (%.1f KB)", attachment.label, attachment.bytes / 1024), vim.log.levels.INFO)
+  return true
+end
+
+---Read an image from the system clipboard and attach it.
+---
+---The terminal only forwards image bytes to full-screen TUIs that own the
+---clipboard, so this runs a platform helper in the background and never blocks
+---the editor while the user waits.
+---@param opts {command?: string[]|false}|nil
+---@return boolean started
+function M.paste_image(opts)
+  local images = cfg().context.images
+  if images.enabled == false then
+    notify("Image attachments are disabled (context.images.enabled)", vim.log.levels.WARN)
+    return false
+  end
+  if not S.session or not S.input then
+    notify("Open the ACP composer before pasting an image", vim.log.levels.WARN)
+    return false
+  end
+  local command = (opts and opts.command) or (images.clipboard ~= false and images.clipboard or nil)
+  if type(command) == "string" then
+    -- "auto" selects the platform chain; a user-supplied argv is passed on.
+    command = nil
+  end
+  if not command and images.clipboard == false then
+    notify("Clipboard image reading is disabled (context.images.clipboard)", vim.log.levels.WARN)
+    return false
+  end
+  local session = S.session
+  -- Record where the user was before the asynchronous read. Attaching must not
+  -- move the cursor, edit the buffer or yank focus out of another window: the
+  -- chip is extra state, not text.
+  local input, config = S.input, cfg()
+  local epoch = input.draft_epoch
+  local anchor = input:image_anchor()
+  notify("Reading image from clipboard…", vim.log.levels.INFO)
+  require("acp.context.clipboard").read({
+    command = command,
+    max_bytes = images.max_bytes,
+  }, function(bytes, mime, err)
+    local position = input:take_image_anchor(anchor)
+    -- The selection may have changed while the helper was running.
+    if S.session ~= session or S.input ~= input or cfg() ~= config or input.draft_epoch ~= epoch or not position then
+      return
+    end
+    if not bytes then
+      if err then
+        notify(err, vim.log.levels.WARN)
+      else
+        notify("Clipboard does not contain an image", vim.log.levels.INFO)
+      end
+      return
+    end
+    local attachment, store_err = context.image_bytes(bytes, mime, cfg())
+    if not attachment then
+      notify(store_err or "unable to attach image", vim.log.levels.WARN)
+      return
+    end
+    -- The attachment is already built from bytes we just read; adding it by
+    -- path would read the file a second time for nothing.
+    if not M.add_image_attachment(attachment, position) then
+      return
+    end
+  end)
+  return true
 end
 
 function M.add_file(path)

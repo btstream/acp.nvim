@@ -79,6 +79,12 @@ Controller 只保留公开入口、会话选择、服务装配和跨模块协调
 - `completion/mentions` 同时供补全与 context 提交解析使用；特殊路径用 JSON 引号转义，支持
   无扩展名、UTF-8、空格和引号。picker 复用索引，通过 vim.ui.select/fzf-lua/Snacks/Telescope
   插入引用，不打开文件、不发请求；只在选中后校验原输入身份并应用编辑。
+- `context/image` 只做容器嗅探与内容寻址存储：附件带 path/mime/bytes/sha，不带 base64。
+  `context/init.to_prompt` 在发送时按 `inline` 决定 `image` 或 `resource_link` 块，读取失败
+  返回错误而不是省略该附件。`context/clipboard` 异步跑平台工具，返回“有图/无图/后端失败”
+  三态，避免空的 Wayland 剪贴板回落到 X11 的旧截图，并用 `vim.system` 超时兜住挂起的工具。
+- `ui/paste_image` 覆盖 `vim.paste`，仅在光标位于输入区且粘贴内容是单个存在的图像路径时
+  接管，其余一律交还原处理器；`app/prompts` 依据 `promptCapabilities.image` 拒绝内嵌图像。
 - 断连取消任务后重置 Catalog 的查询合并状态，但保留元信息缓存；重新 setup 则清空
   标题及 cwd 缓存，避免混用不同 Agent/项目的数据。
 - `session/runtime` 仍是重放事务、outbox 与 LRU 的唯一实现者，`app/sessions` 只负责编排。

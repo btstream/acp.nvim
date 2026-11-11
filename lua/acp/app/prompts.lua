@@ -65,6 +65,9 @@ function Prompts:send(session, text, attachments)
   end
 
   -- Expand @file mentions into attachments before queueing.
+  -- Snapshot token positions: later edits/undo in the composer must not mutate
+  -- a queued prompt or the local transcript of a message already sent.
+  attachments = vim.deepcopy(attachments or {})
   if text and text:find("@", 1, true) then
     local mentioned = context.mentions(text, self.config(), session.cwd)
     if #mentioned > 0 then
@@ -85,6 +88,22 @@ function Prompts:send(session, text, attachments)
     end
   end
 
+  local cfg = self.config()
+  local image_count = 0
+  for _, att in ipairs(attachments or {}) do
+    if att.kind == "image" then
+      image_count = image_count + 1
+      if cfg.context.images.enabled == false or image_count > cfg.context.images.max_per_message then
+        self.notify("Image attachments are disabled or exceed context.images.max_per_message", vim.log.levels.WARN)
+        return false
+      end
+      if client.supports_prompt and not client:supports_prompt("image") and att.inline ~= false then
+        self.notify("This agent does not accept images; switch models or remove the attachment", vim.log.levels.WARN)
+        return false
+      end
+    end
+  end
+
   if session.status == "running" or session.status == "cancelling" then
     -- Session already has an active turn (or one being cancelled): queue
     -- locally instead of starting a second overlapping prompt.
@@ -96,7 +115,17 @@ function Prompts:send(session, text, attachments)
     return true
   end
 
-  local blocks = context.to_prompt(text, attachments)
+  -- The agent advertises whether it can decode images. A resource_link is
+  -- always allowed, so only refuse when this attachment would really become an
+  -- `image` block; otherwise let the turn fail later with a protocol error.
+  local blocks, block_err = context.to_prompt(text, attachments, cfg)
+  if block_err then
+    -- An image that disappeared from the cache must not become a silent
+    -- omission: the user would send a prompt referencing something the agent
+    -- never received.
+    self.notify("Cannot attach image: " .. block_err, vim.log.levels.WARN)
+    return false
+  end
   if #blocks == 0 then
     return false
   end

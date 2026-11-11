@@ -1,6 +1,8 @@
 -- The composer window: editable buffer, winbar toolbar, per-session drafts.
 local log = require("acp.log")
 local memory = require("acp.session.memory")
+local image_ns = vim.api.nvim_create_namespace("acp.input.images")
+local anchor_ns = vim.api.nvim_create_namespace("acp.input.image_anchor")
 
 local M = {}
 
@@ -22,6 +24,8 @@ function M.new(opts)
     buf = nil,
     win = nil,
     attachments = {},
+    image_marks = {},
+    draft_epoch = 0,
     drafts = {},
     session_key = nil,
     toolbar = "",
@@ -67,6 +71,32 @@ function M.new(opts)
     end,
   })
 
+  vim.api.nvim_create_autocmd({ "TextChanged", "TextChangedI" }, {
+    group = group,
+    buffer = self.buf,
+    callback = function()
+      self:sync_images()
+    end,
+  })
+  -- At either edge, erase the complete attachment token with one key. Normal
+  -- cursor motions and selections work because the token is real buffer text.
+  for key, backward in pairs({ ["<BS>"] = true, ["<Del>"] = false }) do
+    vim.keymap.set("i", key, function()
+      local p = self:cursor_position()
+      for att, id in pairs(self.image_marks) do
+        local mark = vim.api.nvim_buf_get_extmark_by_id(self.buf, image_ns, id, { details = true })
+        if #mark > 0 then
+          local d = mark[3]
+          local edge = backward and d.end_col or mark[2]
+          if p[1] == mark[1] and p[2] == edge and self:token_matches(att, mark) then
+            return vim.keycode("<C-g>u") .. string.rep(vim.keycode(key), #att.input_token)
+          end
+        end
+      end
+      return vim.keycode(key)
+    end, { buffer = self.buf, expr = true, replace_keycodes = false, desc = "Delete image token or character" })
+  end
+
   return self
 end
 
@@ -110,6 +140,8 @@ end
 
 ---Save the visible buffer into the current draft slot.
 function Input:save_draft()
+  self:sync_images()
+  self:save_image_positions()
   if not self.session_key then
     return
   end
@@ -145,6 +177,12 @@ function Input:switch_session(key, restored, owner)
     return
   end
   self:save_draft()
+  self.draft_epoch = self.draft_epoch + 1
+  if self.buf and vim.api.nvim_buf_is_valid(self.buf) then
+    vim.api.nvim_buf_clear_namespace(self.buf, anchor_ns, 0, -1)
+    vim.api.nvim_buf_clear_namespace(self.buf, image_ns, 0, -1)
+  end
+  self.image_marks = {}
   self.session_key = key
   self.draft_slot = slot
   self.draft_owner = owner and { id = owner.id or key, cwd = owner.cwd } or nil
@@ -160,6 +198,7 @@ function Input:switch_session(key, restored, owner)
     vim.bo[self.buf].modified = false
     vim.bo[self.buf].modifiable = true
   end
+  self:render_images()
 end
 
 ---@return string
@@ -167,7 +206,32 @@ function Input:text()
   if not vim.api.nvim_buf_is_valid(self.buf) then
     return ""
   end
-  return table.concat(vim.api.nvim_buf_get_lines(self.buf, 0, -1, false), "\n")
+  self:sync_images()
+  local lines = vim.api.nvim_buf_get_lines(self.buf, 0, -1, false)
+  local starts, length = {}, 0
+  for row, line in ipairs(lines) do
+    starts[row] = length
+    length = length + #line + 1
+  end
+  local raw = table.concat(lines, "\n")
+  local parts, cursor, removed, order = {}, 0, 0, 0
+  local marks = vim.api.nvim_buf_get_extmarks(self.buf, image_ns, 0, -1, { details = true })
+  for _, mark in ipairs(marks) do
+    for att, id in pairs(self.image_marks) do
+      if id == mark[1] and self:token_matches(att, { mark[2], mark[3], mark[4] }) then
+        local start = starts[mark[2] + 1] + mark[3]
+        local finish = starts[mark[2] + 1] + mark[4].end_col
+        parts[#parts + 1] = raw:sub(cursor + 1, start)
+        order = order + 1
+        att.prompt_offset = start - removed -- byte offset in the token-free text
+        att.prompt_order = order -- adjacent images have the same text offset
+        removed = removed + finish - start
+        cursor = finish
+      end
+    end
+  end
+  parts[#parts + 1] = raw:sub(cursor + 1)
+  return table.concat(parts)
 end
 
 function Input:clear()
@@ -177,6 +241,11 @@ function Input:clear()
   vim.bo[self.buf].modifiable = true
   vim.api.nvim_buf_set_lines(self.buf, 0, -1, false, { "" })
   self.attachments = {}
+  vim.api.nvim_buf_clear_namespace(self.buf, image_ns, 0, -1)
+  self.image_marks = {}
+  self.draft_epoch = self.draft_epoch + 1
+  vim.api.nvim_buf_clear_namespace(self.buf, anchor_ns, 0, -1)
+  self:render_images()
   if self.session_key then
     self.drafts[self.draft_slot or self.session_key] = nil
     if self.on_draft then
@@ -203,9 +272,16 @@ function Input:restore(text)
 end
 
 ---@param attachment {kind: string, label: string, path?: string, uri?: string, text?: string}
-function Input:add_attachment(attachment)
+function Input:add_attachment(attachment, position)
+  self:sync_images()
+  if attachment.kind == "image" then
+    attachment.input_position = position or self:cursor_position()
+  end
   for i, existing in ipairs(self.attachments) do
     if existing.kind == attachment.kind and existing.path == attachment.path and existing.uri == attachment.uri then
+      if existing.kind == "image" then
+        return false -- Pasting the same image does not leave an orphaned token.
+      end
       self.attachments[i] = attachment
       self:refresh()
       return false
@@ -218,18 +294,161 @@ end
 
 ---@param index integer
 function Input:remove_attachment(index)
+  local att = self.attachments[index]
+  local id = att and self.image_marks[att]
+  if id then
+    local mark = vim.api.nvim_buf_get_extmark_by_id(self.buf, image_ns, id, { details = true })
+    self.image_marks[att] = nil
+    vim.api.nvim_buf_del_extmark(self.buf, image_ns, id)
+    if self:token_matches(att, mark) then
+      vim.api.nvim_buf_set_text(self.buf, mark[1], mark[2], mark[3].end_row, mark[3].end_col, { "" })
+    end
+  end
   table.remove(self.attachments, index)
   self:refresh()
 end
 
 function Input:clear_attachments()
+  for i = #self.attachments, 1, -1 do
+    self:remove_attachment(i)
+  end
+  vim.api.nvim_buf_clear_namespace(self.buf, image_ns, 0, -1)
+  self.image_marks = {}
   self.attachments = {}
   self:refresh()
 end
 
 function Input:refresh()
+  self:render_images()
   if self.on_refresh then
     self.on_refresh()
+  end
+end
+
+-- Highlighted buffer tokens are editable; only tracked tokens are stripped
+-- from prompt text. Identical text typed by the user stays ordinary text.
+function Input:cursor_position()
+  if self.win and vim.api.nvim_win_is_valid(self.win) and vim.api.nvim_win_get_buf(self.win) == self.buf then
+    local p = vim.api.nvim_win_get_cursor(self.win)
+    return { p[1] - 1, p[2] }
+  end
+  return { 0, 0 }
+end
+
+function Input:image_anchor()
+  local p = self:cursor_position()
+  return vim.api.nvim_buf_set_extmark(self.buf, anchor_ns, p[1], p[2], {})
+end
+
+function Input:take_image_anchor(id)
+  if not self.buf or not vim.api.nvim_buf_is_valid(self.buf) then
+    return nil
+  end
+  local p = vim.api.nvim_buf_get_extmark_by_id(self.buf, anchor_ns, id, {})
+  vim.api.nvim_buf_del_extmark(self.buf, anchor_ns, id)
+  return #p == 2 and p or nil
+end
+
+function Input:save_image_positions()
+  if not self.buf or not vim.api.nvim_buf_is_valid(self.buf) then
+    return
+  end
+  for attachment, id in pairs(self.image_marks) do
+    local p = vim.api.nvim_buf_get_extmark_by_id(self.buf, image_ns, id, {})
+    if #p == 2 then
+      attachment.input_position = p
+    end
+  end
+end
+
+function Input:token_matches(att, mark)
+  if not att.input_token or #mark == 0 then
+    return false
+  end
+  local d = mark[3]
+  if not d or d.invalid or d.end_row ~= mark[1] then
+    return false
+  end
+  local text = vim.api.nvim_buf_get_text(self.buf, mark[1], mark[2], d.end_row, d.end_col, {})
+  return table.concat(text, "\n") == att.input_token
+end
+
+function Input:sync_images()
+  if not self.buf or not vim.api.nvim_buf_is_valid(self.buf) then
+    return
+  end
+  local attachments, images = {}, {}
+  for _, att in ipairs(self.attachments) do
+    if att.kind ~= "image" or not self.image_marks[att] then
+      attachments[#attachments + 1] = att
+    end
+  end
+  for att, id in pairs(self.image_marks) do
+    local mark = vim.api.nvim_buf_get_extmark_by_id(self.buf, image_ns, id, { details = true })
+    if self:token_matches(att, mark) then
+      images[#images + 1] = { att = att, id = id }
+    end
+  end
+  table.sort(images, function(a, b)
+    return a.id < b.id
+  end)
+  for _, entry in ipairs(images) do
+    attachments[#attachments + 1] = entry.att
+  end
+  self.attachments = attachments
+end
+
+function Input:render_images()
+  if not self.buf or not vim.api.nvim_buf_is_valid(self.buf) then
+    return
+  end
+  self:save_image_positions()
+  local lines = vim.api.nvim_buf_get_lines(self.buf, 0, -1, false)
+  local function coordinate(value)
+    return type(value) == "number" and value == value and math.abs(value) < math.huge and math.max(0, math.floor(value))
+      or 0
+  end
+  local image_index = 0
+  for att in pairs(self.image_marks) do
+    image_index = math.max(image_index, tonumber((att.input_token or ""):match("%d+")) or 0)
+  end
+  for _, att in ipairs(self.attachments) do
+    if att.kind == "image" and not self.image_marks[att] then
+      image_index = image_index + 1
+      local p = type(att.input_position) == "table" and att.input_position or {}
+      local row = math.min(coordinate(p[1]), #lines - 1)
+      local col = math.min(coordinate(p[2]), #lines[row + 1])
+      while
+        col > 0
+        and col < #lines[row + 1]
+        and lines[row + 1]:byte(col + 1) >= 128
+        and lines[row + 1]:byte(col + 1) < 192
+      do
+        col = col - 1 -- clamp restored positions to a UTF-8 boundary
+      end
+      local label = att.input_token or string.format("[Image %d]", image_index)
+      local current = vim.api.nvim_buf_get_text(self.buf, row, col, row, math.min(col + #label, #lines[row + 1]), {})[1]
+      if not att.input_token or current ~= label then
+        vim.api.nvim_buf_set_text(self.buf, row, col, row, col, { label })
+        if self.win and vim.api.nvim_win_is_valid(self.win) and vim.api.nvim_get_current_win() == self.win then
+          local cursor = vim.api.nvim_win_get_cursor(self.win)
+          if cursor[1] == row + 1 and cursor[2] == col then
+            vim.api.nvim_win_set_cursor(self.win, { row + 1, col + #label })
+          end
+        end
+        lines = vim.api.nvim_buf_get_lines(self.buf, 0, -1, false)
+      end
+      att.input_token = label
+      self.image_marks[att] = vim.api.nvim_buf_set_extmark(self.buf, image_ns, row, col, {
+        end_row = row,
+        end_col = col + #label,
+        hl_group = "AcpInputImage",
+        right_gravity = true,
+        end_right_gravity = false,
+        invalidate = true,
+        undo_restore = true,
+      })
+    end
   end
 end
 

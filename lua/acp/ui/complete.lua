@@ -157,6 +157,7 @@ function M.attach(buf, getter, config)
       core.detach(buf)
       requests[buf] = nil
       contexts[buf] = nil
+      require("acp.ui.paste_image").detach(buf)
       vim.api.nvim_del_augroup_by_id(group)
     end,
   })

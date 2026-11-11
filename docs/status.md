@@ -476,3 +476,43 @@ README、help、架构说明及两个 lazy.nvim 示例同步；StyLua 与 `git d
 Snacks/Telescope 适配仍需用户环境实测。内置遍历不解释 ignore 文件，不遍历目录符号链接；
 索引预算不是 RSS 硬上限，框架和选择器物化候选仍有额外内存开销。未在真实旧版 Neovim 或
 复杂 symlink cwd/跨根目录组合上做完整验证，也未向真实 Agent 发送模型请求。
+
+## 图像附件（2026-11-11）
+
+调研了两类现有实现后按同一路线落地：OpenCode TUI 与 pi 都用自己的按键读系统剪贴板，
+都没有使用 OSC 5522；`img-clip.nvim` 等插件只负责把图像写文件并插入标记文本，无法生成
+ACP `image` 块，因此没有引入依赖。
+
+- `context/image`：按魔数识别 PNG/JPEG/GIF/WebP，内容寻址存入
+  `stdpath("state")/acp/images`（临时名 + rename，目录 0700、文件 0600），可按 TTL 与总量回收。
+- `context/init`：`file()` 识别图像后改用图像附件，避免把二进制当 text/plain 读取；
+  `image()`/`image_bytes()` 只产出元数据，`to_prompt()` 在发送时才编码。
+  `path_mode` 控制 `@shot.png` 是 `resource_link` 还是内嵌 `image`；文件消失时返回错误而非静默省略。
+- `context/clipboard`：wl-paste / xclip / pngpaste / powershell.exe 链式读取，三态返回，
+  避免空 Wayland 剪贴板回落读取旧 X11 截图；输出收集时限制字节数，stderr 最多保留 4 KiB。
+- `ui/paste_image`：仅拦截输入区内“单个存在的图像路径”粘贴，其余交还原 `vim.paste`。
+  `keymaps.input.paste_image` 默认为 `<C-v>`；不切窗口，读取期间用户离开后也不抢回焦点。
+- 图片标签改为 `Input` 内可编辑的真实文本占位符，锚定粘贴光标，不再进入 winbar。
+  虚拟文本不能承载光标与原生删除操作，因此不再使用；范围 extmark 提供高亮和附件关联。
+  后方退格/前方 Delete 整块删除，撤销/重做同步恢复/移除附件；发送正文剔除受跟踪的占位符。
+  按占位符在正文中的 UTF-8 字节位置生成交错的 text/image（或 resource_link）内容块；
+  聊天记录以同一顺序在正文插回编号，不把图像文件名堆在标题上。排队前深拷贝位置元数据，
+  已有完整本地图文消息时不再用 Agent 的碎片回显覆盖正文，避免偏移失效或重复图像标记。
+  标签使用 `[Image 1]`、`[Image 2]` 等紧凑编号；`AcpInputImage` 默认浅黄色底、深色粗体。
+  先前只调整 winbar 内排序的修复不符合需求，原测试也未断言屏幕位置。
+  异步读取用独立 extmark 跟随编辑，以 input/config/草稿代次拦截过期结果；不强制 startinsert。
+- 缓存清理保护草稿（含持久化）、队列与会话块引用；写入时即使用 0600，校验已有摘要文件，
+  检查 rename 返回值。WebP 文件嗅探改读完整 12 字节头。图像测试隔离缓存，避免清理用户图片。
+- `app/prompts`：按 `promptCapabilities.image` 拒绝内嵌图像并提示切换模型；链接形式仍可发送。
+- 日志把 `data`/`blob` 的 base64 载荷替换为 `<base64 N bytes>`；配置校验交叉检查
+  `context.images.max_bytes` 与 `transport.max_line_bytes`。
+
+`tests/integration_image.lua` 覆盖能力门禁与过期草稿；附加 UI 的
+`tests/integration_image_cursor.py` 和 `edgy` 参数覆盖真实屏幕标签位置、光标与模式，
+edgy 分支使用真实 controller 和剪贴板命令。两种能力分支
+（mock agent 声明/不声明 `image`）都通过。验证：778 项单元测试、默认及 A+B 的
+native/edgy/reconnect、性能 smoke、tail/spinner 附加 UI 回归通过。
+
+边界：不接入 OSC 5522 的终端协商（不是“Lua 无法观察 OSC 回复”）；
+未做图像转码，非 PNG/JPEG/GIF/WebP 直接拒绝；未内联预览；未在真实 X11/WSL/macOS 剪贴板上运行，
+只用真实 `wl-paste`（空剪贴板与桩输出两种）和命令桩验证。临时目录预算不是 RSS 上限。

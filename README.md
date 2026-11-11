@@ -255,6 +255,69 @@ fzf-lua、Telescope 和 Snacks 都复用同一个完整项目索引；`"vim"` �
 与原有 `:Acp file`（附加当前文件）不同。原始 fzf 二进制不是补全菜单的强依赖，
 fzf-lua 只是可选的交互式搜索入口，不会在每次按键时重新扫描项目或弹出终端。
 
+### 图像附件
+
+输入区可以附加图像，以 ACP `image` 内容块发送。这需要 Agent 声明
+`promptCapabilities.image`（OpenCode 支持）；未声明时附加内嵌图像会被明确拒绝，
+而不是等发送后才由 Agent 报错。
+
+```lua
+require("acp").setup({
+  context = {
+    images = {
+      enabled = true,
+      max_bytes = 3 * 1024 * 1024, -- 单张上限
+      max_per_message = 4,
+      clipboard = "auto",  -- 或 false，或自定义 argv
+      path_mode = "link",  -- @shot.png 默认按 resource_link
+      ttl_hours = 24,
+      max_cache_bytes = 64 * 1024 * 1024,
+    },
+  },
+})
+```
+
+三种用法：
+
+| 方式 | 说明 |
+|---|---|
+| `:Acp image` | 读取系统剪贴板中的截图并附加 |
+| `:Acp image path/to.png` | 附加指定文件 |
+| 直接粘贴 / 拖拽图像文件路径 | 只对输入区生效，识别 `file://`、引号和转义路径 |
+
+`require("acp").paste_image()`、`require("acp").add_image(path)` 是对应 API。
+`paste_image` 默认绑定 `<C-v>`（普通模式和插入模式），与 OpenCode TUI、pi 的习惯一致。
+这会覆盖输入区的 `i_CTRL-V`（字面量插入）和普通模式 `CTRL-V`（块选择）；只在
+`acp_input` 内生效，不影响其它 buffer。需要改用其它键时：
+
+```lua
+keymaps = { input = { paste_image = "<M-v>" } },
+```
+
+附加图像会在 **`acp_input` 的粘贴光标处**显示浅黄色底、深色粗体的行内标签 `[Image 1]`，
+多张图片使用独立编号，不再放到 winbar。可通过 `ui.highlights.AcpInputImage` 覆盖样式。
+标签是可编辑占位符，不是图片预览：粘贴后光标位于标签之后，可正常移动到两侧。
+标签后按退格、标签前按 Delete 可整块删除图片附件；支持撤销/重做。
+发送时只移除受跟踪的图片占位符，不会移除用户自己输入的同名文字；图片仍单独作为附件发送。
+文字和图片按输入区的实际位置交错发送为 ACP 内容块，聊天记录也在原位置显示对应编号，
+不会把图片统一挪到消息头或末尾。排队时会冻结位置，后续草稿编辑不会改变已排队消息。
+剪贴板读取是异步的，位置会跟随读取期间的文本编辑；若用户清空或切换草稿，旧结果会丢弃。
+用户离开窗口或主动退出插入模式后，回调不会抢回焦点或重新进入插入模式。
+
+**为什么不用终端的粘贴快捷键**：终端只在 bracketed paste 中传文本，截图不会传给
+Neovim；OSC 5522 需要终端专用协商并改变普通粘贴处理，本插件暂不接入。
+目前剪贴板图像由本插件主动读取
+（`wl-paste` / `xclip` / `pngpaste` / `powershell.exe`），
+与 OpenCode TUI、pi 等终端客户端的做法一致。
+
+图像数据只在发送时编码：草稿、本地队列和会话块里只有路径、大小和摘要，避免 base64
+在三个地方各放大 33%。字节按 sha256 存在 `stdpath("state")/acp/images`（目录 0700、
+文件 0600，按 `ttl_hours` 与 `max_cache_bytes` 回收）。`max_bytes` 会与
+`transport.max_line_bytes` 交叉校验，配置阶段就拒绝无法装进一条消息的上限。
+清理时保护草稿（含持久化）、内存队列与会话块仍引用的图片；活跃引用可能使缓存超过预算。
+`path_mode = "inline"` 时 `@shot.png` 会内嵌字节；默认 `link` 只发送引用，避免每次提及
+都把整张图重新编码。协议日志会把 base64 载荷替换为 `<base64 N bytes>`。
+
 ### 可选的懒渲染与历史分页
 
 默认仍使用全文渲染。建议先开启 A，确认效果后再开启 B：

@@ -34,6 +34,7 @@ acp.nvim 是一个 Neovim 原生的 Agent Client Protocol 客户端。
     permission   重新打开待确认的权限请求
     file         把当前文件附加到输入区
     files        从项目索引选择文件，插入 @引用，不打开文件或发送消息
+    image        读取剪贴板图像并附加；带路径时附加该文件
     diagnostics  把当前 buffer 的诊断附加到输入区
 
 :AcpLog                                                      *:AcpLog*
@@ -690,5 +691,60 @@ picker 可选 vim（vim.ui.select）、fzf-lua、snacks、telescope，不设强�
     keymaps = { input = { pick_file = "<M-f>" } }
 默认不占用按键；选择后插入引用并回到输入区，与 :Acp file 附加当前文件不同。
 取消、会话切换、buffer 销毁或查询过期后，旧结果不会修改输入。
+
+==============================================================================
+18. 图像附件                                             *acp-images*
+
+输入区可附加图像，以 ACP image 内容块发送。要求 Agent 声明
+promptCapabilities.image（OpenCode 支持）；未声明时内嵌图像会被明确拒绝，
+不会等到发送后才由 Agent 报错。resource_link 形式不受此限制。
+
+用法：
+    :Acp image              读取系统剪贴板中的截图并附加
+    :Acp image path/to.png  附加指定文件
+    直接粘贴 / 拖拽图像文件路径（只对输入区生效）
+
+Lua API：require("acp").paste_image()、require("acp").add_image(path)。
+
+配置： >lua
+    context = {
+      images = {
+        enabled = true,
+        max_bytes = 3 * 1024 * 1024,
+        max_per_message = 4,
+        clipboard = "auto",  -- 或 false，或自定义 argv
+        path_mode = "link",  -- "link" | "inline"
+        ttl_hours = 24,
+        max_cache_bytes = 64 * 1024 * 1024,
+      },
+    }
+<
+clipboard = "auto" 依次尝试 wl-paste、xclip、pngpaste、powershell.exe。
+也可给 argv（stdout 即图像字节），以复用已有截图工具。
+
+paste_image 默认绑定 <C-v>（普通与插入模式），与 OpenCode TUI、pi 的习惯一致。
+这会覆盖输入区的 i_CTRL-V（字面量插入）和普通模式 CTRL-V（块选择），
+仅在 acp_input 内生效。需要换键时：
+    keymaps = { input = { paste_image = "<M-v>" } }
+
+图像在 acp_input 粘贴光标处插入 [Image 1] 可编辑占位符，多张图片独立编号，不放在 winbar。
+默认浅黄色底、深色粗体，可通过 ui.highlights.AcpInputImage 覆盖。
+这不是像素预览；光标放在占位符之后，可正常移动到两侧。在后方按退格或前方按 Delete
+整块删除附件，支持撤销/重做。发送时移除受跟踪的占位符，不影响用户手写的同名文字。
+ACP 内容块按输入区的文字/图片顺序交错发送；聊天记录也在原位置显示图片编号，
+不把图片挪到标题或末尾。排队消息保存独立的位置快照，不受后续输入编辑影响。
+异步读取的位置跟随文本编辑；清空或切换草稿后丢弃旧结果，不抢焦点、不强制恢复插入模式。
+
+为什么不使用终端的粘贴快捷键：终端只在 bracketed paste 中传文本，截图不会
+到达 Neovim；OSC 5522 需要终端专用协商并改变普通粘贴处理，本插件暂不接入。
+目前由插件主动读取剪贴板，与 OpenCode TUI、pi 等终端客户端一致。
+
+图像只在发送时编码。草稿、本地队列和会话块只保存路径、大小与 sha256，避免
+base64 在三处各放大 33%。字节存放在 stdpath("state")/acp/images（目录 0700、
+文件 0600），按 ttl_hours 与 max_cache_bytes 回收。max_bytes 会与
+transport.max_line_bytes 交叉校验，配置阶段即拒绝装不进一条消息的上限。
+path_mode = "inline" 时 @shot.png 会内嵌字节；默认 link 只发引用。
+缓存清理保护当前草稿、持久化草稿、内存队列与会话块仍引用的图片，因此这些引用
+可能使缓存超过配置预算。文件被外部删除后，发送会明确报错，而不是静默丢掉图像。
 
 vim:tw=78:ts=8:noet:ft=help:norl:

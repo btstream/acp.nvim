@@ -218,6 +218,11 @@ M.defaults = {
       -- "<C-s>" while typing, and as the stop key when the composer is empty.
       send = "<C-s>",
       pick_file = false,
+      -- Reads an image from the system clipboard while composing. This
+      -- deliberately overrides `i_CTRL-V` (literal insert) in the composer and
+      -- `CTRL-V` (blockwise Visual) in its Normal mode, matching the terminal
+      -- agent UIs. The terminal itself never forwards image bytes.
+      paste_image = "<C-v>",
       cancel = "<C-c>",
       close_panel = "q",
       add_selection = "<C-]>",
@@ -259,6 +264,27 @@ M.defaults = {
   context = {
     max_file_bytes = 512 * 1024,
     max_selection_lines = 2000,
+
+    -- Images are sent as ACP `image` blocks, which requires the agent's
+    -- promptCapabilities.image. Only the path is kept while composing; base64
+    -- is produced at send time. The default keeps one image plus its base64
+    -- and JSON overhead inside `memory.max_queue_bytes`.
+    images = {
+      enabled = true,
+      max_bytes = 3 * 1024 * 1024,
+      max_per_message = 4,
+      -- "auto" follows WAYLAND_DISPLAY / DISPLAY / TERMUX / pngpaste /
+      -- powershell.exe. Set false to disable reading, or an argv whose stdout
+      -- is the image (for an existing screenshot helper).
+      clipboard = "auto",
+      -- What a pasted or mentioned image path becomes. "link" keeps the file a
+      -- resource_link; "inline" embeds the bytes for that message only.
+      path_mode = "link",
+      -- Cached clipboard images are content-addressed under
+      -- stdpath("state")/acp/images and pruned by age and total size.
+      ttl_hours = 24,
+      max_cache_bytes = 64 * 1024 * 1024,
+    },
   },
 
   -- Show timeline notices sent by the agent (requires the session.notices capability).
@@ -511,6 +537,44 @@ function M.validate(cfg)
 
   check_number(cfg.context.max_file_bytes, 0, 1024 * 1024 * 1024, "context.max_file_bytes")
   check_number(cfg.context.max_selection_lines, 0, 1000000, "context.max_selection_lines")
+
+  local images = cfg.context.images
+  if type(images) ~= "table" then
+    fail("context.images must be a table")
+  end
+  if type(images.enabled) ~= "boolean" then
+    fail("context.images.enabled must be a boolean")
+  end
+  check_enum(images.path_mode, { "link", "inline" }, "context.images.path_mode")
+  check_number(images.max_bytes, 1024, 64 * 1024 * 1024, "context.images.max_bytes")
+  check_number(images.max_per_message, 1, 64, "context.images.max_per_message")
+  if images.max_per_message % 1 ~= 0 then
+    fail("context.images.max_per_message must be an integer")
+  end
+  check_number(images.ttl_hours, 0, 24 * 365, "context.images.ttl_hours")
+  check_number(images.max_cache_bytes, 0, 1024 * 1024 * 1024, "context.images.max_cache_bytes")
+  if images.clipboard ~= "auto" and images.clipboard ~= false then
+    if type(images.clipboard) ~= "table" or not vim.islist(images.clipboard) or #images.clipboard == 0 then
+      fail('context.images.clipboard must be "auto", false or a non-empty argv list')
+    end
+    for _, arg in ipairs(images.clipboard) do
+      if type(arg) ~= "string" or arg == "" or arg:find("\0", 1, true) then
+        fail("context.images.clipboard arguments must be non-empty strings without NUL")
+      end
+    end
+  end
+  -- base64 inflates by 4/3, and the JSON envelope adds a little more. A limit
+  -- that cannot fit the transport would only fail after the user pressed send.
+  local encoded = math.ceil(images.max_bytes * 4 / 3) + 64 * 1024
+  if encoded > cfg.transport.max_line_bytes then
+    fail(
+      "context.images.max_bytes (%d) encodes to %d bytes, which exceeds transport.max_line_bytes (%d)",
+      images.max_bytes,
+      encoded,
+      cfg.transport.max_line_bytes
+    )
+  end
+
   check_number(cfg.ui.toolbar.animation_interval, 10, 60000, "ui.toolbar.animation_interval")
 
   if type(cfg.permissions.auto_allow) ~= "table" or not vim.islist(cfg.permissions.auto_allow) then

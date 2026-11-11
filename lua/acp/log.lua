@@ -66,6 +66,14 @@ function M.redact(s, limit)
   out = out:gsub("(%-[Ss]ecret%s+)[^%s\"',}]+", "%1***")
   out = out:gsub("(Bearer%s+)[%w%-%._~%+/=]+", "%1***")
   out = out:gsub("(sk%-)[%w%-_]+", "%1***")
+  -- Base64 payloads (images, audio, blobs) are large and unreadable in a log.
+  -- Replace the value, not just its tail, so no pixel data survives.
+  out = out:gsub('("data"%s*:%s*")([A-Za-z0-9+/=]*)(")', function(prefix, value, suffix)
+    return prefix .. string.format("<base64 %d bytes>", #value) .. suffix
+  end)
+  out = out:gsub('("blob"%s*:%s*")([A-Za-z0-9+/=]*)(")', function(prefix, value, suffix)
+    return prefix .. string.format("<base64 %d bytes>", #value) .. suffix
+  end)
   limit = limit or 4096
   if #out > limit then
     out = out:sub(1, limit) .. "...<truncated " .. (#out - limit) .. " bytes>"

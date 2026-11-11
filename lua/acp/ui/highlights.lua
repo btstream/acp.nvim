@@ -45,6 +45,7 @@ M.groups = {
 
   AcpUser = { link = "Function" },
   AcpUserChip = { link = "Visual" },
+  AcpInputImage = { fg = "#292929", bg = "#ffcc80", bold = true },
   AcpAssistant = { link = "Normal" },
   -- The block header is split in two so the glyph and the label can be coloured
   -- independently: the icon marks who is speaking, the title names the turn.

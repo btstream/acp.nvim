@@ -1,5 +1,6 @@
 -- Collect editor context into ACP prompt content blocks.
 local log = require("acp.log")
+local image = require("acp.context.image")
 
 local M = {}
 
@@ -58,6 +59,12 @@ function M.file(path, config)
   local abs = vim.fn.fnamemodify(path, ":p")
   if vim.fn.filereadable(abs) ~= 1 then
     return nil, "not a readable file: " .. path
+  end
+  -- An image is not text: `read_file` would hand the agent raw bytes labelled
+  -- text/plain. Describe it as an image instead.
+  local images = config.context and config.context.images or {}
+  if images.enabled ~= false and image.is_file(abs, images.max_bytes) then
+    return M.image(abs, config)
   end
   local limit = config.context.max_file_bytes or 512 * 1024
   local stat = vim.uv.fs_stat(abs)
@@ -211,7 +218,81 @@ function M.diagnostics(config)
   }
 end
 
+---Build an attachment for an image file.
+---
+---The bytes stay on disk; only metadata enters the composer. `inline` decides
+---whether the prompt embeds them now or links the file, which is what keeps a
+---screenshot from silently tripling every later queue entry.
+---@param path string
+---@param config table
+---@param opts {inline?: boolean}|nil
+---@return table|nil attachment
+---@return string|nil err
+function M.image(path, config, opts)
+  local images = config.context.images or {}
+  local abs = vim.fn.fnamemodify(path, ":p")
+  if vim.fn.filereadable(abs) ~= 1 then
+    return nil, "not a readable image: " .. path
+  end
+  local limit = images.max_bytes or 3 * 1024 * 1024
+  local stat = vim.uv.fs_stat(abs)
+  if stat and stat.size > limit then
+    return nil, "image is too large to attach"
+  end
+  local bytes, read_err = image.read(abs, limit)
+  if not bytes then
+    return nil, read_err or "unable to read image"
+  end
+  local mime = image.sniff(bytes)
+  if not mime then
+    return nil, "not a supported image: " .. path
+  end
+  local name = vim.fn.fnamemodify(abs, ":t")
+  local inline = opts and opts.inline
+  if inline == nil then
+    inline = images.path_mode == "inline"
+  end
+  -- `block` is deliberately left nil: `M.block` builds it at send time so the
+  -- bytes are read once, when they are actually needed.
+  return {
+    kind = "image",
+    label = name,
+    path = abs,
+    uri = to_uri(abs),
+    mime = mime,
+    bytes = #bytes,
+    sha = vim.fn.sha256(bytes),
+    inline = inline,
+  }
+end
+
+---Attach raw image bytes that came from the clipboard.
+---@param bytes string
+---@param mime string
+---@param config table
+---@return table|nil attachment
+---@return string|nil err
+function M.image_bytes(bytes, mime, config)
+  local images = config.context.images
+  if images.enabled == false then
+    return nil, "image attachments are disabled"
+  end
+  if #bytes > images.max_bytes then
+    return nil, "image is too large to attach"
+  end
+  if not image.extension(mime) or image.sniff(bytes) ~= mime then
+    return nil, "unsupported image format or mismatched MIME type"
+  end
+  local path, err = image.store(bytes, mime)
+  if not path then
+    return nil, err
+  end
+  return M.image(path, config, { inline = true })
+end
+
 ---Extract `@path` mentions from a message and turn readable files into attachments.
+---Image paths use the image attachment so their MIME type and (optionally)
+---their bytes reach the agent as an image rather than as text.
 ---The mention text is left in the message so the agent keeps the reference.
 ---@param text string
 ---@param config table
@@ -240,21 +321,128 @@ function M.mentions(text, config, cwd)
   return attachments
 end
 
----Convert attachments plus a text message into prompt content blocks.
----@param text string
----@param attachments table[]
----@return table[]
-function M.to_prompt(text, attachments)
-  local blocks = {}
-  if text and text ~= "" then
-    blocks[#blocks + 1] = { type = "text", text = text }
+---Build the prompt block for an attachment.
+---
+---Image bytes are read here rather than at attach time: the composer, the
+---draft file and the local queue only ever hold the path, so a 3 MiB
+---screenshot does not become 4 MiB of base64 in three places.
+---@param att table
+---@param config table|nil
+---@return table|nil block
+---@return string|nil err
+function M.block(att, config)
+  if att.kind ~= "image" or att.block then
+    return att.block
   end
-  for _, att in ipairs(attachments or {}) do
-    if att.block then
-      blocks[#blocks + 1] = att.block
+  local images = (config and config.context and config.context.images) or {}
+  -- `att.inline` is an explicit decision made when the attachment was created:
+  -- clipboard bytes must be embedded (the agent cannot read our cache), while
+  -- a mentioned file follows `path_mode`.
+  local inline = att.inline
+  if inline == nil then
+    inline = (images.path_mode or "link") == "inline"
+  end
+  if not inline then
+    return { type = "resource_link", uri = att.uri, name = att.label, mimeType = att.mime, size = att.bytes }
+  end
+  if not att.path or vim.fn.filereadable(att.path) ~= 1 then
+    -- The cache was pruned between composing and sending; say so instead of
+    -- dropping the image silently.
+    return nil, (att.label or "image") .. " is no longer readable"
+  end
+  local limit = images.max_bytes or 3 * 1024 * 1024
+  local bytes, err = image.read(att.path, limit)
+  if not bytes then
+    return nil, err or ("image is no longer readable: " .. tostring(att.label))
+  end
+  -- The bytes are checked again here: the file may have been replaced between
+  -- attaching and sending, and the agent would reject a stale MIME type.
+  local mime = image.sniff(bytes)
+  if not mime then
+    return nil, "not a supported image: " .. tostring(att.label)
+  end
+  return { type = "image", mimeType = mime, uri = att.uri, data = vim.base64.encode(bytes) }
+end
+
+---Order text and positioned image attachments without reading image bytes.
+---Offsets refer to UTF-8 bytes in the token-free text, never character counts.
+---Unpositioned attachments retain the legacy append-at-end behaviour.
+function M.sequence(text, attachments)
+  text = text or ""
+  local positioned, tail = {}, {}
+  for index, att in ipairs(attachments or {}) do
+    local offset = att.prompt_offset
+    local valid = type(offset) == "number" and offset >= 0 and offset <= #text and offset % 1 == 0
+    local next_byte = valid and offset < #text and text:byte(offset + 1) or nil
+    if att.kind == "image" and valid and (not next_byte or next_byte < 128 or next_byte >= 192) then
+      positioned[#positioned + 1] = { attachment = att, offset = offset, index = index }
+    else
+      tail[#tail + 1] = { attachment = att }
     end
   end
-  return blocks
+  table.sort(positioned, function(a, b)
+    if a.offset ~= b.offset then
+      return a.offset < b.offset
+    end
+    local ao = type(a.attachment.prompt_order) == "number" and a.attachment.prompt_order or a.index
+    local bo = type(b.attachment.prompt_order) == "number" and b.attachment.prompt_order or b.index
+    if ao ~= bo then
+      return ao < bo
+    end
+    return a.index < b.index
+  end)
+  local parts, cursor = {}, 0
+  for _, entry in ipairs(positioned) do
+    if entry.offset > cursor then
+      parts[#parts + 1] = { text = text:sub(cursor + 1, entry.offset) }
+    end
+    parts[#parts + 1] = { attachment = entry.attachment, positioned = true }
+    cursor = entry.offset
+  end
+  if cursor < #text then
+    parts[#parts + 1] = { text = text:sub(cursor + 1) }
+  end
+  vim.list_extend(parts, tail)
+  return parts
+end
+
+---Reconstruct the composer's visible image positions for the local transcript.
+function M.display_text(text, attachments)
+  local parts, placed = {}, {}
+  for _, part in ipairs(M.sequence(text, attachments)) do
+    if part.text then
+      parts[#parts + 1] = part.text
+    elseif part.positioned then
+      local att = part.attachment
+      parts[#parts + 1] = att.input_token or "[Image]"
+      placed[att] = true
+    end
+  end
+  return table.concat(parts), placed
+end
+
+---Convert attachments plus a text message into ordered ACP content blocks.
+---@param text string
+---@param attachments table[]
+---@param config table|nil
+---@return table[]
+---@return string|nil err first attachment that could not be encoded
+function M.to_prompt(text, attachments, config)
+  local blocks = {}
+  local problem
+  for _, part in ipairs(M.sequence(text, attachments)) do
+    if part.text then
+      blocks[#blocks + 1] = { type = "text", text = part.text }
+    else
+      local block, err = M.block(part.attachment, config)
+      if block then
+        blocks[#blocks + 1] = block
+      elseif err and not problem then
+        problem = err
+      end
+    end
+  end
+  return blocks, problem
 end
 
 return M

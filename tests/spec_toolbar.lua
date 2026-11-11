@@ -11,6 +11,55 @@ return function(t)
   end
 
   t.describe("toolbar", function()
+    t.it("places attachment chips after the mode badge, not before it", function()
+      -- The badges are pinned to the left edge. Prepending chips pushed the mode
+      -- off the bar and let a narrow composer truncate the chip from the front,
+      -- which is what a real edgy layout showed.
+      local text = toolbar.render({
+        mode = "build",
+        model = "DeepSeek V4.1 Flash",
+        status = "idle",
+        icons = false,
+        chips = { "screenshot.png" },
+      }, 70)
+      t.match("^%%#AcpToolbar#", text, "the bar must still start with its own highlight")
+      local shown = visible(text)
+      local mode_at = shown:find(" B ", 1, true)
+      local chip_at = shown:find("[screenshot.png]", 1, true)
+      t.truthy(mode_at, "the mode badge disappeared")
+      t.truthy(chip_at, "the chip disappeared")
+      t.truthy(mode_at < chip_at, "the chip must follow the mode badge")
+    end)
+
+    t.it("truncates chips instead of dropping the model on a narrow composer", function()
+      local text = toolbar.render({
+        mode = "build",
+        model = "DeepSeek V4.1 Flash",
+        status = "idle",
+        icons = false,
+        chips = { "a-very-long-screenshot-filename.png" },
+      }, 30)
+      local shown = visible(text)
+      t.truthy(shown:find("…", 1, true), "a long chip should be truncated")
+      t.falsy(shown:find("a-very-long-screenshot-filename.png", 1, true), "the whole name must not be rendered")
+      t.truthy(shown:find(" B ", 1, true), "the mode badge must survive")
+    end)
+
+    t.it("marks extra chips when they do not all fit", function()
+      local text = toolbar.render({
+        mode = "build",
+        model = "m",
+        status = "idle",
+        icons = false,
+        chips = { "one.png", "two.png", "three.png", "four.png" },
+      }, 26)
+      local shown = visible(text)
+      t.truthy(shown:find("…", 1, true), "collapsed chips should be marked")
+      -- The bar must not grow past the window: overflowing text is clipped by
+      -- Vim, but the rendered width should already fit.
+      t.truthy(vim.api.nvim_strwidth(shown) <= 26, "rendered bar is wider than the window: " .. shown)
+    end)
+
     t.it("escapes percent signs from agent content", function()
       t.eq("%%", toolbar.escape("%"))
       local text = toolbar.render({ model = "50%", mode = "build", status = "idle" }, 80)

@@ -299,6 +299,21 @@ function M.get(cwd, session_id)
   return { text = type(entry.text) == "string" and entry.text or "", attachments = attachments }
 end
 
+---Cache cleanup must not delete images still referenced by persisted drafts.
+function M.image_paths()
+  local paths = {}
+  for _, entry in pairs(load()) do
+    if type(entry) == "table" and type(entry.attachments) == "table" then
+      for _, att in ipairs(entry.attachments) do
+        if type(att) == "table" and att.kind == "image" and type(att.path) == "string" then
+          paths[att.path] = true
+        end
+      end
+    end
+  end
+  return paths
+end
+
 function M.clear()
   cancel_timer()
   epoch = epoch + 1

@@ -45,6 +45,7 @@ M.actions = {
     { action = "pick_model", desc = "pick model", modes = { "n", "i" }, handler = "on_pick_model" },
     { action = "pick_mode", desc = "pick mode", modes = { "n", "i" }, handler = "on_pick_mode" },
     { action = "pick_file", desc = "insert file mention", modes = { "n", "i" }, handler = "on_pick_file" },
+    { action = "paste_image", desc = "paste image from clipboard", modes = { "n", "i" }, handler = "on_paste_image" },
     { action = "pick_session", desc = "sessions", modes = { "n" }, handler = "on_pick_session" },
   },
   chat = {
@@ -190,10 +191,21 @@ end
 
 ---@param opts {keymaps: table, on_send: fun(), on_cancel: fun(), on_hide: fun(),
 ---  on_add_selection: fun(), on_pick_model: fun(), on_pick_mode: fun(),
----  on_pick_session: fun(), get_session: fun()}
+---  on_pick_session: fun(), on_pick_file: fun(), on_paste_image: fun(), get_session: fun()}
 function M.attach_input(buf, opts)
   M.attach("input", buf, opts.keymaps, opts)
   complete.attach(buf, opts.get_session, opts.config)
+  require("acp.ui.paste_image").attach(buf, {
+    config = function()
+      return opts.config
+    end,
+    is_active = function()
+      return vim.api.nvim_get_current_buf() == buf
+    end,
+    on_image = function(path)
+      return opts.on_paste_image_path and opts.on_paste_image_path(path) or false
+    end,
+  })
 end
 
 ---@param buf integer

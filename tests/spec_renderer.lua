@@ -14,6 +14,41 @@ return function(t)
       t.match("hello", lines[2].text)
     end)
 
+    t.it("renders image tokens in body order instead of putting image filenames in the header", function()
+      local s = state.new("s", "/tmp")
+      s:add_local_user("前\n中后", {
+        { kind = "image", label = "hash-one.png", input_token = "[Image 1]", prompt_offset = #"前\n中" },
+        { kind = "image", label = "hash-two.png", input_token = "[Image 2]", prompt_offset = 0 },
+        { kind = "file", label = "main.lua" },
+      })
+      local lines = blocks.render_block(s.blocks[1], ctx)
+      t.match("main.lua", lines[1].text)
+      local joined = table.concat(
+        vim.tbl_map(function(line)
+          return line.text
+        end, lines),
+        "\n"
+      )
+      t.falsy(joined:find("hash-one.png", 1, true))
+      t.falsy(joined:find("hash-two.png", 1, true))
+      t.truthy(joined:find("[Image 2]前\n  中[Image 1]后", 1, true), joined)
+      -- A streamed multimodal echo must not duplicate images or invalidate the
+      -- byte offsets recorded for the complete local prompt.
+      s:user_chunk("前", "echo")
+      s:user_chunk("[image]", "echo")
+      s:user_chunk("\n中后", "echo")
+      local echoed = blocks.render_block(s.blocks[1], ctx)
+      t.eq(
+        joined,
+        table.concat(
+          vim.tbl_map(function(line)
+            return line.text
+          end, echoed),
+          "\n"
+        )
+      )
+    end)
+
     t.it("indents continuation lines by two cells", function()
       local s = state.new("s", "/tmp")
       s:append({ id = "a", kind = "agent", text = "first\nsecond\n- bullet" })

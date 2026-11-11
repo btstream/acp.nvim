@@ -131,21 +131,16 @@ function Chrome:composer_bar(win)
   end
 
   local input = self.get_input()
-  local chips = ""
-  local chip_width = 0
-  if input and #input.attachments > 0 then
-    local labels = {}
+  local chip_labels = {}
+  if input then
     for _, att in ipairs(input.attachments) do
-      labels[#labels + 1] = "[" .. (att.label or "") .. "]"
+      if att.kind ~= "image" then
+        chip_labels[#chip_labels + 1] = att.label or ""
+      end
     end
-    local plain = table.concat(labels, " ")
-    -- `%$...$` inherits the bar's background; a `%#...%#` here would restart
-    -- from `WinBar`, which a layout manager may have remapped.
-    chips = "%#AcpToolbar#%$AcpUserChip$" .. toolbar.escape(plain) .. "%$AcpToolbar$ "
-    chip_width = vim.api.nvim_strwidth(plain) + 1
   end
 
-  local base = toolbar.render({
+  return toolbar.render({
     icons = cfg.ui.icons,
     mode = mode,
     model = model,
@@ -155,9 +150,8 @@ function Chrome:composer_bar(win)
     usage = session and session.usage or nil,
     show_usage = cfg.ui.toolbar.show_usage,
     spinner = self.frame,
-  }, math.max(12, width - chip_width))
-
-  return chips .. base
+    chips = chip_labels,
+  }, width)
 end
 
 ---Target both ACP winbars without moving focus. Older API variants fall back

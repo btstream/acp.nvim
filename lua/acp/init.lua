@@ -54,6 +54,18 @@ function M.pick_file(opts)
   return ensure().pick_file(opts)
 end
 
+---Attach an image file to the composer.
+---@param path string
+function M.add_image(path)
+  return ensure().add_image(path)
+end
+
+---Read an image from the clipboard and attach it.
+---@param opts {command?: string[]|false}|nil
+function M.paste_image(opts)
+  return ensure().paste_image(opts)
+end
+
 function M.refresh_completion()
   require("acp.completion").refresh()
 end

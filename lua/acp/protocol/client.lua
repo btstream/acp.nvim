@@ -489,6 +489,18 @@ function Client:has_session_capability(name)
   return caps[name] ~= nil
 end
 
+---Whether the agent accepts a given prompt content type.
+---
+---Text and resource_link are mandatory for every agent; the richer types are
+---advertised through promptCapabilities and omitted ones must be treated as
+---unsupported.
+---@param name "image"|"audio"|"embeddedContext"
+---@return boolean
+function Client:supports_prompt(name)
+  local caps = self:agent_capabilities().promptCapabilities
+  return type(caps) == "table" and caps[name] == true
+end
+
 ---@param session_id string
 ---@param blocks table[]
 ---@param turn integer|nil turn number, echoed back so stale events can be ignored

@@ -41,6 +41,8 @@ write_lock = threading.Lock()
 cancel_event = threading.Event()
 # Active prompt requests: msg_id -> True
 active_prompts = {}
+# Image block summaries from the most recent prompts, for the image suite only.
+image_blocks = []
 
 
 class PendingPermission:
@@ -85,6 +87,10 @@ def finish(msg_id, stop_reason="end_turn"):
 
 def run_prompt(msg_id, text):
     """Runs in a worker thread so stdin stays responsive."""
+    if text.startswith("ORDER_PROBE"):
+        update({"sessionUpdate": "agent_message_chunk", "messageId": "order_probe", "content": {"type": "text", "text": text}})
+        finish(msg_id)
+        return
     if "fail" in text:
         error(msg_id, -32000, "mock failure")
         with permissions_lock:
@@ -235,7 +241,13 @@ def handle(msg):
             "protocolVersion": 1,
             "agentCapabilities": {
                 "loadSession": True,
-                "promptCapabilities": {"embeddedContext": True, "image": False},
+                # ACP_IMAGE_CAPABILITY=1 lets the image regression suite assert
+                # that a real `image` block arrives; the default stays false so
+                # the capability gate is exercised too.
+                "promptCapabilities": {
+                    "embeddedContext": True,
+                    "image": os.environ.get("ACP_IMAGE_CAPABILITY") == "1",
+                },
                 "sessionCapabilities": {"list": {}, "resume": {}, "delete": {}, "close": {}},
             },
             "agentInfo": {"name": "mock", "title": "Mock Agent", "version": "0.1.0"},
@@ -323,6 +335,23 @@ def handle(msg):
         result(msg_id, {})
     elif method == "session/prompt":
         text = "".join(b.get("text", "") for b in params.get("prompt") or [] if b.get("type") == "text")
+        order = None
+        if text.startswith("ORDER_PROBE"):
+            order = [
+                "text:" + block.get("text", "") if block.get("type") == "text"
+                else "image:" + block.get("data", "") if block.get("type") == "image"
+                else block.get("type", "unknown")
+                for block in params.get("prompt") or []
+            ]
+        # Echo image blocks back so a test can prove the real payload arrived
+        # with a decodable body, not just that a chip was shown locally.
+        for block in params.get("prompt") or []:
+            if block.get("type") == "image":
+                summary = "IMAGE:%s:%d" % (block.get("mimeType"), len(block.get("data") or ""))
+                image_blocks.append(summary)
+                text = text + " " + summary
+        if order is not None:
+            text += "\nORDER:" + json.dumps(order, ensure_ascii=False, separators=(",", ":"))
         with permissions_lock:
             # OpenCode refuses a second prompt while one is running. Mirroring
             # that here turns the client-side race into a test failure instead

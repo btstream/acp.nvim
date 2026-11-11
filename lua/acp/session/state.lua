@@ -377,6 +377,13 @@ end
 ---@param text string
 ---@param attachments table|nil
 function Session:add_local_user(text, attachments)
+  local positioned = false
+  for _, att in ipairs(attachments or {}) do
+    if att.kind == "image" and type(att.prompt_offset) == "number" then
+      positioned = true
+      break
+    end
+  end
   local block = self:append({
     id = next_id("user"),
     kind = "user",
@@ -384,6 +391,7 @@ function Session:add_local_user(text, attachments)
     status = nil,
     optimistic = true,
     attachments = attachments,
+    positioned_prompt = positioned or nil,
   })
   self.pending_user = block
   return block
@@ -392,6 +400,16 @@ end
 ---Handle a streamed user message chunk, replacing the optimistic message when possible.
 function Session:user_chunk(text, message_id)
   local pending = self.pending_user
+  if pending and pending.positioned_prompt then
+    -- The local message already has the complete ordered multimodal prompt.
+    -- Agents may echo text and images as separate chunks (or omit images from
+    -- their echo). Replacing/concatenating those would corrupt saved offsets.
+    pending.optimistic = false
+    pending.message_id = message_id or pending.message_id
+    pending.status = "streaming"
+    self:touch(pending, false)
+    return pending
+  end
   if pending and pending.optimistic then
     pending.optimistic = false
     pending.text = text
