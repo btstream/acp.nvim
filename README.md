@@ -140,6 +140,43 @@ require("acp").setup({})
 
 所有按键都是 buffer-local，不会污染全局映射。
 
+### 可选的懒渲染与历史分页
+
+默认仍使用全文渲染。建议先开启 A，确认效果后再开启 B：
+
+```lua
+ui = {
+  render = {
+    lazy_syntax = true, -- A：仅在视口附近解析/绘制代码、diff 语法颜色
+    profile = false,   -- true 时在 :AcpDebug 的 render.timings 查看分层耗时
+    budget_ms = 4,     -- 装饰和分页排版的软时间片；单次解析不可抢占
+    overscan = 1,      -- 可见区上下各预加载一屏
+    pagination = {
+      enabled = false, -- B：需要时显式开启，默认不改变原生搜索/复制语义
+      page_blocks = 64,
+      max_blocks = 192,
+      page_bytes = 256 * 1024,
+    },
+  },
+}
+```
+
+- **A** 保留完整 buffer 文本、基础高亮、conceal、卡片背景和跳转信息，只延迟语法装饰。
+  原生搜索和复制不变；文本仍走已有增量排版路径，不因懒高亮重建稳定历史。
+- **B** 首先显示最近一页。接近边缘时加载相邻页，也可在加载提示上按 `<CR>` / `<Tab>`；
+  `gg` 加载最早保留内容，`G` 回到最新并跟随，`[b` / `]b` 可跨页。
+- 分页只改变显示范围，不修改 Session/Agent 历史。原生 `/` 和 Visual 复制只覆盖当前
+  已加载文本，不提供跨未加载历史的原生搜索。`Chat:transcript()` 的显式完整导出仍包含
+  Session 保留的全文，但该操作会临时全量排版。
+- Visual/Select 选区活动时暂停分页排版与回收，退出后刷新。当前可见块不会因分页而被
+  回收，因此受保护范围可能暂时超过预算；单个大块也不会被强行拆开。
+- `page_bytes` 是每次新增页面的源载荷目标，不是 RSS 上限；回收同时参考 `max_blocks`
+  和按页面数推导的载荷预算。A 不减少全文行缓存，B 才减少常驻物化行及对应缓存。
+
+运行 `nvim --headless -u tests/minimal_init.lua -l tests/perf_lazy.lua` 可比较全文、A、B 的
+首个布局提交耗时、语法解析、extmark 数量和 Lua 内存。具体耗时取决于内容和本机环境。
+`tests/integration_lazy.lua [native|edgy|reconnect]` 用相同方式运行开启 A+B 的集成检查。
+
 工具调用卡片折叠时只显示标题和一行预览。展开后，`execute`（shell）调用会在输出
 之前以 `$ 命令` 的形式给出完整命令行——优先取 agent 的 `rawInput.command`，没有
 结构化输入时退回标题；标题栏为了适配面板宽度仍会截断长命令，卡片里的是完整文本。

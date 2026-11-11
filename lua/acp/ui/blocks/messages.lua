@@ -1,5 +1,6 @@
 -- User, assistant and thought blocks.
 local text_layout = require("acp.ui.text")
+local decoration = require("acp.ui.decoration")
 
 local M = {}
 
@@ -154,6 +155,8 @@ function M.render_thought(block, ctx)
         }
       end, line.segments or {}),
       bg = "AcpCardBg",
+      source = line.source,
+      decorations = decoration.shift(line.decorations, 2),
     }
   end
   out[#out + 1] = { text = "  ", segments = nil, bg = "AcpCardBg" }

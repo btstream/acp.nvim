@@ -76,6 +76,7 @@ function M.render_error(block, ctx)
   local out = indent_lines(lines, "  ", ctx.icons.tool_fail .. " ")
   for _, line in ipairs(out) do
     line.segments = { { s = 0, e = -1, group = "AcpToolError" } }
+    line.decorations = nil
   end
   out[#out + 1] = { text = "", segments = nil }
   return out

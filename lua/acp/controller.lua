@@ -376,6 +376,9 @@ local function set_chat_keymaps()
       update_chat_title()
     end,
     on_open_location = function()
+      if S.chat:activate_page() then
+        return
+      end
       M.open_location()
     end,
     on_help = function()
@@ -824,6 +827,7 @@ function M.debug_state()
     queue = session and #session.queue or 0,
     pending_permissions = vim.tbl_count(S.pending_permissions),
     transport = S.client and S.client.transport_stats and S.client:transport_stats() or nil,
+    render = S.chat and S.chat:render_stats() or nil,
     panel = {
       chat = S.chat and S.chat.win or nil,
       input = S.input and S.input.win or nil,

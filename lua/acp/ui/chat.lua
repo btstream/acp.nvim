@@ -5,6 +5,10 @@ local blocks = require("acp.ui.blocks")
 local transcript = require("acp.ui.transcript")
 local renderer = require("acp.ui.buffer_renderer")
 local viewport = require("acp.ui.viewport")
+local decoration = require("acp.ui.decoration")
+local metrics = require("acp.ui.render_metrics")
+local HistoryPage = require("acp.ui.history_page")
+local CodeHL = require("acp.ui.code_hl")
 
 local RESIZE_DELAY = 100
 
@@ -109,6 +113,22 @@ function M.new(opts)
       self:on_resize()
     end,
   })
+  vim.api.nvim_create_autocmd("WinScrolled", {
+    group = group,
+    callback = function()
+      decoration.schedule(self)
+      self:on_scroll()
+    end,
+  })
+  vim.api.nvim_create_autocmd("ModeChanged", {
+    group = group,
+    buffer = self.buf,
+    callback = function()
+      if self.needs_render and not HistoryPage.selected(self) then
+        self:schedule_render()
+      end
+    end,
+  })
   vim.api.nvim_create_autocmd("WinClosed", {
     group = group,
     callback = function(args)
@@ -136,6 +156,12 @@ function Chat:set_session(session)
     return
   end
   self:cancel_resize()
+  decoration.cancel(self)
+  self.layout_epoch = (self.layout_epoch or 0) + 1
+  self.layout_job = nil
+  self.page_target = nil
+  local paging = self.config.ui.render and self.config.ui.render.pagination
+  self.page = paging and paging.enabled and HistoryPage.new(paging) or nil
   self.session = session
   self.render_version = nil
   self.row_starts, self.turn_counts, self.render_order = {}, {}, {}
@@ -151,6 +177,12 @@ function Chat:set_session(session)
   self.full_rewrite = true
   self.pending_new = false
   self.follow = self.config.ui.follow_output
+  self.first_paint = metrics.start(self)
+  if self.page then
+    renderer.replace(self.buf, { "Loading conversation…" }, {}, true)
+    vim.api.nvim_buf_clear_namespace(self.buf, decoration.ns, 0, -1)
+    vim.api.nvim_buf_clear_namespace(self.buf, renderer.ns_bg, 0, -1)
+  end
   self:render()
 end
 
@@ -158,8 +190,19 @@ end
 ---Stable prefixes keep their strings, metadata tables and extmarks unchanged.
 function Chat:render_dirty(first_block)
   local session = self.session
+  local saved_view = not self.follow and viewport.capture(self) or nil
+  local started = metrics.start(self)
   local layout = transcript.dirty(session, self, first_block)
+  metrics.record(self, "layout", started)
+  self:apply_dirty(layout, saved_view)
+end
+
+function Chat:apply_dirty(layout, saved_view)
+  local session = self.session
+  decoration.clear(self)
+  local started = metrics.start(self)
   renderer.write_suffix(self.buf, layout.lines, layout.meta, self.lines_cache, self.meta, layout.offset)
+  metrics.record(self, "write", started)
 
   local offset = layout.offset
   for i, text in ipairs(layout.lines) do
@@ -178,17 +221,23 @@ function Chat:render_dirty(first_block)
       pcall(vim.api.nvim_win_set_cursor, self.win, { row, 0 })
     end
   elseif self.follow then
+    self.committing = true
     self:scroll_to_bottom()
-  elseif self:is_visible() and not self.pending_new then
-    self.pending_new = true
-    if self.on_pending_new then
-      self.on_pending_new(true)
+    self.committing = nil
+  elseif self:is_visible() then
+    viewport.restore(self, saved_view)
+    if not self.pending_new then
+      self.pending_new = true
+      if self.on_pending_new then
+        self.on_pending_new(true)
+      end
     end
   end
+  decoration.schedule(self)
 end
 
 function Chat:on_enter()
-  if not self.session then
+  if not self.session or self.render_version == nil or self.layout_job then
     return
   end
   local ok, cursor = pcall(vim.api.nvim_win_get_cursor, 0)
@@ -196,7 +245,7 @@ function Chat:on_enter()
     return
   end
   local line_count = vim.api.nvim_buf_line_count(self.buf)
-  self.follow = cursor[1] >= line_count - 1
+  self.follow = cursor[1] >= line_count - 1 and (not self.page or self.page.last == #self.session.blocks)
 end
 
 function Chat:cancel_resize()
@@ -292,6 +341,10 @@ function Chat:render(force, reason)
   self.needs_render = false
   force = force or self.needs_force
   self.needs_force = false
+  if self.page and HistoryPage.selected(self) then
+    self.needs_render = true
+    return
+  end
   if not self.session then
     -- No session: clear the transcript instead of leaving the previous
     -- conversation on screen (e.g. right after deleting the active session).
@@ -299,6 +352,8 @@ function Chat:render(force, reason)
     -- `lines_cache` before rendering, so it cannot be used as the "is the
     -- buffer already empty" test.
     if not self.buf_cleared then
+      self.layout_epoch = (self.layout_epoch or 0) + 1
+      self.layout_job = nil
       self.buf_cleared = true
       self.cache = {}
       self.lines_cache = {}
@@ -307,6 +362,7 @@ function Chat:render(force, reason)
       self.line_starts = {}
       renderer.replace(self.buf, { "" }, {}, true)
       vim.api.nvim_buf_clear_namespace(self.buf, renderer.ns_bg, 0, -1)
+      vim.api.nvim_buf_clear_namespace(self.buf, decoration.ns, 0, -1)
     end
     return
   end
@@ -335,6 +391,10 @@ function Chat:render(force, reason)
     saved_view = viewport.capture(self)
   end
 
+  if self.page then
+    return self:render_async(force, layout_only)
+  end
+
   if self.session.tracked and self.render_version ~= nil and not force and not self.full_rewrite then
     local first = self.session:changed_since(self.render_version)
     if not first then
@@ -343,23 +403,38 @@ function Chat:render(force, reason)
     return self:render_dirty(first)
   end
 
+  local started = metrics.start(self)
   local layout = transcript.full(self.session, self, { force = force })
+  metrics.record(self, "layout", started)
 
+  self:apply_layout(layout, layout_only, saved_view)
+end
+
+---Commit only completed, current layouts. Shared by eager and batched paths.
+function Chat:apply_layout(layout, layout_only, saved_view)
+  decoration.clear(self)
   local old = self.lines_cache or {}
   local full_rewrite = self.full_rewrite == true
   if full_rewrite then
     old = {}
     self.full_rewrite = false
   end
+  local started = metrics.start(self)
   local changed = renderer.write(self.buf, layout.lines, layout.meta, old, full_rewrite)
 
   self.bg_runs = renderer.sync_backgrounds(self.buf, self.bg_runs, layout.meta, changed)
+  metrics.record(self, "write", started)
   self.meta = layout.meta
   self.lines_cache = layout.lines
   self.line_starts = layout.starts
   self.row_starts, self.turn_counts, self.render_order = layout.row_starts, layout.turn_counts, layout.render_order
+  if self.page then
+    HistoryPage.evict(self.cache, layout.cache)
+  end
   self.cache = layout.cache
   self.render_version, self.render_turns = self.session.version, layout.turns
+  metrics.record(self, "first_paint", self.first_paint)
+  self.first_paint = nil
 
   -- A block that was just toggled keeps the cursor: expanding or collapsing it
   -- is a deliberate action, not new output to follow.
@@ -370,7 +445,9 @@ function Chat:render(force, reason)
       pcall(vim.api.nvim_win_set_cursor, self.win, { row, 0 })
     end
   elseif self.follow then
+    self.committing = true
     self:scroll_to_bottom()
+    self.committing = nil
   elseif self:is_visible() then
     viewport.restore(self, saved_view)
     if not layout_only and not self.pending_new then
@@ -380,9 +457,191 @@ function Chat:render(force, reason)
       end
     end
   end
+  decoration.schedule(self)
+end
+
+---Cooperative block-level layout; no worker thread or parser in redraw hooks.
+function Chat:render_async(force, layout_only)
+  if not self:is_visible() then
+    self.needs_render = true
+    self.layout_epoch = (self.layout_epoch or 0) + 1
+    self.layout_job = nil
+    return
+  end
+  local session, version, width, generation = self.session, self.session.version, self.width, CodeHL.generation
+  local win = self.win
+  local first, last = 1, #session.blocks
+  if self.page then
+    first, last = self.page:sync(session, self.follow)
+  end
+  local previous = self.layout_job
+  if
+    previous
+    and previous.session == session
+    and previous.version == version
+    and previous.width == width
+    and previous.first == first
+    and previous.last == last
+    and previous.generation == generation
+    and not force
+  then
+    return
+  end
+  self.layout_epoch = (self.layout_epoch or 0) + 1
+  local job = {
+    epoch = self.layout_epoch,
+    session = session,
+    version = version,
+    width = width,
+    started = metrics.start(self),
+    first = first,
+    last = last,
+    generation = generation,
+  }
+  self.layout_job = job
+  local co = coroutine.create(function()
+    return transcript.full(session, self, { force = force, first = first, last = last, checkpoint = coroutine.yield })
+  end)
+  local function current()
+    return not self.destroyed
+      and self:is_visible()
+      and self.win == win
+      and vim.api.nvim_win_get_buf(win) == self.buf
+      and self.session == session
+      and session.version == version
+      and self.width == width
+      and self.layout_epoch == job.epoch
+      and CodeHL.generation == generation
+  end
+  local function step()
+    if not current() then
+      if self.layout_job == job then
+        self.layout_job = nil
+        self.needs_render = true
+      end
+      return
+    end
+    if self.page and HistoryPage.selected(self) then
+      self.layout_job, self.needs_render = nil, true
+      return
+    end
+    local started = metrics.start(self)
+    local deadline = vim.uv.hrtime() + self.config.ui.render.budget_ms * 1e6
+    repeat
+      local ok, result = coroutine.resume(co)
+      if not ok then
+        self.layout_job = nil
+        require("acp.log").error("transcript layout failed: %s", tostring(result))
+        return
+      end
+      if coroutine.status(co) == "dead" then
+        metrics.record(self, "layout_slice", started)
+        if current() then
+          self.layout_job = nil
+          metrics.record(self, "layout", job.started)
+          local saved = not self.follow and viewport.capture(self) or nil
+          self:apply_layout(result, layout_only, saved)
+          if self.page_target then
+            local row = self.page_target == "first"
+                and self.line_starts[session.blocks[first] and session.blocks[first].id]
+              or self.page_target == "last" and #self.lines_cache
+              or self.line_starts[self.page_target]
+            self.page_target = nil
+            if row and self:is_visible() then
+              vim.api.nvim_win_set_cursor(self.win, { row, 0 })
+            end
+          end
+        end
+        return
+      end
+    until vim.uv.hrtime() >= deadline
+    metrics.record(self, "layout_slice", started)
+    vim.schedule(step)
+  end
+  vim.schedule(step)
+end
+
+function Chat:page_pins()
+  local first, last
+  if not self:is_visible() then
+    return nil
+  end
+  local rows = vim.api.nvim_win_call(self.win, function()
+    return { vim.fn.line("w0"), vim.fn.line("w$") }
+  end)
+  local ids = {}
+  for row = rows[1], rows[2] do
+    local entry = self.meta[row]
+    if entry and entry.block_id then
+      ids[entry.block_id] = true
+    end
+  end
+  if self.keep_block then
+    ids[self.keep_block] = true
+  end
+  for index, block in ipairs(self.session.blocks) do
+    if ids[block.id] then
+      first, last = first or index, index
+    end
+  end
+  return first and { first = first, last = last } or nil
+end
+
+function Chat:load_page(direction, target)
+  if not self.page or not self.session or HistoryPage.selected(self) then
+    return false
+  end
+  if not self.page:load(self.session, direction, self:page_pins()) then
+    return false
+  end
+  self.follow = false
+  self.page_target = target
+  self:render(nil, "layout")
+  return true
+end
+
+function Chat:activate_page()
+  if not self.page or not self:is_visible() then
+    return false
+  end
+  local entry = self.meta[vim.api.nvim_win_get_cursor(self.win)[1]]
+  return entry and entry.page and self:load_page(entry.page) or false
+end
+
+function Chat:on_scroll()
+  if
+    self.destroyed
+    or self.layout_job
+    or not self:is_visible()
+    or self.render_version == nil
+    or vim.api.nvim_win_get_buf(self.win) ~= self.buf
+  then
+    return
+  end
+  local rows = vim.api.nvim_win_call(self.win, function()
+    return { vim.fn.line("w0"), vim.fn.line("w$") }
+  end)
+  if rows[2] < #self.lines_cache or vim.api.nvim_win_get_cursor(self.win)[1] < #self.lines_cache - 1 then
+    self.follow = false
+  end
+  if not self.page then
+    return
+  end
+  if rows[1] <= 2 and self.page.first > 1 then
+    self:load_page(-1)
+  elseif rows[2] >= #self.lines_cache - 1 and self.page.last < #self.session.blocks then
+    self:load_page(1)
+  end
 end
 
 function Chat:scroll_to_bottom()
+  if self.page and self.session and not self.committing then
+    self.follow = true
+    self.page:sync(self.session, true)
+    self.page_target = "last"
+    self:render(nil, "layout")
+    return
+  end
   local win = self.win
   if not win or not vim.api.nvim_win_is_valid(win) then
     self.follow = true
@@ -403,6 +662,13 @@ end
 function Chat:scroll_to_top()
   local win = self.win
   if not win or not vim.api.nvim_win_is_valid(win) then
+    return
+  end
+  if self.page and self.session and #self.session.blocks > 0 then
+    self.follow = false
+    self.page:beginning(self.session)
+    self.page_target = "first"
+    self:render(nil, "layout")
     return
   end
   pcall(vim.api.nvim_win_set_cursor, win, { 1, 0 })
@@ -435,6 +701,9 @@ end
 ---Toggle the block under the cursor if it supports expansion.
 ---@return boolean
 function Chat:toggle_current()
+  if self:activate_page() then
+    return true
+  end
   local block = self:block_at_cursor()
   if not block then
     return false
@@ -529,12 +798,21 @@ function Chat:jump_block(direction)
   if target then
     pcall(vim.api.nvim_win_set_cursor, win, { target, 0 })
     self.follow = false
+  elseif self.page then
+    local index = direction < 0 and self.page.first - 1 or self.page.last + 1
+    local block = self.session.blocks[index]
+    if block then
+      self:load_page(direction, block.id)
+    end
   end
 end
 
 ---Tear down the view: drop its buffer and autocmd group.
 function Chat:destroy()
   self.destroyed = true
+  decoration.cancel(self)
+  self.layout_epoch = (self.layout_epoch or 0) + 1
+  self.layout_job = nil
   self:cancel_resize()
   stop_timer(self.render_timer)
   self.render_timer, self.render_reason, self.dirty = nil, nil, false
@@ -560,6 +838,21 @@ end
 ---a rendering detail rather than content.
 ---@return string
 function Chat:transcript()
+  if self.page and self.session then
+    -- Explicit full export remains complete; native selection/search still see
+    -- only materialised rows. Avoid parsing syntax for this text-only operation.
+    local view = setmetatable({
+      cache = {},
+      config = vim.tbl_deep_extend("force", {}, self.config, { ui = { render = { lazy_syntax = true } } }),
+    }, { __index = self })
+    local layout = transcript.full(self.session, view, { force = true })
+    local out = {}
+    for _, line in ipairs(layout.lines) do
+      out[#out + 1] = line:gsub("%s+$", "")
+    end
+    HistoryPage.evict(layout.cache, self.cache)
+    return table.concat(out, "\n")
+  end
   local lines = self.lines_cache
   if not lines or #lines == 0 then
     if not vim.api.nvim_buf_is_valid(self.buf) then
@@ -572,6 +865,21 @@ function Chat:transcript()
     out[i] = (line:gsub("%s+$", ""))
   end
   return table.concat(out, "\n")
+end
+
+function Chat:render_stats()
+  return {
+    timings = vim.deepcopy(self.metrics or {}),
+    rows = #(self.lines_cache or {}),
+    cached_blocks = vim.tbl_count(self.cache),
+    syntax_marks = self.buf
+        and vim.api.nvim_buf_is_valid(self.buf)
+        and #vim.api.nvim_buf_get_extmarks(self.buf, decoration.ns, 0, -1, {})
+      or 0,
+    layout_pending = self.layout_job ~= nil,
+    decoration_pending = self.decoration_pending == true,
+    range = self.page and { first = self.page.first, last = self.page.last } or nil,
+  }
 end
 
 return M

@@ -109,7 +109,7 @@ end
 ---segments are rebuilt first, so calling this twice is safe.
 ---@param lines AcpRenderedLine[]|nil
 ---@param path string|nil
----@param opts {enabled?: boolean, max_rows?: integer}|nil
+---@param opts {enabled?: boolean, max_rows?: integer, deferred?: boolean}|nil
 ---@return AcpRenderedLine[]|nil
 function M.attach(lines, path, opts)
   opts = opts or {}
@@ -128,10 +128,19 @@ function M.attach(lines, path, opts)
   for _, added in ipairs({ true, false }) do
     local rows, text = side(lines, added)
     if #rows > 0 and text ~= "" then
-      local ranges, ok = CodeHL.highlight(text, lang)
-      -- No parser installed: leave the diff as plain text rather than failing.
-      if ok then
-        apply(lines, rows, ranges)
+      if opts.deferred then
+        local source = { code = text, lang = lang }
+        for row, entry in ipairs(rows) do
+          local line = lines[entry.index]
+          -- Match apply(): the later (old-side) syntax replaces context syntax.
+          line.decorations = { { source = source, row = row - 1, offset = entry.offset } }
+        end
+      else
+        local ranges, ok = CodeHL.highlight(text, lang)
+        -- No parser installed: leave the diff as plain text rather than failing.
+        if ok then
+          apply(lines, rows, ranges)
+        end
       end
     end
   end

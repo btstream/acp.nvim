@@ -52,7 +52,7 @@ M.defaults = {
     -- Absolute ceiling for a prompt turn, in milliseconds. Prompts may run for
     -- minutes, so this is deliberately generous; it exists only so a wedged
     -- agent cannot hang the turn forever. 0 disables it.
-    prompt_timeout = 600000,
+    prompt_timeout = 6 * 600000,
     -- Bound queued decoded-line payloads and yield between dispatch batches.
     -- 0 means no total cap: memory grows instead of disconnecting.
     max_pending_bytes = 64 * 1024 * 1024,
@@ -125,6 +125,21 @@ M.defaults = {
     -- from anywhere with `vim.api.nvim_set_hl`.
     ---@type table<string, table>
     highlights = {},
+
+    render = {
+      -- Opt-in: keep all text, but parse/paint code syntax near the viewport.
+      lazy_syntax = false,
+      profile = false,
+      budget_ms = 4,
+      overscan = 1,
+      pagination = {
+        -- Opt-in: native search/selection see only materialised history.
+        enabled = false,
+        page_blocks = 64,
+        max_blocks = 192,
+        page_bytes = 256 * 1024,
+      },
+    },
 
     title = {
       ---@type "auto"|"winbar"|"off"
@@ -337,6 +352,30 @@ function M.validate(cfg)
   if type(cfg.ui.diff) ~= "table" then
     fail("ui.diff must be a table")
   end
+  local render = cfg.ui.render
+  if type(render) ~= "table" or type(render.pagination) ~= "table" then
+    fail("ui.render and ui.render.pagination must be tables")
+  end
+  for _, key in ipairs({ "lazy_syntax", "profile" }) do
+    if type(render[key]) ~= "boolean" then
+      fail("ui.render." .. key .. " must be a boolean")
+    end
+  end
+  if type(render.pagination.enabled) ~= "boolean" then
+    fail("ui.render.pagination.enabled must be a boolean")
+  end
+  check_number(render.budget_ms, 1, 100, "ui.render.budget_ms")
+  check_number(render.overscan, 0, 5, "ui.render.overscan")
+  for _, key in ipairs({ "page_blocks", "max_blocks" }) do
+    check_number(render.pagination[key], 1, 10000, "ui.render.pagination." .. key)
+    if render.pagination[key] % 1 ~= 0 then
+      fail("ui.render.pagination." .. key .. " must be an integer")
+    end
+  end
+  if render.pagination.max_blocks < render.pagination.page_blocks then
+    fail("ui.render.pagination.max_blocks must be at least page_blocks")
+  end
+  check_number(render.pagination.page_bytes, 1024, 1024 * 1024 * 1024, "ui.render.pagination.page_bytes")
   check_number(cfg.ui.diff.context, 0, 100, "ui.diff.context")
   check_number(cfg.ui.diff.max_lines, 1, 100000, "ui.diff.max_lines")
   check_number(cfg.ui.diff.max_bytes, 1024, 1024 * 1024 * 1024, "ui.diff.max_bytes")

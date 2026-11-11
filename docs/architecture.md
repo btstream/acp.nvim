@@ -43,6 +43,15 @@ Controller 只保留公开入口、会话选择、服务装配和跨模块协调
   diff 和 rawOutput 保持原子替换，避免累计前缀的二次方复制。
 - `ui/chat` 监听窗口和编辑器 resize，宽度变化经 100ms 防抖后重排；`ui/viewport` 用
   block/行偏移锚点保留阅读位置。布局刷新不产生新消息标记，流式更新不等待 resize。
+- 可选 `ui/decoration` 只在视口及 overscan 区域调度代码/diff 语法装饰。布局保留完整文本、
+  conceal 和结构高亮；装饰描述共享源片段，缩进时投影 byte offset。语法有独立 namespace，
+  滚动时清理旧视口；共享 CodeHL 的 64 项/2 MiB 缓存，不把解析结果挂回所有历史块。
+- 可选 `ui/history_page` 只选择 Session 中连续的 block 范围。Chat 通过 coroutine 按块分批
+  构建临时布局，完成后一次提交；会话身份、版本、宽度、主题和视图代次不符时丢弃。
+  普通非分页渲染继续使用原有增量路径，避免每次尾部追加都重建全文。
+- 分页加载/回收不修改模型；可见块受保护，Visual/Select 期间暂停物化修改。回收清理对应
+  block 的 Markdown/diff 缓存。源文本 byte offset 和同源行内偏移用于恢复重排阅读位置，
+  无源位置的卡片/结构行保留 block + 渲染行偏移回退。显式全文导出不受页面范围限制。
 - `ui/chrome` 拥有 spinner 计时器与重绘合并；`ui/panel` 拥有窗口与窗口事件。
 - 动画按当前连接、会话状态及输入窗口可见性同步，隐藏后重开会恢复，后台生成不启动
   隐藏窗口的 timer。销毁 chrome/panel 会释放资源并使其已排队的 UI 回调失效。

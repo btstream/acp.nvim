@@ -120,6 +120,7 @@ local function context(session, view)
     show_thoughts = view.show_thoughts,
     thoughts = view.thoughts,
     diff = view.diff,
+    lazy_syntax = view.config.ui.render and view.config.ui.render.lazy_syntax,
   }
 end
 
@@ -134,7 +135,7 @@ end
 ---Render the whole transcript.
 ---@param session AcpSessionState
 ---@param view table {icons, width, show_thoughts, thoughts, config, cache}
----@param opts {force: boolean|nil}
+---@param opts {force: boolean|nil, first?: integer, last?: integer, checkpoint?: function}
 ---@return table layout
 function M.full(session, view, opts)
   local ctx = context(session, view)
@@ -155,7 +156,18 @@ function M.full(session, view, opts)
   local turn = 0
 
   local row_starts, turn_counts, render_order = {}, {}, {}
-  for index, block in ipairs(session.blocks) do
+  local first, last = opts.first or 1, opts.last or #session.blocks
+  for i = 1, first - 1 do
+    if session.blocks[i].kind == "user" then
+      turn = turn + 1
+    end
+  end
+  if first > 1 then
+    lines[#lines + 1] = "↑ Load earlier messages (<CR>)"
+    meta[#meta + 1] = { kind = "page", page = -1, segments = { { s = 0, e = -1, group = "AcpLink" } } }
+  end
+  for index = first, last do
+    local block = session.blocks[index]
     row_starts[index], turn_counts[index], render_order[index] = #lines + 1, turn, block.id
     seen[block.id] = true
     -- The divider belongs to the transcript, not to any block: it is inserted
@@ -198,8 +210,17 @@ function M.full(session, view, opts)
         location = line.location,
         segments = line.segments,
         bg = line.bg,
+        source = line.source,
+        decorations = line.decorations,
       }
     end
+    if opts.checkpoint and index < last then
+      opts.checkpoint()
+    end
+  end
+  if last < #session.blocks then
+    lines[#lines + 1] = "↓ Load newer messages (<CR>)"
+    meta[#meta + 1] = { kind = "page", page = 1, segments = { { s = 0, e = -1, group = "AcpLink" } } }
   end
 
   -- Drop cache entries for removed blocks.
@@ -276,6 +297,8 @@ function M.dirty(session, view, first_block)
         location = line.location,
         segments = line.segments,
         bg = line.bg,
+        source = line.source,
+        decorations = line.decorations,
       }
     end
   end

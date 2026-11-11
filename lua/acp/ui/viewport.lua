@@ -6,7 +6,24 @@ local M = {}
 local function anchor(chat, row)
   local entry = chat.meta[row]
   if entry and entry.block_id then
-    return { id = entry.block_id, offset = row - chat.line_starts[entry.block_id], row = row }
+    local within = 0
+    if entry.source then
+      local previous = row - 1
+      while
+        previous > 0
+        and chat.meta[previous].block_id == entry.block_id
+        and chat.meta[previous].source == entry.source
+      do
+        within, previous = within + 1, previous - 1
+      end
+    end
+    return {
+      id = entry.block_id,
+      source = entry.source,
+      within = within,
+      offset = row - chat.line_starts[entry.block_id],
+      row = row,
+    }
   end
   -- Turn separators are not blocks: anchor them relative to the next block.
   for i = row + 1, #chat.meta do
@@ -33,6 +50,24 @@ local function resolve(chat, saved)
   end
   local entry = chat.cache[saved.id]
   local last = entry and #entry.lines - 1 or 0
+  if saved.source and entry then
+    local best, distance
+    for i, line in ipairs(entry.lines) do
+      if line.source then
+        local delta = math.abs(line.source - saved.source)
+        if not distance or delta < distance then
+          best, distance = i, delta
+        end
+      end
+    end
+    if best then
+      local stop = best
+      while stop < #entry.lines and entry.lines[stop + 1].source == entry.lines[best].source do
+        stop = stop + 1
+      end
+      return start + best - 1 + math.min(saved.within or 0, stop - best)
+    end
+  end
   return math.max(1, start + math.min(saved.offset, math.max(0, last)))
 end
 

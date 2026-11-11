@@ -1,6 +1,7 @@
 -- Tool-call cards: header, status, expanded detail and file locations.
 local text_layout = require("acp.ui.text")
 local diff_layout = require("acp.ui.diff")
+local decoration = require("acp.ui.decoration")
 
 local M = {}
 
@@ -320,6 +321,7 @@ function M.render_tool(block, ctx)
     opts.summary = block.detail
     opts.cwd = ctx.cwd
     opts.width = math.max(1, ctx.width - 4)
+    opts.lazy_syntax = ctx.lazy_syntax
     opts.max_rows = (ctx.diff or {}).max_syntax_rows
     local entries = diff_layout.from_block(block)
     if #entries > 0 then
@@ -369,6 +371,8 @@ function M.render_tool(block, ctx)
         -- A diff row brings its own line-wide background; the card's surface
         -- would otherwise paint over it.
         bg = line.bg or "AcpCardBg",
+        source = line.source,
+        decorations = decoration.shift(line.decorations, 2),
       }
     end
     for _, loc in ipairs(locations) do

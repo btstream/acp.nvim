@@ -11,10 +11,13 @@ local M = {}
 ---@field segments {s: integer, e: integer, group: string}[]|nil
 ---@field bg string|nil highlight group painted behind the whole line
 ---@field location table|nil jump target when the line is a file location
+---@field source integer|nil byte offset into the source text (for reflow anchors)
+---@field decorations table[]|nil deferred syntax sources and row/column projections
 
 local Markdown = require("acp.ui.markdown")
 local CodeHL = require("acp.ui.code_hl")
 local Table = require("acp.ui.table")
+local decoration = require("acp.ui.decoration")
 
 -- Fenced code blocks are drawn as a background only: no border characters.
 -- A small left gutter keeps the text off the surface's edge.
@@ -222,6 +225,16 @@ function M.render_text(text, base_hl, width, cache)
       return
     end
     local code = table.concat(body, "\n")
+    if cache and cache.lazy_syntax then
+      local source = { code = code, lang = lang }
+      for row = 0, #body - 1 do
+        local line = lines[start + row]
+        if line then
+          line.decorations = { { source = source, row = row, offset = CODE_GUTTER_LEN } }
+        end
+      end
+      return
+    end
     local saved = previous_fences[#fences + 1]
     local ranges, ok
     if saved and saved.code == code and saved.lang == lang and saved.ok and saved.generation == CodeHL.generation then
@@ -272,13 +285,22 @@ function M.render_text(text, base_hl, width, cache)
   ---@param w integer
   local function flush_table(out, st, hl, w)
     local rows = st.table_rows
+    local source_start = st.table_start
     st.table_rows = nil
     st.table_start, st.table_final = nil, nil
     if not rows or #rows == 0 then
       return
     end
     if Table.is_table(rows) then
+      local offsets, offset = {}, source_start
+      for i, raw in ipairs(rows) do
+        offsets[i] = offset
+        if offset then
+          offset = offset + #raw + 1
+        end
+      end
       for _, line in ipairs(Table.render(Table.parse(rows), hl, w)) do
+        line.source = offsets[line.table_row or 1]
         out[#out + 1] = line
       end
       return
@@ -328,6 +350,7 @@ function M.render_text(text, base_hl, width, cache)
         mark.fence_lang = nil
         mark.fence_start = nil
       elseif line then
+        line.source = raw_start
         lines[#lines + 1] = line
         if line.code_open then
           -- The fence marker itself is the last pushed line; code starts after it.
@@ -381,6 +404,7 @@ function M.render_text(text, base_hl, width, cache)
         mark.fence_lang = nil
         mark.fence_start = nil
       elseif line then
+        line.source = search
         lines[#lines + 1] = line
         if line.code_open then
           mark.fence_start = #lines + 1
@@ -425,6 +449,8 @@ function M.indent_lines(lines, prefix, first_prefix)
       bg = line.bg,
       location = line.location,
       table = line.table,
+      source = line.source,
+      decorations = decoration.shift(line.decorations, #head),
     }
   end
   return out

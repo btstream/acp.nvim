@@ -107,8 +107,9 @@ local function render_block(block, ctx)
   end
   -- Markdown caches are width-dependent (icon and truncation decisions differ
   -- per width) and must be dropped when the panel is resized.
-  if block._md_width ~= ctx.width then
+  if block._md_width ~= ctx.width or block._md_lazy ~= ctx.lazy_syntax then
     block._md_width = ctx.width
+    block._md_lazy = ctx.lazy_syntax
     block._md_user = nil
     block._md_agent = nil
     block._md_thought = nil
@@ -116,6 +117,19 @@ local function render_block(block, ctx)
     block._md_compaction = nil
     block._md_error = nil
     block._md_system = nil
+  end
+  local cache_key = ({
+    user = "_md_user",
+    agent = "_md_agent",
+    thought = "_md_thought",
+    tool = "_md_detail",
+    compaction = "_md_compaction",
+    error = "_md_error",
+    system = "_md_system",
+  })[block.kind]
+  if cache_key then
+    block[cache_key] = block[cache_key] or {}
+    block[cache_key].lazy_syntax = ctx.lazy_syntax
   end
   local kind = block.kind
   if kind == "user" then

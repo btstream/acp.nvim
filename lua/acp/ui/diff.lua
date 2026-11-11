@@ -209,7 +209,7 @@ end
 ---the other body lines. `bg` is the line-wide highlight group; text rows keep
 ---it `nil` so the card's own background shows through.
 ---@param entries AcpDiffEntry[]
----@param opts {context?: integer, max_lines?: integer, max_bytes?: integer, summary?: string, cwd?: string, syntax?: boolean, max_rows?: integer, width?: integer}|nil
+---@param opts {context?: integer, max_lines?: integer, max_bytes?: integer, summary?: string, cwd?: string, syntax?: boolean, max_rows?: integer, width?: integer, lazy_syntax?: boolean}|nil
 ---@return AcpRenderedLine[]
 function M.lines(entries, opts)
   opts = opts or {}
@@ -270,6 +270,7 @@ function M.lines(entries, opts)
       diff_hl.attach(section.lines, section.file, {
         enabled = opts.syntax,
         max_rows = opts.max_rows,
+        deferred = opts.lazy_syntax,
       })
     end
   end
@@ -347,7 +348,7 @@ end
 ---Whether there is a rendering-relevant change between two snapshots.
 ---
 ---Used as the cache key: the rendered rows only depend on the file texts, the
----context width and the display caps, not on the panel geometry. The texts are
+---context, display caps, rule width and decoration mode. The texts are
 ---hashed because two edits of the same length are still different edits, and a
 ---length-only key would keep showing the first one.
 ---@param block AcpBlock
@@ -369,6 +370,7 @@ function M.signature(block, opts)
     opts.summary or "",
     opts.cwd or "",
     tostring(opts.width or 0),
+    tostring(opts.lazy_syntax == true),
   }
   for _, entry in ipairs(M.from_block(block)) do
     parts[#parts + 1] = table.concat({

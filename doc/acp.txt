@@ -416,6 +416,40 @@ memory.* 限制本地保留载荷，不是 Lua/Neovim RSS 硬上限。超大 blo
 闲置会话按 LRU 淘汰，当前、运行中、有队列或权限请求的会话受保护，可暂时超过
 缓存数量/总载荷预算。渲染缓存和 Neovim 对象仍有额外开销。
 
+可选懒渲染                                                   *acp-lazy-render*
+
+默认 ui.render.lazy_syntax=false，ui.render.pagination.enabled=false，保留原有全文路径。
+建议先开启 lazy_syntax（A），再按需开启 pagination.enabled（B）：
+>
+    ui = { render = {
+      lazy_syntax = true,
+      profile = false,
+      budget_ms = 4,
+      overscan = 1,
+      pagination = {
+        enabled = false,
+        page_blocks = 64,
+        max_blocks = 192,
+        page_bytes = 256 * 1024,
+      },
+    } }
+<
+A 保留全文文本、conceal、基础高亮和背景，只按视口延迟代码及 diff 的语法装饰；
+原生搜索、复制、位置跳转不变。语法缓存有独立预算，远处的语法 extmark 会清理。
+B 按连续 block 范围物化历史，分页排版逐 block 让出主循环。接近顶部/底部时预取相邻页，
+也可在加载提示上按 <CR>/<Tab>。gg 加载最早保留内容，G 回到最新并跟随，[b/]b 可跨页。
+
+分页开启后，原生 /、Visual 复制只覆盖已加载文本；不提供全历史原生搜索。Session 与
+Agent 历史不变，Chat:transcript() 显式全文导出仍完整，但会临时执行全量文本排版。
+Visual/Select 选区活动时暂停分页排版及回收，退出后刷新；可见内容、操作中的卡片会被
+保护，因此预算不是硬上限。单个 block 不做块内分页，继续受原有 memory.* 限制。
+page_bytes 是每次新增页面的源载荷目标，回收同时参考 max_blocks 和页面数量推导的字节
+预算；不是 RSS 上限。完整 JSON 解码、单块排版及单次 Treesitter 解析仍不可抢占。
+
+profile=true 时 :AcpDebug 的 render 展示分层 timings、物化行数、缓存块数、语法 extmark
+数量及分页范围。first_paint 是首个布局提交耗时，不是物理屏幕绘制耗时；layout_slice 是
+分页排版时间片，syntax 是实际装饰解析调用耗时。可运行 tests/perf_lazy.lua 比较三种模式。
+
 transport.max_pending_bytes 默认 64 MiB，限制尚未消费接收数据（不完整消息、待分发
 消息、尚未完成的文本分片、在途写入与已读缓冲）的估算开销；设为 0 关闭积压上限。
 spill_bytes 默认 64 MiB，是完整 JSON 行异步落盘的工作集目标；设为 0 则只占内存。

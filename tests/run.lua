@@ -48,5 +48,7 @@ require("tests.spec_chrome_lifecycle")(t)
 require("tests.spec_resize")(t)
 require("tests.spec_transport_limits")(t)
 require("tests.spec_chunking")(t)
+require("tests.spec_lazy_render")(t)
+require("tests.spec_history_page")(t)
 
 t.run()

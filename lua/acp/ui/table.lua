@@ -418,7 +418,7 @@ function M.render(table_spec, base_hl, width)
   ---Draw one logical row, wrapping each cell and emitting as many display lines
   ---as the tallest cell needs.
   ---@param cells {text: string, segments: table[]}[]
-  local function draw_row(cells)
+  local function draw_row(cells, source_row)
     local wrapped = {}
     local height = 1
     for c = 1, columns do
@@ -451,7 +451,7 @@ function M.render(table_spec, base_hl, width)
       pieces[#pieces + 1] = "│"
       segments[#segments + 1] = { s = offset, e = offset + #"│", group = "AcpTableBorder" }
       local line_text = table.concat(pieces)
-      out[#out + 1] = { text = line_text, segments = segments, table = true }
+      out[#out + 1] = { text = line_text, segments = segments, table = true, table_row = source_row }
     end
   end
 
@@ -460,7 +460,7 @@ function M.render(table_spec, base_hl, width)
   ---@param middle string
   ---@param right string
   ---@return AcpRenderedLine
-  local function draw_rule(left, middle, right)
+  local function draw_rule(left, middle, right, source_row)
     local parts = { left }
     for c = 1, columns do
       parts[#parts + 1] = string.rep("─", widths[c] + 2)
@@ -471,21 +471,22 @@ function M.render(table_spec, base_hl, width)
       text = text,
       segments = { { s = 0, e = #text, group = "AcpTableBorder" } },
       table = true,
+      table_row = source_row,
     }
   end
 
   -- Full grid: every row is fenced on all sides, matching how the agent itself
   -- draws tables.
-  out[#out + 1] = draw_rule("┌", "┬", "┐")
-  draw_row(prepared_header)
-  out[#out + 1] = draw_rule("├", "┼", "┤")
+  out[#out + 1] = draw_rule("┌", "┬", "┐", 1)
+  draw_row(prepared_header, 1)
+  out[#out + 1] = draw_rule("├", "┼", "┤", 2)
   for index, row in ipairs(prepared_rows) do
-    draw_row(row)
+    draw_row(row, index + 2)
     if index < #prepared_rows then
-      out[#out + 1] = draw_rule("├", "┼", "┤")
+      out[#out + 1] = draw_rule("├", "┼", "┤", index + 2)
     end
   end
-  out[#out + 1] = draw_rule("└", "┴", "┘")
+  out[#out + 1] = draw_rule("└", "┴", "┘", #prepared_rows + 2)
 
   return out
 end
