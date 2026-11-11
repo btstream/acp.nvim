@@ -147,6 +147,7 @@ function Panel:focus(which)
     end
   elseif self.chat and self.chat:is_visible() then
     vim.api.nvim_set_current_win(self.chat.win)
+    vim.cmd("stopinsert")
     return true
   end
   return false

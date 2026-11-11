@@ -47,6 +47,16 @@ function M.new(opts)
     buffer = self.buf,
     callback = function()
       self:apply_winbar()
+      if vim.api.nvim_get_current_buf() == self.buf then
+        vim.cmd("startinsert")
+      end
+    end,
+  })
+  vim.api.nvim_create_autocmd({ "BufLeave", "WinLeave" }, {
+    group = group,
+    buffer = self.buf,
+    callback = function()
+      vim.cmd("stopinsert")
     end,
   })
   vim.api.nvim_create_autocmd("BufWipeout", {

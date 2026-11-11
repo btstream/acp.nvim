@@ -61,6 +61,16 @@ function M.new(opts)
   vim.bo[self.buf].buflisted = false
   vim.bo[self.buf].undolevels = -1
 
+  -- Insert mode in a read-only transcript only swallows keys (and even errors
+  -- with E21 for some entry commands). Keep the view in normal mode; `i` is
+  -- separately bound to the composer by the default chat keymaps.
+  for _, key in ipairs({ "i", "I", "a", "A", "o", "O", "s", "S", "c", "C", "R", "gR", "gi", "gI" }) do
+    vim.keymap.set("n", key, "<Nop>", {
+      buffer = self.buf,
+      desc = "acp: keep the transcript in normal mode",
+    })
+  end
+
   local group = vim.api.nvim_create_augroup("AcpChat" .. self.buf, { clear = true })
   self.augroup = group
   vim.api.nvim_create_autocmd({ "WinEnter", "BufWinEnter" }, {
@@ -68,6 +78,29 @@ function M.new(opts)
     buffer = self.buf,
     callback = function()
       self:on_enter()
+    end,
+  })
+  -- Switching windows/buffers while already inserting does not fire InsertEnter.
+  -- Cover direct focus changes too, without affecting the composer or editors.
+  local leave_insert = vim.api.nvim_replace_termcodes(
+    "<Cmd>lua if vim.api.nvim_get_current_buf() == " .. self.buf .. " then vim.cmd('stopinsert') end<CR>",
+    true,
+    false,
+    true
+  )
+  vim.api.nvim_create_autocmd({ "InsertEnter", "WinEnter", "BufEnter", "BufWinEnter" }, {
+    group = group,
+    buffer = self.buf,
+    callback = function(args)
+      if vim.api.nvim_get_current_buf() == self.buf then
+        vim.cmd("stopinsert")
+        if args.event == "InsertEnter" then
+          -- InsertEnter runs before insert mode is fully established; its
+          -- stopinsert can be overwritten by :startinsert. Put a guarded command
+          -- ahead of typeahead so it runs once entry has actually completed.
+          vim.api.nvim_feedkeys(leave_insert, "ni", false)
+        end
+      end
     end,
   })
   vim.api.nvim_create_autocmd({ "VimResized", "WinResized" }, {
