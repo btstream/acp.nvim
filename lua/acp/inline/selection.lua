@@ -145,7 +145,16 @@ function M.capture(win, config, override)
     end
   else
     local cursor = vim.api.nvim_win_get_cursor(win)
-    ranges[1] = { start_row = cursor[1] - 1, start_col = cursor[2], end_row = cursor[1] - 1, end_col = cursor[2] }
+    local row = cursor[1] - 1
+    if (config.inline.scope or "cursor") == "context" then
+      -- A bounded window around the cursor; the agent may edit all of it.
+      local radius = math.max(2, math.min(40, math.floor(config.inline.context_bytes / 2048)))
+      local first = math.max(0, row - radius)
+      local last = math.min(#lines - 1, row + radius)
+      ranges[1] = { start_row = first, start_col = 0, end_row = last, end_col = #(lines[last + 1] or "") }
+    else
+      ranges[1] = { start_row = row, start_col = cursor[2], end_row = row, end_col = cursor[2] }
+    end
   end
 
   local texts = text_of(lines, ranges)

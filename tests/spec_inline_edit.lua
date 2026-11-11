@@ -57,6 +57,21 @@ return function(t)
       vim.api.nvim_buf_delete(buf, { force = true })
     end)
 
+    t.it("uses a bounded whole-line window when scope is context", function()
+      local lines = {}
+      for i = 1, 60 do
+        lines[i] = "line " .. i
+      end
+      local win, buf = win_with(lines)
+      vim.api.nvim_win_set_cursor(win, { 30, 0 })
+      local got = assert(selection.capture(win, cfg({ inline = { scope = "context" } })))
+      t.truthy(got.ranges[1].start_row < 29)
+      t.truthy(got.ranges[1].end_row > 29)
+      t.eq(0, got.ranges[1].start_col)
+      t.falsy(got.insertion)
+      vim.api.nvim_buf_delete(buf, { force = true })
+    end)
+
     t.it("records an insertion point without a visual range", function()
       local win, buf = win_with({ "abc" })
       vim.api.nvim_win_set_cursor(win, { 1, 1 })

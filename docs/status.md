@@ -534,6 +534,6 @@ native/edgy/reconnect、性能 smoke、tail/spinner 附加 UI 回归通过。
 - 控制器转发内联会话事件并在断开时停止；聊天选区使用同一 token 机制，按位置发送
   `resource` 或 `resource_link`，空光标取整行，无输入框时排队。
 
-验证：801 项单元测试、`tests/integration_inline.lua`（直接写回、逐块接受/拒绝、always-accept、
+验证：802 项单元测试、`tests/integration_inline.lua`（直接写回、逐块接受/拒绝、always-accept、
 副本清理）及既有集成通过。边界：未在真实 OpenCode/其它 Agent 上验证副本路径与权限请求形状；
 未实现多选区、冲突重定位、问题回复浮窗、撤销审查期间的 buffer 编辑。
