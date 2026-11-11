@@ -1,169 +1,204 @@
--- Completion for the composer: slash commands and @file mentions.
---
--- No completion framework is required: the composer uses `completefunc`, which
--- works with the built-in <C-x><C-u> mapping and is also picked up by
--- frameworks that respect `completefunc`.
+-- Optional native frontend to the same asynchronous core as blink/cmp.
+local core = require("acp.completion")
 local M = {}
+local requests = {}
+local contexts = {}
 
-local MAX_FILES = 200
-
--- Bounded, short-lived cache: `completefunc` is invoked twice per keystroke
--- (findstart + items) and the file list rarely changes between them.
-local CACHE_TTL_MS = 2000
-local cache = { key = nil, at = 0, items = nil }
-
----Monotonic milliseconds, with a fallback for Neovim versions without
----`uv.now()`.
----@return number
-local function now_ms()
-  if vim.uv and vim.uv.now then
-    return vim.uv.now()
-  end
-  return math.floor(vim.loop.hrtime() / 1e6)
-end
-
----@param dir string|nil
----@param prefix string
----@return string[]
-local function file_candidates(dir, prefix)
-  local pattern = prefix == "" and "*" or (vim.pesc(prefix) .. "*")
-  local key = (dir or "") .. "\0" .. pattern
-  local now = now_ms()
-  if cache.key == key and cache.items and now - cache.at < CACHE_TTL_MS then
-    return cache.items
-  end
-
-  local found
-  if dir and dir ~= "" then
-    found = vim.fn.globpath(dir, pattern, false, true)
-  else
-    found = vim.fn.glob(pattern, false, true)
-  end
-
-  local items = {}
-  for _, path in ipairs(found) do
-    if #items >= MAX_FILES then
-      break
-    end
-    -- `globpath` returns absolute paths already prefixed with `dir`; plain
-    -- `glob` returns paths relative to the editor cwd.
-    local full = path
-    if dir and dir ~= "" and path:sub(1, 1) ~= "/" then
-      full = dir .. "/" .. path
-    end
-    local stat = vim.uv.fs_stat(full)
-    if stat and stat.type ~= "directory" then
-      local shown = path
-      if dir and dir ~= "" and shown:sub(1, #dir + 1) == dir .. "/" then
-        shown = shown:sub(#dir + 2)
-      end
-      items[#items + 1] = shown
-    end
-  end
-  cache = { key = key, at = now, items = items }
-  return items
-end
-
----@param session AcpSessionState|nil
----@return table[]
-local function commands(session)
-  if not session then
-    return {}
-  end
-  return session.commands or {}
-end
-
----Build `completefunc` items for the composer buffer.
----@param findstart integer
----@param base string
----@param session AcpSessionState|nil
----@return integer|table
+-- Kept for standalone users of the old completefunc helper. File discovery is
+-- asynchronous now; the attached completefunc below supplies those results.
 function M.complete(findstart, base, session)
-  if findstart == 1 then
-    local line = vim.api.nvim_get_current_line()
-    local col = vim.api.nvim_win_get_cursor(0)[2]
-    local head = line:sub(1, col)
-
-    -- Slash command at the very beginning of the line. Start after the `/`
-    -- so the command name is inserted without duplicating the prefix.
-    if head:match("^/[%w%-_]*$") then
-      return 1
-    end
-
-    -- @mention anywhere in the line.
-    local at = head:match(".*()@[^%s]*$")
-    if at then
-      -- `completefunc` expects a zero-based byte column, while the pattern
-      -- capture is one-based.
-      return at - 1
-    end
-    return -3
-  end
-
-  local items = {}
   local line = vim.api.nvim_get_current_line()
   local col = vim.api.nvim_win_get_cursor(0)[2]
-  local head = line:sub(1, col)
-
-  if head:match("^/") and not head:match("%s") then
-    for _, cmd in ipairs(commands(session)) do
-      local name = cmd.name or ""
-      if name ~= "" and vim.startswith(name, base) then
-        items[#items + 1] = {
-          word = name,
-          abbr = "/" .. name,
-          menu = "[cmd]",
-          info = cmd.description or "",
-          icase = 1,
-          dup = 0,
-        }
-      end
-    end
-    return items
+  local query = core.context(line, col)
+  if findstart == 1 then
+    return query and (query.kind == "command" and 1 or query.first) or -3
   end
-
-  local prefix = base:gsub("^@", "")
-  -- Resolve against the session's cwd, not Neovim's: the agent works in the
-  -- session directory, so a mention has to name a file the agent can read.
-  local cwd = session and session.cwd or nil
-  for _, path in ipairs(file_candidates(cwd, prefix)) do
-    items[#items + 1] = {
-      word = "@" .. path,
-      abbr = path,
-      menu = "[file]",
-      icase = 1,
-      dup = 0,
-    }
+  if not query or query.kind ~= "command" then
+    return {}
+  end
+  local items = {}
+  local commands = session and type(session.commands) == "table" and session.commands or {}
+  for _, cmd in ipairs(commands) do
+    if type(cmd) == "table" and type(cmd.name) == "string" and cmd.name ~= "" and vim.startswith(cmd.name, base) then
+      items[#items + 1] = {
+        word = cmd.name,
+        abbr = "/" .. cmd.name,
+        menu = "[cmd]",
+        info = type(cmd.description) == "string" and cmd.description or "",
+        icase = 1,
+        dup = 0,
+      }
+    end
   end
   return items
 end
 
----Fill in the completion trigger for the composer buffer.
----@param bufnr integer
----@param get_session fun(): AcpSessionState|nil
-function M.attach(bufnr, get_session)
-  -- A plain global keeps `completefunc` portable across Neovim versions.
-  _G.Acp_completefunc = function(findstart, base)
-    return M.completefunc(findstart, base)
+function M.completefunc(findstart, base)
+  local buf = vim.api.nvim_get_current_buf()
+  local binding = core.binding(buf)
+  local session = binding and binding.getter()
+  if findstart == 1 then
+    local first = M.complete(1, base, session)
+    contexts[buf] = first >= 0
+        and {
+          cursor = vim.api.nvim_win_get_cursor(0),
+          line = vim.api.nvim_get_current_line(),
+          session = session,
+          cwd = binding and core.cwd(binding, session),
+        }
+      or nil
+    return first
   end
-  vim.bo[bufnr].completefunc = "v:lua.Acp_completefunc"
-  vim.bo[bufnr].completeopt = "menuone,noinsert,noselect"
-
-  vim.b[bufnr].acp_get_session = get_session
+  local saved = contexts[buf]
+  if not saved then
+    return {}
+  end
+  local cursor, line = saved.cursor, saved.line
+  local query = core.context(line, cursor[2])
+  if not binding or not query then
+    contexts[buf] = nil
+    return {}
+  end
+  if query.kind == "command" then
+    contexts[buf] = nil
+    return M.complete(0, base, session)
+  end
+  if requests[buf] and requests[buf].cancel then
+    requests[buf].cancel()
+  end
+  local request = {}
+  requests[buf] = request
+  -- During the second completefunc call Neovim temporarily places the cursor
+  -- at findstart (and may temporarily remove the base). Wait for its return
+  -- before creating the ordinary asynchronous request.
+  vim.schedule(function()
+    if
+      requests[buf] ~= request
+      or not vim.api.nvim_buf_is_valid(buf)
+      or vim.api.nvim_get_current_buf() ~= buf
+      or core.binding(buf) ~= binding
+      or binding.getter() ~= saved.session
+      or core.cwd(binding, saved.session) ~= saved.cwd
+      or vim.api.nvim_get_current_line() ~= line
+    then
+      if requests[buf] == request then
+        requests[buf], contexts[buf] = nil, nil
+      end
+      return
+    end
+    local tick = vim.api.nvim_buf_get_changedtick(buf)
+    request.cancel = core.request(buf, cursor[1] - 1, cursor[2], function(items, err)
+      vim.schedule(function()
+        if requests[buf] ~= request then
+          return
+        end
+        requests[buf], contexts[buf] = nil, nil
+        if
+          not vim.api.nvim_buf_is_valid(buf)
+          or not core.available(buf)
+          or core.binding(buf) ~= binding
+          or binding.getter() ~= saved.session
+          or core.cwd(binding, saved.session) ~= saved.cwd
+          or vim.api.nvim_get_current_buf() ~= buf
+          or vim.api.nvim_buf_get_changedtick(buf) ~= tick
+          or vim.fn.mode():sub(1, 1) ~= "i"
+        then
+          return
+        end
+        if err then
+          require("acp.log").warn("completion: %s", err)
+          return
+        end
+        local current = vim.api.nvim_win_get_cursor(0)
+        if current[1] ~= cursor[1] or current[2] ~= cursor[2] then
+          return
+        end
+        local candidates = core.native_items(items, query, binding.config.completion.max_items)
+        local suffix = line:sub(cursor[2] + 1, query.last)
+        for _, item in ipairs(candidates) do
+          item.user_data = { acp_suffix = suffix, acp_first = query.first }
+        end
+        if #candidates > 0 then
+          vim.fn.complete(query.first + 1, candidates)
+        end
+      end)
+    end)
+  end)
+  return {}
 end
 
----Vimscript entrypoint for `completefunc`.
----@param findstart integer
----@param base string
----@return integer|table
-function M.completefunc(findstart, base)
-  local bufnr = vim.api.nvim_get_current_buf()
-  local getter = vim.b[bufnr].acp_get_session
-  local session = nil
-  if type(getter) == "function" then
-    session = getter()
+function M.attach(buf, getter, config)
+  core.attach(buf, getter, config)
+  requests[buf] = nil
+  contexts[buf] = nil
+  vim.b[buf].acp_get_session = getter -- compatibility with existing completefunc users
+  local group = vim.api.nvim_create_augroup("AcpCompletion" .. buf, { clear = true })
+  vim.api.nvim_create_autocmd("BufLeave", {
+    group = group,
+    buffer = buf,
+    callback = function()
+      core.cancel(buf, "completion")
+      requests[buf], contexts[buf] = nil, nil
+    end,
+  })
+  vim.api.nvim_create_autocmd("BufHidden", {
+    group = group,
+    buffer = buf,
+    callback = function()
+      core.cancel(buf)
+      requests[buf], contexts[buf] = nil, nil
+    end,
+  })
+  vim.api.nvim_create_autocmd("BufWipeout", {
+    group = group,
+    buffer = buf,
+    once = true,
+    callback = function()
+      core.detach(buf)
+      requests[buf] = nil
+      contexts[buf] = nil
+      vim.api.nvim_del_augroup_by_id(group)
+    end,
+  })
+  vim.api.nvim_create_autocmd("CompleteDone", {
+    group = group,
+    buffer = buf,
+    callback = function()
+      local item = vim.v.completed_item
+      local data = item and item.user_data
+      if type(data) ~= "table" or not data.acp_suffix or data.acp_suffix == "" then
+        return
+      end
+      local row = vim.api.nvim_win_get_cursor(0)[1] - 1
+      local first, word, suffix = data.acp_first, item.word, data.acp_suffix
+      local binding = core.binding(buf)
+      local session = binding and binding.getter()
+      local tick = vim.api.nvim_buf_get_changedtick(buf)
+      vim.schedule(function()
+        if
+          not core.available(buf)
+          or vim.api.nvim_get_current_buf() ~= buf
+          or core.binding(buf) ~= binding
+          or binding.getter() ~= session
+          or vim.api.nvim_buf_get_changedtick(buf) ~= tick
+        then
+          return
+        end
+        local line = vim.api.nvim_buf_get_lines(buf, row, row + 1, false)[1] or ""
+        local after = first + #word
+        if line:sub(first + 1, after) == word and line:sub(after + 1, after + #suffix) == suffix then
+          vim.api.nvim_buf_set_text(buf, row, after, row, after + #suffix, {})
+        end
+      end)
+    end,
+  })
+  if core.binding(buf).config.completion.native then
+    _G.Acp_completefunc = M.completefunc
+    vim.bo[buf].completefunc = "v:lua.Acp_completefunc"
+    vim.bo[buf].completeopt = "menuone,noinsert,noselect"
+  elseif vim.bo[buf].completefunc == "v:lua.Acp_completefunc" then
+    vim.bo[buf].completefunc = ""
   end
-  return M.complete(findstart, base, session)
 end
 
 return M

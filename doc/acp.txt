@@ -33,10 +33,14 @@ acp.nvim 是一个 Neovim 原生的 Agent Client Protocol 客户端。
     disconnect   停止 Agent 进程
     permission   重新打开待确认的权限请求
     file         把当前文件附加到输入区
+    files        从项目索引选择文件，插入 @引用，不打开文件或发送消息
     diagnostics  把当前 buffer 的诊断附加到输入区
 
 :AcpLog                                                      *:AcpLog*
     打开日志文件。
+
+:AcpCompletionRefresh                                *:AcpCompletionRefresh*
+    清理项目文件索引缓存，下次补全或选择文件时重新扫描。
 
 :AcpDebug                                                  *:AcpDebug*
     在命令行打印控制器状态。
@@ -631,5 +635,60 @@ ui.icons = false 会改用 ASCII 图标。
     :checkhealth acp
 
 检查 Neovim 版本、Agent 可执行文件、edgy 与日志路径。
+
+==============================================================================
+17. 输入区补全                                               *acp-completion*
+
+默认用 <C-x><C-u> 补全 /命令 和 @文件；索引异步建立，完成后显示原生菜单。
+可选 blink.cmp / nvim-cmp 原生 source（选择一个），只在 acp_input 中生效。
+两者共用解析器、文件索引与替换范围，保留当前会话命令说明，不执行命令或自动发送。
+
+blink.cmp：将 sources 合并进已有 setup/opts： >lua
+    sources = {
+      per_filetype = { acp_input = { "acp" } },
+      providers = { acp = { name = "ACP", module = "acp.completion.blink" } },
+    }
+<
+nvim-cmp：在两个插件可 require 后注册并设置 filetype 配置： >lua
+    local cmp = require("cmp")
+    require("acp.completion.cmp").setup()
+    cmp.setup.filetype("acp_input", {
+      enabled = true,
+      sources = { { name = "acp", keyword_length = 0 } },
+      matching = { disallow_symbol_nonprefix_matching = false },
+    })
+<
+不修改全局 sources 和映射；若自己的 enabled 排除了 nofile buffer，需要放行 acp_input。
+建议 <C-s> 发送，框架按键确认补全；如用 <CR> 发送，必须自行处理菜单选中项优先确认。
+完整 lazy.nvim 示例见 examples/completion_blink.lua 与 examples/completion_cmp.lua。
+
+@ 引用支持无扩展名、中文、空格和引号。带特殊字符时使用 JSON 字符串语法：
+    @Makefile  @lua/acp/init.lua  @"docs/中文 file.txt"
+邮箱中的 @ 不匹配。补全与发送使用相同语法；发送时才附加可读文件，不预读所有文件正文。
+
+completion 默认值： >lua
+    completion = {
+      native = true, max_items = 200, picker = "vim",
+      files = {
+        backend = "auto", command = false, root = false,
+        hidden = true, ignored = false, cache_ms = 10000,
+        max_bytes = 16 * 1024 * 1024, max_projects = 4,
+      },
+    }
+<
+auto 依次选 rg --files、fd/fdfind、git ls-files，最终回退异步目录遍历。内置遍历不解析
+ignore 文件，建议安装 rg/fd。root=false 从会话 cwd 找 Git 根目录，否则用会话 cwd；
+也可设绝对路径或 function(cwd) return root end。插入路径始终相对会话目录。
+hidden/ignored 遵循所选工具规则，.git 固定排除。ignored=true 可能显示敏感的被忽略文件。
+command 可设 argv，cwd=root，要求输出 NUL 分隔路径；不会拼 shell 字符串或把查询当命令。
+max_bytes 估算索引路径和条目开销，不是总 RSS 限制；超限明确报错，不悄悄截断。
+max_items 只限制原生菜单，先匹配完整索引再截取；框架与文件选择器获得完整索引。
+
+:Acp files / require("acp").pick_file() 使用 completion.picker 选择完整项目索引中的文件，需先打开输入区。
+picker 可选 vim（vim.ui.select）、fzf-lua、snacks、telescope，不设强依赖；缺少所选工具时报错。
+也可 require("acp").pick_file({ backend = "fzf-lua" }) 单次选择。可选映射：
+    keymaps = { input = { pick_file = "<M-f>" } }
+默认不占用按键；选择后插入引用并回到输入区，与 :Acp file 附加当前文件不同。
+取消、会话切换、buffer 销毁或查询过期后，旧结果不会修改输入。
 
 vim:tw=78:ts=8:noet:ft=help:norl:

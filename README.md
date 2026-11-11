@@ -162,6 +162,99 @@ JSON 解码、单块排版或 Treesitter 解析很重时仍可能暂停，恢复
 
 所有按键都是 buffer-local，不会污染全局映射。
 
+### 输入区补全：blink.cmp / nvim-cmp / 原生菜单
+
+`/` 补全当前 Agent 提供的命令名称和说明，`@` 模糊查找项目文件。只在 `acp_input`
+生效，不补全聊天转录、不调用命令、不自动发送消息。两个框架**二选一**，均为可选依赖。
+
+**blink.cmp**：将下面配置合并进已有 `setup` / lazy.nvim `opts`，不要再次调用 setup：
+
+```lua
+sources = {
+  per_filetype = { acp_input = { "acp" } },
+  providers = {
+    acp = { name = "ACP", module = "acp.completion.blink" },
+  },
+}
+```
+
+参见 [`examples/completion_blink.lua`](examples/completion_blink.lua)。接受候选使用现有 blink
+按键；若自定义 `enabled` 排除了 `nofile` buffer，请为 `acp_input` 放行。
+
+**nvim-cmp**：在 nvim-cmp 和 acp.nvim 都能被 require 后注册 source，配置仅作用于输入区：
+
+```lua
+local cmp = require("cmp")
+require("acp.completion.cmp").setup() -- 幂等注册名为 acp 的 source
+cmp.setup.filetype("acp_input", {
+  enabled = true,
+  sources = { { name = "acp", keyword_length = 0 } },
+  matching = { disallow_symbol_nonprefix_matching = false },
+})
+```
+
+完整 lazy.nvim 示例及 Enter 确认映射见 [`examples/completion_cmp.lua`](examples/completion_cmp.lua)。
+本插件不修改两个框架的全局 sources 或按键。建议保持 `<C-s>` 发送、使用补全框架按键确认；
+若把发送也绑定到 `<CR>`，需要自行做“菜单有选中项时确认，否则发送”的条件映射，避免误发送。
+
+**不安装框架**：仍可用 `<C-x><C-u>`，文件索引异步完成后显示原生菜单。支持例如：
+
+```text
+@lua/acp/ui/chat.lua
+@Makefile
+@"docs/中文 file.txt"
+```
+
+补全和发送共用引用语法；带空格、引号、反斜杠等字符的路径会自动使用 JSON 字符串引用。
+邮箱中的 `@` 不触发文件补全。提交时才检查和附加可读文件，补全过程不会读取所有文件正文。
+
+#### 项目文件发现与缓存
+
+默认从当前**会话目录**寻找 Git 根目录；非 Git 项目使用会话目录。自动选择 `rg --files`、
+`fd` / `fdfind`、`git ls-files`，均异步执行并覆盖递归文件；不仅搜索已打开的 buffer。
+最后回退到异步目录遍历，无外部工具也能使用。内置遍历不解析 ignore 文件，建议安装 rg / fd。
+
+```lua
+require("acp").setup({
+  completion = {
+    native = true,      -- 保留原生触发；不会自动与框架同时弹两个菜单
+    max_items = 200,    -- 只限制原生菜单，先在完整索引中匹配再截取
+    picker = "vim",    -- "vim" | "fzf-lua" | "snacks" | "telescope"
+    files = {
+      backend = "auto", -- 或 "rg" | "fd" | "git" | "builtin"
+      root = false,    -- 或绝对路径 / function(session_cwd) return root end
+      hidden = true,
+      ignored = false,
+      cache_ms = 10000,
+      max_bytes = 16 * 1024 * 1024,
+      max_projects = 4,
+      command = false, -- 自定义 argv，cwd=root，输出 NUL 分隔的相对路径
+    },
+  },
+  keymaps = { input = { pick_file = "<M-f>" } }, -- 可选，默认不占用按键
+})
+```
+
+框架获得完整索引并自行模糊排序，不会先截断前 200 个文件。`max_bytes` 是索引路径和条目
+开销的估算预算，不是总 RSS 上限；超限会明确报错而非提供不完整索引，可在 `:AcpLog` 查看原因。
+隐藏和忽略规则遵循所选工具；`.git` 元数据固定排除。`ignored=true` 可能纳入敏感的被忽略文件，
+请谨慎启用。缓存按项目/选项复用，过期重建；`:AcpCompletionRefresh` 清理缓存，下一次请求重新扫描。
+会话在仓库子目录时，插入路径相对会话目录，必要时使用 `../`，确保发送时能解析到同一文件。
+
+#### 使用 fzf / 其它文件选择器
+
+打开输入区后，`:Acp files` 或 `require("acp").pick_file()` 使用上述 `completion.picker`
+选择器；也可单次指定：
+
+```lua
+require("acp").pick_file({ backend = "fzf-lua" })
+```
+
+fzf-lua、Telescope 和 Snacks 都复用同一个完整项目索引；`"vim"` 使用 `vim.ui.select`，
+也支持已有的 dressing / UI 接管。选择结果插入 `@路径`，**不打开文件、不发送消息**。
+与原有 `:Acp file`（附加当前文件）不同。原始 fzf 二进制不是补全菜单的强依赖，
+fzf-lua 只是可选的交互式搜索入口，不会在每次按键时重新扫描项目或弹出终端。
+
 ### 可选的懒渲染与历史分页
 
 默认仍使用全文渲染。建议先开启 A，确认效果后再开启 B：

@@ -220,17 +220,18 @@ end
 function M.mentions(text, config, cwd)
   local attachments = {}
   local seen = {}
-  for token in text:gmatch("@([%w%._%-/]+)") do
-    local path = token
-    if path:match("[/%.]") and not seen[path] then
+  for _, token in ipairs(require("acp.completion.mentions").tokens(text)) do
+    local path = token.path
+    if not seen[path] then
       local absolute = path
       if path:sub(1, 1) ~= "/" and cwd then
         absolute = cwd .. "/" .. path
       end
-      if vim.fn.filereadable(absolute) == 1 then
+      absolute = vim.fn.fnamemodify(absolute, ":p")
+      if not seen[absolute] and vim.fn.filereadable(absolute) == 1 then
         local attachment = M.file(absolute, config)
         if attachment then
-          seen[path] = true
+          seen[absolute] = true
           attachments[#attachments + 1] = attachment
         end
       end

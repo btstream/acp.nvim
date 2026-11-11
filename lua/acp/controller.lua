@@ -322,6 +322,7 @@ end
 local function set_input_keymaps()
   keymaps.attach_input(S.input.buf, {
     keymaps = cfg().keymaps.input,
+    config = cfg(),
     get_session = function()
       return S.session
     end,
@@ -348,6 +349,9 @@ local function set_input_keymaps()
     end,
     on_pick_mode = function()
       M.pick_mode()
+    end,
+    on_pick_file = function()
+      M.pick_file()
     end,
     on_pick_session = function()
       M.pick_session()
@@ -697,6 +701,13 @@ end
 ---------------------------------------------------------------------------
 -- context actions
 ---------------------------------------------------------------------------
+
+function M.pick_file(opts)
+  if S.input and S.input:is_visible() then
+    return require("acp.completion.picker").open(S.input.buf, S.input.win, opts)
+  end
+  notify("Open the ACP composer before choosing a file", vim.log.levels.WARN)
+end
 
 function M.add_file(path)
   if not S.session then

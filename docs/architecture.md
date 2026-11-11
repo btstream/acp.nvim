@@ -70,6 +70,15 @@ Controller 只保留公开入口、会话选择、服务装配和跨模块协调
 - 动画按当前连接、会话状态及输入窗口可见性同步，隐藏后重开会恢复，后台生成不启动
   隐藏窗口的 timer。销毁 chrome/panel 会释放资源并使其已排队的 UI 回调失效。
 - 快捷键与补全在创建 buffer 时绑定一次，窗口重开或缺失视图恢复不重新绑定。
+- `completion` 按 buffer 保存会话 getter 与配置，统一识别 `/` 和 `@`，输出 UTF-8 byte
+  范围的纯文本编辑。blink/cmp 是可选薄适配器，原生 completefunc 也复用异步请求；显式配置
+  source，不修改补全框架的全局选项。请求检查 buffer/tick、会话/cwd、光标及绑定身份并可取消。
+- `completion/files` 按项目/发现选项缓存完整路径索引：异步 rg/fd/git 的 NUL 字节流按批处理，
+  退出等待所有输出解析完成；无工具时异步遍历目录（不解释 ignore 文件）。LRU、TTL、预算与
+  最后订阅者取消限制资源；超限/错误不发布部分索引。匹配前不截断候选，框架自行排序。
+- `completion/mentions` 同时供补全与 context 提交解析使用；特殊路径用 JSON 引号转义，支持
+  无扩展名、UTF-8、空格和引号。picker 复用索引，通过 vim.ui.select/fzf-lua/Snacks/Telescope
+  插入引用，不打开文件、不发请求；只在选中后校验原输入身份并应用编辑。
 - 断连取消任务后重置 Catalog 的查询合并状态，但保留元信息缓存；重新 setup 则清空
   标题及 cwd 缓存，避免混用不同 Agent/项目的数据。
 - `session/runtime` 仍是重放事务、outbox 与 LRU 的唯一实现者，`app/sessions` 只负责编排。

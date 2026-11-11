@@ -21,6 +21,22 @@ M.defaults = {
   -- Working directory for sessions. Defaults to vim.fn.getcwd().
   cwd = nil,
 
+  completion = {
+    native = true, -- keep <C-x><C-u>; external sources are explicitly configured
+    max_items = 200, -- native menu only; frameworks/pickers receive the full index
+    picker = "vim", -- vim.ui.select, fzf-lua, snacks or telescope
+    files = {
+      backend = "auto", -- rg -> fd -> git -> asynchronous builtin walker
+      command = false, -- optional argv; must emit NUL-delimited project-relative paths
+      root = false, -- git root derived from session.cwd, or session.cwd outside git
+      hidden = true,
+      ignored = false,
+      cache_ms = 10000,
+      max_bytes = 16 * 1024 * 1024,
+      max_projects = 4,
+    },
+  },
+
   memory = {
     max_block_bytes = 1024 * 1024,
     max_session_bytes = 16 * 1024 * 1024,
@@ -201,6 +217,7 @@ M.defaults = {
     input = {
       -- "<C-s>" while typing, and as the stop key when the composer is empty.
       send = "<C-s>",
+      pick_file = false,
       cancel = "<C-c>",
       close_panel = "q",
       add_selection = "<C-]>",
@@ -332,6 +349,51 @@ end
 ---@return table
 function M.validate(cfg)
   M.normalize_keymaps(cfg)
+  local completion = cfg.completion
+  if type(completion) ~= "table" or type(completion.files) ~= "table" then
+    fail("completion and completion.files must be tables")
+  end
+  local files = completion.files
+  check_enum(completion.picker, { "vim", "fzf-lua", "snacks", "telescope" }, "completion.picker")
+  check_enum(files.backend, { "auto", "rg", "fd", "git", "builtin" }, "completion.files.backend")
+  for _, key in ipairs({ "hidden", "ignored" }) do
+    if type(files[key]) ~= "boolean" then
+      fail("completion.files.%s must be a boolean", key)
+    end
+  end
+  if type(completion.native) ~= "boolean" then
+    fail("completion.native must be a boolean")
+  end
+  for _, spec in ipairs({
+    { completion.max_items, 1, 10000, "completion.max_items" },
+    { files.cache_ms, 0, 3600000, "completion.files.cache_ms" },
+    { files.max_bytes, 1024, 1024 * 1024 * 1024, "completion.files.max_bytes" },
+    { files.max_projects, 1, 64, "completion.files.max_projects" },
+  }) do
+    check_number(unpack(spec))
+    if spec[1] % 1 ~= 0 then
+      fail("%s must be an integer", spec[4])
+    end
+  end
+  if files.root ~= false and type(files.root) ~= "string" and type(files.root) ~= "function" then
+    fail("completion.files.root must be false, a string or a function")
+  end
+  if type(files.root) == "string" and files.root:find("\0", 1, true) then
+    fail("completion.files.root must not contain NUL")
+  end
+  if files.command ~= false then
+    if type(files.command) ~= "table" or not vim.islist(files.command) or #files.command == 0 then
+      fail("completion.files.command must be false or a non-empty argv list")
+    end
+    for _, arg in ipairs(files.command) do
+      if type(arg) ~= "string" or arg:find("\0", 1, true) then
+        fail("completion.files.command arguments must be strings without NUL")
+      end
+    end
+    if files.command[1] == "" then
+      fail("completion.files.command executable must not be empty")
+    end
+  end
   for _, key in ipairs({ "max_block_bytes", "max_session_bytes", "max_total_bytes", "max_queue_bytes" }) do
     check_number(cfg.memory[key], 1024, 1024 * 1024 * 1024, "memory." .. key)
   end

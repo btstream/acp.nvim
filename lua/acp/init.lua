@@ -50,6 +50,14 @@ function M.add_file(path)
   ensure().add_file(path)
 end
 
+function M.pick_file(opts)
+  return ensure().pick_file(opts)
+end
+
+function M.refresh_completion()
+  require("acp.completion").refresh()
+end
+
 function M.add_selection()
   ensure().add_selection()
 end

@@ -1,7 +1,7 @@
 # 当前状态与检查记录
 
 检查日期：2026-11-09。本文是本轮检查的快照，不替代 README 和 `:help acp.nvim`。
-后续更新：2026-11-10，见文末运行时一致性改造记录。
+后续更新：2026-11-11，见文末运行时、界面与补全改造记录。
 
 ## 检查范围
 
@@ -446,3 +446,33 @@ tail/spinner（含大型提交并发场景）、StyLua 与 git diff --check 均�
 
 验证：705 项单元测试、默认及 A+B 的 native/edgy/reconnect 集成、性能 smoke、附加 UI
 tail/spinner、StyLua 与 git diff --check 均通过。
+
+## 原生补全 source 与完整项目文件索引（2026-11-11）
+
+- 新增共享 `acp.completion` 核心、blink.cmp provider 与 nvim-cmp 的 `acp` source；只在可编辑
+  `acp_input` 中交付候选，不修改全局 sources/按键，保留 `<C-x><C-u>` 异步原生回退。
+- `/` 使用当前会话命令、说明和输入提示；`@` 使用完整项目索引。框架自行匹配排序，原生菜单
+  在全量匹配后才受 `max_items` 限制，深层/后出现的文件不会被前 200 个候选遮蔽。
+- 文件发现异步选用 rg → fd/fdfind → git → 内置遍历；按批排空 NUL 输出后才完成扫描，
+  提供 TTL/LRU/估算字节预算与刷新入口。超限/失败不发布部分索引。取消立即丢弃查询结果，
+  无订阅扫描延后 50ms 停止，避免连续按键的取消/订阅交接反复重启进程。
+- 共享引用语法支持无扩展名、中文和 JSON 引号路径，补全与提交解析一致；显示/插入相对会话
+  cwd，必要时使用 `../`。支持字面美元符号、空格、引号、反斜杠和换行文件名，不预读文件正文。
+- `:Acp files` / `pick_file()` 可使用 vim.ui.select、fzf-lua、Snacks、Telescope；仅插入引用并
+  返回输入区，不打开文件或发送。默认不占用按键，`:AcpCompletionRefresh` 清理索引缓存。
+- 请求与选择接受检查绑定、会话/cwd、buffer tick、可编辑性及光标；销毁/隐藏取消，picker
+  暂时取得焦点不会被普通 BufLeave 误取消。原生确认仅在旧后缀仍匹配且身份未变时删除后缀。
+
+验证：733 项单元/组件测试通过（较本轮基线新增 28 项）；真实 blink.cmp v1.10.2、nvim-cmp
+main 及原生菜单的 attached-UI 测试通过，覆盖命令、深层匹配、中文/空格、UTF-8 中间替换和
+Makefile 附件。框架 Enter 确认不发送，原有 `<C-s>` 发送保留。默认及 A+B 的
+native/edgy/reconnect、原有性能 smoke、tail/spinner 附加 UI 回归均通过。
+
+`tests/perf_completion.lua` 的单次本机测量：10,001 个完整候选冷扫描/构建约 80ms，缓存请求
+仍构建全部编辑候选约 49ms；期间推进 14 次 timer tick，尾部文件匹配通过。不是性能保证。
+README、help、架构说明及两个 lazy.nvim 示例同步；StyLua 与 `git diff --check` 通过。
+
+边界：第三方 picker 的真实交互 UI 本轮未运行，fzf-lua 使用 API 桩验证特殊路径往返；
+Snacks/Telescope 适配仍需用户环境实测。内置遍历不解释 ignore 文件，不遍历目录符号链接；
+索引预算不是 RSS 硬上限，框架和选择器物化候选仍有额外内存开销。未在真实旧版 Neovim 或
+复杂 symlink cwd/跨根目录组合上做完整验证，也未向真实 Agent 发送模型请求。

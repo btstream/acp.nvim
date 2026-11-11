@@ -44,6 +44,7 @@ M.actions = {
     { action = "add_selection", desc = "add selection", modes = { "n" }, handler = "on_add_selection" },
     { action = "pick_model", desc = "pick model", modes = { "n", "i" }, handler = "on_pick_model" },
     { action = "pick_mode", desc = "pick mode", modes = { "n", "i" }, handler = "on_pick_mode" },
+    { action = "pick_file", desc = "insert file mention", modes = { "n", "i" }, handler = "on_pick_file" },
     { action = "pick_session", desc = "sessions", modes = { "n" }, handler = "on_pick_session" },
   },
   chat = {
@@ -192,7 +193,7 @@ end
 ---  on_pick_session: fun(), get_session: fun()}
 function M.attach_input(buf, opts)
   M.attach("input", buf, opts.keymaps, opts)
-  complete.attach(buf, opts.get_session)
+  complete.attach(buf, opts.get_session, opts.config)
 end
 
 ---@param buf integer

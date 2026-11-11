@@ -65,7 +65,11 @@ return function(t)
         local found = installed(buf)
         for _, spec in ipairs(keymaps.view_actions(view)) do
           local pairs_ = keymaps.expand(resolved.keymaps[view][spec.action], spec.modes)
-          t.truthy(#pairs_ > 0, view .. "." .. spec.action .. " has no default binding")
+          if view == "input" and spec.action == "pick_file" then
+            t.eq(false, resolved.keymaps[view][spec.action], "the optional file picker must not claim a key by default")
+          else
+            t.truthy(#pairs_ > 0, view .. "." .. spec.action .. " has no default binding")
+          end
           for _, pair in ipairs(pairs_) do
             local desc = found[pair.mode .. " " .. key_of(pair.lhs)]
             t.eq("acp: " .. spec.desc, desc, view .. "." .. spec.action .. " is not bound to " .. pair.lhs)

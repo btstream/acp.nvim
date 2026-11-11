@@ -44,12 +44,21 @@ local function setup()
       acp.pick_mode()
     elseif sub == "file" then
       acp.add_file()
+    elseif sub == "files" then
+      acp.pick_file()
     elseif sub == "diagnostics" then
       acp.add_diagnostics()
     else
       vim.notify("acp.nvim: unknown subcommand " .. sub, vim.log.levels.WARN)
     end
-  end, "open|hide|toggle|new|stop|reconnect|disconnect|permission|sessions|delete|model|mode|file|diagnostics")
+  end, "open|hide|toggle|new|stop|reconnect|disconnect|permission|sessions|delete|model|mode|file|files|diagnostics")
+
+  define("AcpCompletionRefresh", function()
+    local m = api()
+    if m then
+      m.refresh_completion()
+    end
+  end, "refresh project file completion indexes")
 
   define("AcpLog", function()
     local m = api()
