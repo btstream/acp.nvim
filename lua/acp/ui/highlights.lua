@@ -75,7 +75,7 @@ M.groups = {
   AcpDiffDelete = { link = "DiffDelete" },
   AcpDiffAddSign = { link = "DiffAdd" },
   AcpDiffRemoveSign = { link = "DiffDelete" },
-  AcpDiffHunk = { link = "NonText" },
+  AcpDiffHunk = { link = "@label" },
   AcpDiffMeta = { link = "Comment" },
   AcpDiffFile = { link = "Title" },
   -- Same captures a Markdown buffer uses for a fenced block's info string and

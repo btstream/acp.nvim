@@ -150,7 +150,7 @@ return function(t)
         AcpDiffDelete = "DiffDelete",
         AcpDiffAddSign = "DiffAdd",
         AcpDiffRemoveSign = "DiffDelete",
-        AcpDiffHunk = "NonText",
+        AcpDiffHunk = "@label",
         AcpDiffMeta = "Comment",
         AcpDiffFile = "Title",
       }
