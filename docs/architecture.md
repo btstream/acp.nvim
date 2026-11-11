@@ -152,10 +152,16 @@ Markdown 缓存，本实现不宣称模型完全不可变，也不是 event-sour
 
 ## 内联编辑
 
-`inline/*` 为单一活动请求：选区在映射内捕获，Agent 只编辑同目录私有副本。
-权限按工具种类过滤，结果按行 hunk 过滤回可编辑范围，再由 `apply` 或
-`diff_session` 写回。审查策略按 filetype 解析；两种出口共用一次写入与 undo 折叠。
-内联使用独立 ACP 会话，事件在控制器入口按 session id 分流，不与聊天队列共享结算。
+`inline/*` 为单一活动请求：选区在映射内捕获，通过 `controller.send_inline` 复用当前
+session 的 `Prompts:send`、scoped task、取消和 outbox 结算，不创建新会话。忙碌或队列
+非空时拒绝 inline 提交；普通聊天仍可排队。通知继续进入聊天 reducer，仅该回合的权限
+由 inline 接管。权限严格匹配本次登记的副本，不能以文件名前缀或 allow_always 替代授权。
+这不是 OS 沙箱；真实 Agent 的直接副作用仍需另行验证。
+
+结果按行/UTF-8 字符范围过滤，块选择保持列边界，光标模式仅插入。原始文本、文件名和
+换行约定用于冲突检查；不刷新快照来绕过冲突。`diff_session` 在独立 scratch 浮窗审查，
+全部决定后才通过 `apply.hunks` 一次写入接受的块，不 rewind 用户 undo 历史。
+策略按结果到达时的 filetype 解析，显式单次覆盖优先于 always-accept。
 
 ## 验证
 

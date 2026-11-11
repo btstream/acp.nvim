@@ -754,16 +754,20 @@ require("acp").inline() 在光标处或 Visual 选区打开输入框，由 Agent
 buffer。默认绑定 <leader>ai（普通和 Visual 模式）。Visual 选区按整行处理；
 无选区时在光标处插入；inline.scope = "context" 允许修改光标周围的上下文。
 
-Agent 编辑同目录的私有副本（.acp-inline-*），不是真实文件。只允许读取、搜索、
-思考和编辑该副本；其它文件的写入或命令默认拒绝。副本外的改动会被过滤并提示，
-等待期间 buffer 被修改时结果不会覆盖当前内容。副本在结束时删除，目录不可写时
-退回 stdpath("state")。
+要求 Agent 编辑同目录的私有副本（.acp-inline-*，0600）；编辑权限仅授权本次副本，
+其它文件的写入或命令默认拒绝。读取、搜索、思考、取回默认放行。这不是操作系统
+沙箱，无法阻止绕过 ACP 权限协议的直接写入。目录不可写时退回 stdpath("state")。
+结果按选区过滤；expand_selection=false 保留精确字符范围，块选区始终保留列范围。
+等待或审查期间源内容、文件名或换行约定变化会拒绝应用。副本在请求结算后删除，
+正常退出清理；下次使用时尝试清理超过一天且所属进程已退出的孤儿。
+inline.max_copy_bytes 默认 8 MiB，限制副本/结果大小。
 
 审查方式：
 
     inline.review.mode = "diff" | "write"
 
-diff 逐块确认（ga 接受、gr 拒绝、g2/g3 全部、g1 对本 buffer 永久接受、q 拒绝
+diff 在独立只读浮窗审查，确认完毕才一次应用接受的块。ga 接受、gr 拒绝、
+g2/g3 全部、g1 对本 buffer 永久接受、q 拒绝
 剩余）；write 直接写回，但仍可一次撤销。filetype 可单独覆盖：
 
     inline = {
@@ -775,6 +779,9 @@ diff 逐块确认（ga 接受、gr 拒绝、g2/g3 全部、g1 对本 buffer 永�
 
 解析顺序：精确 filetype、复合 filetype 第一段、"*"、默认值。
 :Acp inline [diff|write]、:Acp inline-stop、:Acp inline-reset 是对应命令。
-内联使用独立 ACP 会话，不进入聊天队列；同一时间只运行一个。
+内联通过当前 session 的正常 prompt 回合执行，回复保留在聊天记录，不创建新会话。
+当前回合或队列未完成时拒绝 inline 提交；inline 期间普通聊天仍可排队。
+命令支持行范围；显式 diff/write 优先于 always-accept 和 filetype 配置。
+审查按结果到达时的 filetype 解析，<C-d> 切换本次模式；同一时间只运行一个请求。
 
 vim:tw=78:ts=8:noet:ft=help:norl:

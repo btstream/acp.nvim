@@ -1,222 +1,158 @@
--- Capture a visual selection or an insertion point for inline editing.
---
--- Capture happens in the mapping, while visual mode still owns the buffer, so
--- the opening float can move focus without losing the range. Ranges are stored
--- as 0-based, end-exclusive byte columns.
+-- Capture once, before opening any UI. Columns are UTF-8 byte boundaries,
+-- ranges are zero-based/end-exclusive. Never widen a block to whole lines.
 local M = {}
 
----@class AcpInlineSelection
----@field bufnr integer
----@field win integer
----@field mode "v"|"V"|"\22"
----@field ranges {start_row: integer, start_col: integer, end_row: integer, end_col: integer}[]
----@field first integer 1-based first row
----@field last integer 1-based last row
----@field original string[] full buffer lines at capture time
----@field filetype string
----@field path string|nil
----@field changedtick integer
-
----@param pos integer[]
----@return integer row, integer col 0-based, end-exclusive column
-local function start_of(pos)
-  return pos[2] - 1, math.max(0, pos[3] - 1)
-end
-
----@param pos integer[]
----@return integer row, integer col
-local function end_of(pos)
-  -- `off` is non-zero when part of the final character is excluded.
-  local row = pos[2] - 1
-  if pos[4] and pos[4] ~= 0 then
-    return row, math.max(0, pos[3] - 1)
+local function char_end(line, col)
+  if col >= #line then
+    return #line
   end
-  return row, pos[3]
-end
-
----@param lines string[]
----@param ranges {start_row: integer, start_col: integer, end_row: integer, end_col: integer}[]
----@return string[] texts
-local function text_of(lines, ranges)
-  local out = {}
-  for _, range in ipairs(ranges) do
-    local parts = {}
-    for row = range.start_row, range.end_row do
-      local line = lines[row + 1] or ""
-      local from = row == range.start_row and range.start_col or 0
-      local to = row == range.end_row and range.end_col or #line
-      parts[#parts + 1] = line:sub(from + 1, to)
+  local stop = col + 1
+  while stop < #line do
+    local byte = line:byte(stop + 1)
+    if byte < 128 or byte >= 192 then
+      break
     end
-    out[#out + 1] = table.concat(parts, "\n")
+    stop = stop + 1
   end
-  return out
+  return stop
 end
 
----Merge overlapping or touching ranges from a continuous selection.
----@param ranges table[]
----@return table[]
-local function merge(ranges)
-  table.sort(ranges, function(a, b)
-    if a.start_row ~= b.start_row then
-      return a.start_row < b.start_row
-    end
-    return a.start_col < b.start_col
-  end)
-  local out = {}
-  for _, range in ipairs(ranges) do
-    local previous = out[#out]
-    local touches = previous
-      and (
-        range.start_row < previous.end_row
-        or (range.start_row == previous.end_row and range.start_col <= previous.end_col)
-        or range.start_row == previous.end_row + 1
-      )
-    if touches then
-      if
-        range.end_row > previous.end_row or (range.end_row == previous.end_row and range.end_col > previous.end_col)
-      then
-        previous.end_row, previous.end_col = range.end_row, range.end_col
-      end
-    else
-      out[#out + 1] = range
-    end
-  end
-  return out
-end
-
----Whether the current window hosts a visual selection worth capturing.
----@param win integer
----@return boolean
-function M.available(win)
-  return vim.api.nvim_win_is_valid(win) and vim.fn.mode():find("^[vV\22]") ~= nil
-end
-
----Capture the current visual range or cursor position.
----
----With no visual mode the result is a single empty range at the cursor, which
----callers interpret as insertion.
----@param win integer
----@param config table
----@param override {mode: string, pos1: integer[], pos2: integer[]}|nil test hook
----@return AcpInlineSelection|nil selection
----@return string|nil err
 function M.capture(win, config, override)
-  if not vim.api.nvim_win_is_valid(win) then
-    return nil, "the inline window is gone"
+  if not win or not vim.api.nvim_win_is_valid(win) then
+    return nil, "the source window is gone"
   end
-  local bufnr = vim.api.nvim_win_get_buf(win)
-  local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+  local buf = vim.api.nvim_win_get_buf(win)
+  if not vim.bo[buf].modifiable or vim.bo[buf].readonly then
+    return nil, "the source buffer is not editable"
+  end
+  if vim.bo[buf].filetype:match("^acp_") then
+    return nil, "select a source buffer, not an ACP view"
+  end
+  local lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
+  local size = #table.concat(lines, "\n")
+  if size > config.inline.max_copy_bytes then
+    return nil, "buffer exceeds inline.max_copy_bytes"
+  end
   local mode = override and override.mode or vim.fn.mode()
-  local filetype = vim.bo[bufnr].filetype
-  local visual = override ~= nil or mode:find("^[vV\22]") ~= nil
-  local ranges = {}
-
+  local visual = override ~= nil or mode == "v" or mode == "V" or mode == "\22"
+  local ranges, linewise = {}, false
   if visual then
-    local pos1 = override and override.pos1 or vim.fn.getpos("v")
-    local pos2 = override and override.pos2 or vim.fn.getpos(".")
-    local region = vim.fn.getregionpos(pos1, pos2, { type = mode, exclusive = false, eol = false })
-    for _, pair in ipairs(region) do
-      local row1, col1 = start_of(pair[1])
-      local row2, col2 = end_of(pair[2])
-      if row1 == row2 then
-        if col1 < col2 then
-          ranges[#ranges + 1] = { start_row = row1, start_col = col1, end_row = row2, end_col = col2 }
-        end
-      elseif row1 < row2 then
-        ranges[#ranges + 1] = { start_row = row1, start_col = col1, end_row = row2, end_col = col2 }
+    if mode ~= "v" and mode ~= "V" and mode ~= "\22" then
+      return nil, "unsupported selection mode"
+    end
+    local p1 = override and override.pos1 or vim.fn.getpos("v")
+    local p2 = override and override.pos2 or vim.fn.getpos(".")
+    local exclusive = not override and vim.o.selection == "exclusive"
+    local region
+    if vim.fn.exists("*getregionpos") == 1 then
+      local ok, value = pcall(vim.fn.getregionpos, p1, p2, { type = mode, exclusive = exclusive, eol = false })
+      if not ok then
+        return nil, tostring(value)
       end
+      region = value
+    else
+      if mode == "\22" then
+        return nil, "block selections require getregionpos() on this Neovim"
+      end
+      local a, b = p1, p2
+      if a[2] > b[2] or (a[2] == b[2] and a[3] > b[3]) then
+        a, b = b, a
+      end
+      local last = math.min(#lines, b[2])
+      region = {}
+      for row = math.max(1, a[2]), last do
+        local first_col = row == a[2] and math.max(1, a[3]) or 1
+        local end_col = row == b[2] and math.min(#lines[row], b[3]) or #lines[row]
+        if exclusive and row == b[2] then
+          end_col = end_col - 1
+        end
+        region[#region + 1] = { { buf, row, first_col, 0 }, { buf, row, end_col, 0 } }
+      end
+    end
+    for _, pair in ipairs(region) do
+      local a, b = pair[1], pair[2]
+      if (a[4] or 0) ~= 0 or (b[4] or 0) ~= 0 then
+        return nil, "selection splits a Tab/wide character or extends into virtual space"
+      end
+      local row = a[2] - 1
+      local line = lines[row + 1] or ""
+      local start = math.min(#line, math.max(0, a[3] - 1))
+      local finish = b[3] > 0 and char_end(line, b[3] - 1) or 0
+      ranges[#ranges + 1] = { start_row = row, start_col = start, end_row = row, end_col = finish }
     end
     if #ranges == 0 then
       return nil, "empty selection"
     end
-
-    local block = mode == "\22"
-    if not block and config.inline.expand_selection then
-      -- Whole lines, matching the editors this is modelled on. A partial
-      -- selection almost always starts or ends mid-token, and replacing a
-      -- whole line keeps indentation and trailing comments intact.
-      for _, range in ipairs(ranges) do
-        range.start_col = 0
-        range.end_col = #(lines[range.end_row + 1] or "")
-      end
-    end
-    if not block then
-      ranges = merge(ranges)
+    linewise = mode == "V" or (mode ~= "\22" and config.inline.expand_selection)
+    if mode ~= "\22" then
+      local first, last = ranges[1], ranges[#ranges]
+      ranges = {
+        {
+          start_row = first.start_row,
+          start_col = linewise and 0 or first.start_col,
+          end_row = last.end_row,
+          end_col = linewise and #lines[last.end_row + 1] or last.end_col,
+        },
+      }
     end
   else
-    local cursor = vim.api.nvim_win_get_cursor(win)
-    local row = cursor[1] - 1
-    if (config.inline.scope or "cursor") == "context" then
-      -- A bounded window around the cursor; the agent may edit all of it.
-      local radius = math.max(2, math.min(40, math.floor(config.inline.context_bytes / 2048)))
-      local first = math.max(0, row - radius)
-      local last = math.min(#lines - 1, row + radius)
-      ranges[1] = { start_row = first, start_col = 0, end_row = last, end_col = #(lines[last + 1] or "") }
+    local p = vim.api.nvim_win_get_cursor(win)
+    local row = p[1] - 1
+    if config.inline.scope == "context" then
+      local first, last, used = row, row, #lines[row + 1]
+      while used < config.inline.context_bytes do
+        local grew = false
+        if first > 0 and used + #lines[first] + 1 <= config.inline.context_bytes then
+          used, first, grew = used + #lines[first] + 1, first - 1, true
+        end
+        if last < #lines - 1 and used + #lines[last + 2] + 1 <= config.inline.context_bytes then
+          used, last, grew = used + #lines[last + 2] + 1, last + 1, true
+        end
+        if not grew then
+          break
+        end
+      end
+      ranges[1] = { start_row = first, start_col = 0, end_row = last, end_col = #lines[last + 1] }
+      linewise = true
     else
-      ranges[1] = { start_row = row, start_col = cursor[2], end_row = row, end_col = cursor[2] }
+      ranges[1] = { start_row = row, start_col = p[2], end_row = row, end_col = p[2] }
     end
   end
-
-  local texts = text_of(lines, ranges)
-  local bytes, count = 0, 0
-  for _, text in ipairs(texts) do
-    bytes = bytes + #text
-    count = count + select(2, text:gsub("\n", "\n")) + 1
+  local texts, count = {}, 0
+  for _, range in ipairs(ranges) do
+    local parts = {}
+    for row = range.start_row, range.end_row do
+      local from = row == range.start_row and range.start_col or 0
+      local to = row == range.end_row and range.end_col or #lines[row + 1]
+      parts[#parts + 1] = lines[row + 1]:sub(from + 1, to)
+      count = count + 1
+    end
+    texts[#texts + 1] = table.concat(parts, "\n")
   end
-  local limits = config.context or {}
-  if count > (limits.max_selection_lines or 2000) then
+  local text = table.concat(texts, "\n")
+  if count > config.context.max_selection_lines or #text > config.context.max_file_bytes then
     return nil, "selection is too large to edit inline"
   end
-  if bytes > (limits.max_file_bytes or 512 * 1024) then
-    return nil, "selection is too large to edit inline"
-  end
-  if bytes == 0 and #ranges > 0 and not visual then
-    -- Insertion point: still valid, but there is nothing to replace.
-  end
-
-  local selection = {
-    bufnr = bufnr,
+  return {
+    bufnr = buf,
     win = win,
-    mode = visual and (mode == "V" and "V" or mode == "\22" and "\22" or "v") or "v",
     ranges = ranges,
+    mode = visual and mode or "v",
+    linewise = linewise,
+    insertion = not visual and not linewise,
+    original = lines,
+    text = text,
     first = ranges[1].start_row + 1,
     last = ranges[#ranges].end_row + 1,
-    original = lines,
-    filetype = filetype,
-    path = vim.api.nvim_buf_get_name(bufnr),
-    changedtick = vim.api.nvim_buf_get_changedtick(bufnr),
-    insertion = not visual and #texts[1] == 0 or false,
+    changedtick = vim.api.nvim_buf_get_changedtick(buf),
+    filetype = vim.bo[buf].filetype,
+    path = vim.api.nvim_buf_get_name(buf),
+    fileformat = vim.bo[buf].fileformat,
+    eol = vim.bo[buf].endofline,
   }
-  selection.text = table.concat(texts, "\n")
-  return selection
 end
 
----Text of a selection from a snapshot's lines.
----@param selection AcpInlineSelection
----@return string
 function M.text(selection)
-  return selection.text or ""
+  return selection.text
 end
-
----Whether `[start_row, start_col]` sits inside any selected range.
----@param selection AcpInlineSelection
----@param row integer 0-based
----@param col integer
----@return boolean
-function M.contains(selection, row, col)
-  for _, range in ipairs(selection.ranges) do
-    if row >= range.start_row and row <= range.end_row then
-      if row > range.start_row and row < range.end_row then
-        return true
-      end
-      local after_start = row > range.start_row or col >= range.start_col
-      local before_end = row < range.end_row or col <= range.end_col
-      if after_start and before_end then
-        return true
-      end
-    end
-  end
-  return false
-end
-
 return M

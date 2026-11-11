@@ -88,19 +88,49 @@ def finish(msg_id, stop_reason="end_turn"):
 def run_prompt(msg_id, text):
     """Runs in a worker thread so stdin stays responsive."""
     # Inline editing: the prompt names a private copy. Make one deterministic
-    # change so tests can prove the copy, the permission gate and the hunk
-    # filter all ran.
-    if "acp-inline-" in text:
+    # change. Exercise real permission RPCs, rather than bypassing the policy
+    # as the original inline mock did.
+    if text.startswith("INLINE_BUFFER_EDIT:"):
         import re
 
         match = re.search(r"`([^`]*acp-inline-[^`]*)`", text)
         if match and os.path.isfile(match.group(1)):
             path = match.group(1)
+            choices = []
+            for kind, target in [("read", path), ("edit", path), ("edit", path + ".other")]:
+                pending = PendingPermission(msg_id)
+                with permissions_lock:
+                    permissions[9001] = pending
+                send({"jsonrpc": "2.0", "id": 9001, "method": "session/request_permission", "params": {
+                    "sessionId": SESSION_ID,
+                    "toolCall": {"toolCallId": "inline_permission", "kind": kind, "locations": [{"path": target}]},
+                    "options": [{"kind": "allow_once", "optionId": "allow"}, {"kind": "reject_once", "optionId": "reject"}],
+                }})
+                pending.event.wait(timeout=5)
+                choices.append(pending.option)
+                with permissions_lock:
+                    permissions.pop(9001, None)
+            if choices != ["allow", "allow", "reject"]:
+                error(msg_id, -32000, "inline permission policy failed: " + repr(choices))
+                with permissions_lock:
+                    active_prompts.pop(msg_id, None)
+                return
+            if "INLINE_SLOW" in text:
+                for _ in range(300):
+                    if cancel_event.is_set():
+                        finish(msg_id, "cancelled")
+                        return
+                    time.sleep(0.01)
+            if "INLINE_DELAY" in text:
+                time.sleep(0.2)
             with open(path, "r", encoding="utf-8") as handle:
                 content = handle.read()
             if "INLINE_OLD" in content:
+                content = content.replace("INLINE_OLD", "INLINE_NEW", 1)
+                if "INLINE_OUTSIDE" in text:
+                    content = "OUTSIDE\n" + content
                 with open(path, "w", encoding="utf-8") as handle:
-                    handle.write(content.replace("INLINE_OLD", "INLINE_NEW", 1))
+                    handle.write(content)
                 update(
                     {
                         "sessionUpdate": "agent_message_chunk",

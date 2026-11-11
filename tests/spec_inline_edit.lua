@@ -131,8 +131,9 @@ return function(t)
       t.truthy(vim.startswith(vim.fs.basename(made), ".acp-inline-"))
       t.eq(vim.fs.dirname(made), dir)
       t.eq({ "one", "two" }, copy.read(made))
-      t.truthy(copy.is_copy_path(made, cfg()))
-      t.falsy(copy.is_copy_path(path, cfg()))
+      t.truthy(copy.is_copy_path(made, made))
+      t.falsy(copy.is_copy_path(path, made))
+      t.falsy(copy.is_copy_path(dir .. "/.acp-inline-unrelated.lua", made))
       local stat = vim.uv.fs_stat(made)
       t.eq(384, stat.mode % 512)
       copy.remove(made)
@@ -171,10 +172,12 @@ return function(t)
         end,
       })
       t.truthy(ok)
-      t.eq({ "A", "b", "c", "D" }, vim.api.nvim_buf_get_lines(buf, 0, -1, false))
+      t.eq({ "a", "b", "c", "d" }, vim.api.nvim_buf_get_lines(buf, 0, -1, false))
+      t.truthy(table.concat(vim.api.nvim_buf_get_lines(0, 0, -1, false), "\n"):find("- a", 1, true))
       vim.api.nvim_feedkeys("gr", "x", false)
-      t.eq({ "a", "b", "c", "D" }, vim.api.nvim_buf_get_lines(buf, 0, -1, false))
+      t.eq({ "a", "b", "c", "d" }, vim.api.nvim_buf_get_lines(buf, 0, -1, false))
       vim.api.nvim_feedkeys("ga", "x", false)
+      t.eq({ "a", "b", "c", "D" }, vim.api.nvim_buf_get_lines(buf, 0, -1, false))
       t.eq({ a = "a" }, { a = vim.api.nvim_buf_get_lines(buf, 0, 1, false)[1] })
       t.eq({ 1, 2 }, finished)
       vim.cmd("silent undo")
@@ -262,7 +265,7 @@ return function(t)
 
   t.describe("inline diff edge cases", function()
     t.it("rejects a pure deletion at the start of the buffer", function()
-      local win, buf = win_with({ "b", "c" })
+      local win, buf = win_with({ "a", "b", "c" })
       local finished
       assert(diff_session.open({
         bufnr = buf,
@@ -275,8 +278,6 @@ return function(t)
       vim.api.nvim_feedkeys(vim.keycode("gr"), "x", false)
       t.eq({ "a", "b", "c" }, vim.api.nvim_buf_get_lines(buf, 0, -1, false))
       t.eq({ 0, 1 }, finished)
-      vim.cmd("silent undo")
-      t.eq({ "b", "c" }, vim.api.nvim_buf_get_lines(buf, 0, -1, false))
       vim.api.nvim_buf_delete(buf, { force = true })
       t.truthy(win)
     end)
@@ -294,13 +295,16 @@ return function(t)
           chosen = choice
         end,
       }
-      local invocation = { copy = "/tmp/.acp-inline-1-x.lua", on_status = function() end }
+      local win, buf = win_with({ "a" })
+      local sel = assert(selection.capture(win, S.config))
+      local path = assert(copy.create(sel, S.config))
+      local invocation = { copy = path, on_status = function() end }
       local options = { { kind = "allow_once", optionId = "a" }, { kind = "reject_once", optionId = "r" } }
       t.truthy(inline.on_permission(invocation, { options = options, tool_call = { kind = "read" } }))
       t.eq("a", chosen)
       inline.on_permission(invocation, {
         options = options,
-        tool_call = { kind = "edit", locations = { { path = "/tmp/.acp-inline-1-x.lua" } } },
+        tool_call = { kind = "edit", locations = { { path = path } } },
       })
       t.eq("a", chosen)
       inline.on_permission(
@@ -308,6 +312,16 @@ return function(t)
         { options = options, tool_call = { kind = "edit", locations = { { path = "/tmp/other.lua" } } } }
       )
       t.eq("r", chosen)
+      inline.on_permission(invocation, {
+        options = options,
+        tool_call = { kind = "edit", locations = { { path = "/tmp/.acp-inline-somebody-else.lua" } } },
+      })
+      t.eq("r", chosen)
+      inline.on_permission(
+        invocation,
+        { options = { { kind = "allow_always", optionId = "FOREVER" } }, tool_call = { kind = "read" } }
+      )
+      t.eq(nil, chosen)
       inline.on_permission(invocation, { options = options, tool_call = { kind = "edit" } })
       t.eq("r", chosen)
       S.config.inline.allow_writes = true
@@ -317,6 +331,127 @@ return function(t)
       inline.on_permission(invocation, { options = options, tool_call = { kind = "execute" } })
       t.eq("r", chosen)
       S.config, S.client = saved_cfg, saved_client
+      copy.remove(path)
+      vim.api.nvim_buf_delete(buf, { force = true })
+    end)
+  end)
+
+  t.describe("inline safety regressions", function()
+    local function plan(old, new, range, linewise)
+      return result.plan({ original = old, ranges = { range }, linewise = linewise }, new)
+    end
+    t.it("filters other columns on the selected row", function()
+      local p = plan({ "abc def ghi" }, { "ABC XYZ GHI" }, { start_row = 0, start_col = 4, end_row = 0, end_col = 7 })
+      t.eq({ "abc XYZ ghi" }, p.lines)
+      t.truthy(p.dropped > 0)
+    end)
+    t.it("limits cursor requests to insertion", function()
+      local r = { start_row = 0, start_col = 1, end_row = 0, end_col = 1 }
+      t.eq({ "aXbc" }, plan({ "abc" }, { "aXbc" }, r).lines)
+      t.eq({ "abc" }, plan({ "abc" }, { "aXc" }, r).lines)
+    end)
+    t.it("handles insertion into and deletion of empty lines", function()
+      local r = { start_row = 0, start_col = 0, end_row = 0, end_col = 0 }
+      t.eq({ "hello" }, plan({ "" }, { "hello" }, r).lines)
+      r.end_col = 5
+      t.eq({ "" }, plan({ "hello" }, { "" }, r).lines)
+    end)
+    t.it("filters adjacent line replacements independently", function()
+      local p = plan(
+        { "a", "b", "c" },
+        { "A", "B", "C" },
+        { start_row = 1, start_col = 0, end_row = 1, end_col = 1 },
+        true
+      )
+      t.eq({ "a", "B", "c" }, p.lines)
+      t.eq(2, p.dropped)
+    end)
+    t.it("keeps UTF-8 character boundaries", function()
+      t.eq(
+        { "甲新丙" },
+        plan({ "甲乙丙" }, { "首新尾" }, { start_row = 0, start_col = 3, end_row = 0, end_col = 6 }).lines
+      )
+    end)
+    t.it("limits rectangular changes to each row's bytes", function()
+      local p = result.plan({
+        original = { "abc", "def" },
+        ranges = {
+          { start_row = 0, start_col = 1, end_row = 0, end_col = 2 },
+          { start_row = 1, start_col = 1, end_row = 1, end_col = 2 },
+        },
+      }, { "ABC", "DEF" })
+      t.eq({ "aBc", "dEf" }, p.lines)
+    end)
+    t.it("handles exact multiline insertions", function()
+      t.eq(
+        { "aX", "Ybc" },
+        plan({ "abc" }, { "aX", "Ybc" }, { start_row = 0, start_col = 1, end_row = 0, end_col = 1 }).lines
+      )
+    end)
+    t.it("rejects filename and newline convention changes", function()
+      local win, buf = win_with({ "a" })
+      local sel = assert(selection.capture(win, cfg()))
+      vim.bo[buf].endofline = not sel.eol
+      t.falsy(result.verify(sel))
+      vim.bo[buf].endofline = sel.eol
+      vim.bo[buf].fileformat = "dos"
+      t.falsy(result.verify(sel))
+      vim.bo[buf].fileformat = sel.fileformat
+      vim.api.nvim_buf_set_name(buf, vim.fn.tempname())
+      t.falsy(result.verify(sel))
+      vim.api.nvim_buf_delete(buf, { force = true })
+    end)
+    t.it("does not trust a refreshed changedtick", function()
+      local win, buf = win_with({ "a" })
+      local sel = assert(selection.capture(win, cfg()))
+      vim.api.nvim_buf_set_lines(buf, 0, -1, false, { "user edit" })
+      sel.changedtick = vim.api.nvim_buf_get_changedtick(buf)
+      t.falsy(result.verify(sel))
+      vim.api.nvim_buf_delete(buf, { force = true })
+    end)
+    t.it("preserves edits made during review even when accepting", function()
+      local _, buf = win_with({ "a", "b", "c" })
+      assert(diff_session.open({ bufnr = buf, lines = { "A", "b", "C" } }))
+      vim.api.nvim_feedkeys("ga", "x", false)
+      vim.api.nvim_buf_set_lines(buf, 1, 2, false, { "user edit" })
+      vim.api.nvim_feedkeys("g2", "x", false)
+      t.truthy(diff_session.active(buf))
+      vim.api.nvim_feedkeys("g3", "x", false)
+      t.falsy(diff_session.active(buf))
+      t.eq({ "a", "user edit", "c" }, vim.api.nvim_buf_get_lines(buf, 0, -1, false))
+      vim.api.nvim_buf_delete(buf, { force = true })
+    end)
+    t.it("rejects review acceptance after newline metadata changes", function()
+      local _, buf = win_with({ "a" })
+      assert(diff_session.open({ bufnr = buf, lines = { "A" } }))
+      vim.bo[buf].endofline = not vim.bo[buf].endofline
+      vim.api.nvim_feedkeys("g2", "x", false)
+      t.truthy(diff_session.active(buf))
+      vim.api.nvim_feedkeys("g3", "x", false)
+      t.eq({ "a" }, vim.api.nvim_buf_get_lines(buf, 0, -1, false))
+      vim.api.nvim_buf_delete(buf, { force = true })
+    end)
+    t.it("does not move marks outside changed rows", function()
+      local _, buf = win_with({ "a", "b", "c" })
+      local ns = vim.api.nvim_create_namespace("inline-regression")
+      local mark = vim.api.nvim_buf_set_extmark(buf, ns, 2, 0, {})
+      assert(apply.hunks(buf, { "a", "b", "c" }, result.hunks({ "a", "b", "c" }, { "A", "b", "c" })))
+      t.eq({ 2, 0 }, vim.api.nvim_buf_get_extmark_by_id(buf, ns, mark, {}))
+      vim.api.nvim_buf_delete(buf, { force = true })
+    end)
+    t.it("bounds copy reads and rejects binary results", function()
+      local win, buf = win_with({ "a" })
+      local path = assert(copy.create(assert(selection.capture(win, cfg())), cfg()))
+      local f = assert(io.open(path, "wb"))
+      f:write(string.rep("x", 2048))
+      f:close()
+      t.eq(nil, copy.read(path, 1024))
+      f = assert(io.open(path, "wb"))
+      f:write("a\0b")
+      f:close()
+      t.eq(nil, copy.read(path))
+      copy.remove(path)
+      vim.api.nvim_buf_delete(buf, { force = true })
     end)
   end)
 

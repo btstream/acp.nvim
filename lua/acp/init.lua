@@ -69,7 +69,8 @@ end
 ---Start an inline edit at the cursor or visual selection.
 ---@param opts {review?: "diff"|"write"}|nil
 function M.inline(opts)
-  require("acp.inline").open(opts)
+  ensure()
+  return require("acp.inline").open(opts)
 end
 
 ---Stop the active inline edit.

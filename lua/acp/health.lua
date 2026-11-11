@@ -81,7 +81,8 @@ Add to your edgy config:
   end
 
   local ok_inline, inline = pcall(function()
-    return require("acp.config").validate(require("acp.config").merge(require("acp.config").defaults, {}))
+    return require("acp.controller").state().config
+      or require("acp.config").validate(require("acp.config").merge(require("acp.config").defaults, {}))
   end)
   if ok_inline and inline then
     local mode = inline.inline.review.mode

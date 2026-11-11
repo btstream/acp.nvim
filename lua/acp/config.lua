@@ -313,6 +313,7 @@ M.defaults = {
     expand_selection = true,
     -- Context shared above and below the selection, in bytes.
     context_bytes = 50000,
+    max_copy_bytes = 8 * 1024 * 1024,
     -- A sibling copy keeps relative imports and project-root detection working.
     -- "state" writes to the state directory instead.
     copy_dir = "sibling",
@@ -592,6 +593,7 @@ function M.validate(cfg)
     fail("inline.allow_commands must be a boolean")
   end
   check_number(inline.context_bytes, 1024, 8 * 1024 * 1024, "inline.context_bytes")
+  check_number(inline.max_copy_bytes, 1024, 64 * 1024 * 1024, "inline.max_copy_bytes")
   local review = inline.review
   if type(review) ~= "table" then
     fail("inline.review must be a table")

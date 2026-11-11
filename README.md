@@ -322,15 +322,22 @@ Neovim；OSC 5522 需要终端专用协商并改变普通粘贴处理，本插�
 ### 内联编辑
 
 `require("acp").inline()`（默认 `<leader>ai`，普通和 Visual 模式）在光标处或选区上方
-打开输入框，让 Agent 修改当前 buffer。Visual 选区按整行处理；无选区时在光标处插入，
+打开输入框，让 Agent 修改当前 buffer。字符/行选区默认按整行处理，块选区保留列范围；
+`inline.expand_selection = false` 保留字符选区的精确范围。无选区时只允许在光标处插入，
 `inline.scope = "context"` 时改为允许修改光标周围的上下文窗口。
 
-Agent 编辑的是同目录下的私有副本（`.acp-inline-*`），不是真实文件：
+通过当前 session 提交正常 prompt 回合，回复保留在聊天记录中，不创建新 session。
+当前回合或队列未完成时拒绝 inline 提交；inline 运行时，普通聊天仍可排队。
+要求 Agent 编辑同目录下的私有副本（`.acp-inline-*`）：
 
-- 只允许读、搜索、思考和编辑该副本；编辑其它文件或运行命令默认拒绝。
-- 副本外的改动按行过滤掉，并提示丢弃数量。
-- 等待期间 buffer 被修改时，结果不会覆盖当前内容。
-- 副本在完成、取消或失败后删除；目录不可写时退回 `stdpath("state")`。
+- 读/搜索/思考/取回默认放行；编辑权限仅授权本次登记的副本，其它写入或命令默认拒绝。
+- 结果按选区范围过滤，精确字符/块选区不扩大为整行；越界改动提示丢弃数量。
+- 等待或审查期间源内容、文件名或换行约定变化时，拒绝应用冲突结果。
+- 副本权限为 0600，默认大小上限 `inline.max_copy_bytes = 8 * 1024 * 1024`；
+  请求结算后删除，正常退出清理；下次使用时尝试清理超过一天且所属进程已退出的孤儿。
+  目录不可写时退回 `stdpath("state")`。
+
+这些是 ACP 权限请求约束，不是操作系统沙箱；无法阻止绕过权限协议的 Agent 直接修改文件。
 
 审查方式可配置，默认逐块审查：
 
@@ -348,12 +355,15 @@ inline = {
 keymaps = { inline = { normal = "<leader>ai", visual = "<leader>ai" } },
 ```
 
-解析顺序是精确 filetype、复合 filetype 的第一段、`"*"`、默认值。在 diff 中按 `g1`
+diff 在独立只读浮窗显示删除/新增行，源 buffer 在审查期间不变，决定完毕后一次应用接受的块。
+`ga`/`gr` 接受/拒绝当前块。按结果到达时的 filetype 解析：精确 filetype、复合 filetype
+的第一段、`"*"`、默认值。在 diff 中按 `g1`
 对该 buffer 永久改用直接写回，`:Acp inline-reset` 清除。`g2` / `g3` 全部接受或拒绝，
 `q` 拒绝剩余部分。
 
 `:Acp inline [diff|write]`、`:Acp inline-stop`、`:Acp inline-reset` 是对应命令。
-内联编辑使用独立 ACP 会话，不进入聊天队列；同一时间只运行一个。
+命令支持行范围（如 `:'<,'>Acp inline diff`）。显式 `diff|write` 优先于 always-accept
+和 filetype 配置；`<C-d>` 切换本次模式。同一时间只运行一个 inline 请求。
 
 ### 可选的懒渲染与历史分页
 

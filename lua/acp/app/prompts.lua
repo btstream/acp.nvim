@@ -45,7 +45,7 @@ end
 ---@param text string
 ---@param attachments table[]|nil
 ---@return boolean accepted
-function Prompts:send(session, text, attachments)
+function Prompts:send(session, text, attachments, hooks)
   if not session then
     self.notify("No active session", vim.log.levels.WARN)
     return false
@@ -68,7 +68,7 @@ function Prompts:send(session, text, attachments)
   -- Snapshot token positions: later edits/undo in the composer must not mutate
   -- a queued prompt or the local transcript of a message already sent.
   attachments = vim.deepcopy(attachments or {})
-  if text and text:find("@", 1, true) then
+  if not hooks and text and text:find("@", 1, true) then
     local mentioned = context.mentions(text, self.config(), session.cwd)
     if #mentioned > 0 then
       local merged = vim.deepcopy(attachments or {})
@@ -105,6 +105,10 @@ function Prompts:send(session, text, attachments)
   end
 
   if session.status == "running" or session.status == "cancelling" then
+    if hooks then
+      self.notify("Wait for the current turn to finish before submitting inline", vim.log.levels.WARN)
+      return false
+    end
     -- Session already has an active turn (or one being cancelled): queue
     -- locally instead of starting a second overlapping prompt.
     if not runtime:enqueue(session, text, attachments) then
@@ -174,6 +178,9 @@ function Prompts:send(session, text, attachments)
     else
       runtime:finish_turn(session, turn, result and result.stopReason or "end_turn")
     end
+    if hooks and hooks.on_result then
+      hooks.on_result(ok, result)
+    end
     self.prune()
     self.on_turn_end(session)
     self.on_changed()
@@ -187,6 +194,9 @@ function Prompts:send(session, text, attachments)
       runtime:finish_turn(session, turn, "error")
     end
   end, function(task, owned)
+    if hooks and hooks.on_finally then
+      hooks.on_finally(task, owned)
+    end
     if session.prompt_task == task then
       session.prompt_task = nil
     end

@@ -7,8 +7,8 @@ local function api()
   return mod
 end
 
-local function define(name, fn, desc)
-  pcall(vim.api.nvim_create_user_command, name, fn, { desc = "acp.nvim: " .. desc, nargs = "*" })
+local function define(name, fn, desc, range)
+  pcall(vim.api.nvim_create_user_command, name, fn, { desc = "acp.nvim: " .. desc, nargs = "*", range = range })
 end
 
 local function setup()
@@ -60,11 +60,16 @@ local function setup()
           acp.paste_image()
         end
       elseif sub == "inline" then
-        if rest == "diff" or rest == "write" then
-          acp.inline({ review = rest })
-        else
-          acp.inline()
+        local opts = {}
+        if rest ~= "" then
+          opts.review = rest
         end
+        if args.range > 0 then
+          opts.mode = "V"
+          opts.pos1 = { 0, args.line1, 1, 0 }
+          opts.pos2 = { 0, args.line2, 1, 0 }
+        end
+        acp.inline(opts)
       elseif sub == "inline-stop" then
         acp.inline_stop()
       elseif sub == "inline-reset" then
@@ -75,7 +80,8 @@ local function setup()
         vim.notify("acp.nvim: unknown subcommand " .. sub, vim.log.levels.WARN)
       end
     end,
-    "open|hide|toggle|new|stop|reconnect|disconnect|permission|sessions|delete|model|mode|file|files|image|inline|inline-stop|inline-reset|diagnostics"
+    "open|hide|toggle|new|stop|reconnect|disconnect|permission|sessions|delete|model|mode|file|files|image|inline|inline-stop|inline-reset|diagnostics",
+    true
   )
 
   define("AcpCompletionRefresh", function()

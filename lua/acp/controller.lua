@@ -90,6 +90,10 @@ local function ui_current(client, generation, session)
 end
 
 local function invalidate_operations()
+  local inline = package.loaded["acp.inline"]
+  if inline then
+    inline.invalidate()
+  end
   operations:reset()
   if S.catalog then
     S.catalog:reset()
@@ -366,13 +370,39 @@ local function set_input_keymaps()
   })
 end
 
+local inline_maps = {}
+local function global_map(mode, lhs)
+  for _, map in ipairs(vim.api.nvim_get_keymap(mode)) do
+    if vim.keycode(map.lhs) == vim.keycode(lhs) then
+      return map
+    end
+  end
+end
 local function set_inline_keymaps()
+  for _, installed in ipairs(inline_maps) do
+    local map = global_map(installed.mode, installed.lhs)
+    if map and map.callback == installed.callback then
+      vim.keymap.del(installed.mode, map.lhs)
+      if installed.previous then
+        vim.fn.mapset(installed.mode, false, installed.previous)
+      end
+    end
+  end
+  inline_maps = {}
   local spec = cfg().keymaps.inline or {}
   local function install(value, modes)
     for _, entry in ipairs(keymaps.expand(value, modes)) do
-      vim.keymap.set(entry.mode, entry.lhs, function()
+      local previous = global_map(entry.mode, entry.lhs)
+      local callback = function()
         require("acp.inline").open()
-      end, { desc = "acp.nvim: inline prompt" })
+      end
+      vim.keymap.set(entry.mode, entry.lhs, callback, { desc = "acp.nvim: inline prompt" })
+      inline_maps[#inline_maps + 1] = {
+        mode = entry.mode,
+        lhs = entry.lhs,
+        callback = callback,
+        previous = previous,
+      }
     end
   end
   install(spec.normal, { "n" })
@@ -565,6 +595,14 @@ function M.send_now(text, attachments, target)
   return S.prompts:send(target or S.session, text, attachments)
 end
 
+---Inline is a normal turn in the selected session, not a new ACP session.
+function M.send_inline(session, text, hooks)
+  if session ~= S.session then
+    return false
+  end
+  return S.prompts:send(session, text, nil, hooks)
+end
+
 ---Submit from the composer.
 ---@param text string
 ---@param attachments table[]
@@ -593,6 +631,11 @@ function M.cancel()
   if not session then
     return
   end
+  local inline = package.loaded["acp.inline"]
+  if inline and inline.stop(session) then
+    refresh_chrome()
+    return
+  end
   if not session:cancel_turn() then
     return
   end
@@ -611,7 +654,7 @@ end
 ---@param name string
 ---@param payload any
 function M.on_client_event(name, payload)
-  -- Inline requests own a private session and answer their own permissions.
+  -- The current inline turn answers permissions; updates still reach chat.
   if require("acp.inline").handle(name, payload) then
     return
   end

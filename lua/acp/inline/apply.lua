@@ -1,96 +1,86 @@
--- Shared buffer writes for inline results.
---
--- Both review modes end here, so undo grouping and cursor placement cannot
--- diverge: one write, one undo step, and the cursor on the first change.
+-- Apply only changed ranges. Never redraw a preview into the source buffer or
+-- rewind user undo history. Every accepted batch is a new, single undo entry.
 local M = {}
-local ns = vim.api.nvim_create_namespace("acp.inline.applied")
+local result = require("acp.inline.result")
 
----Break the undo block and remember where a new one begins.
----@param bufnr integer
----@return integer seq
-function M.begin(bufnr)
-  return vim.api.nvim_buf_call(bufnr, function()
-    vim.go.undolevels = vim.go.undolevels
+function M.begin(buf)
+  return vim.api.nvim_buf_call(buf, function()
+    vim.cmd("let &l:undolevels = &l:undolevels")
     return vim.fn.undotree().seq_cur
   end)
 end
 
----Replace every line in one undoable change.
----@param bufnr integer
----@param lines string[]
----@return boolean
-function M.set_lines(bufnr, lines)
-  if not vim.api.nvim_buf_is_valid(bufnr) then
-    return false
+function M.hunks(buf, original, hunks)
+  local valid, reason = result.verify({ bufnr = buf, original = original })
+  if not valid then
+    return false, reason
   end
-  local ok = pcall(vim.api.nvim_buf_set_lines, bufnr, 0, -1, false, lines)
-  return ok
-end
-
----Collapse the history of a preview into a single undoable change.
----@param bufnr integer
----@param seq integer
-function M.collapse_undo(bufnr, seq)
-  if not vim.api.nvim_buf_is_valid(bufnr) then
-    return
+  if #hunks == 0 then
+    return true
   end
-  local final = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
-  vim.api.nvim_buf_call(bufnr, function()
-    pcall(vim.cmd, "silent undo " .. seq)
+  local seq = M.begin(buf)
+  local ordered = vim.deepcopy(hunks)
+  table.sort(ordered, function(a, b)
+    return a.start > b.start
   end)
-  if not vim.deep_equal(vim.api.nvim_buf_get_lines(bufnr, 0, -1, false), final) then
-    pcall(vim.api.nvim_buf_set_lines, bufnr, 0, -1, false, final)
-  end
-end
-
----Highlight the rows a change just touched, long enough to notice.
----@param bufnr integer
----@param first integer 0-based first row
----@param last integer 0-based last row
-function M.flash(bufnr, first, last)
-  if not vim.api.nvim_buf_is_valid(bufnr) then
-    return
-  end
-  local count = vim.api.nvim_buf_line_count(bufnr)
-  first = math.max(0, math.min(first, count - 1))
-  last = math.max(first, math.min(last, count - 1))
-  pcall(vim.api.nvim_buf_set_extmark, bufnr, ns, first, 0, {
-    end_row = last,
-    end_col = 0,
-    hl_group = "AcpInlineApplied",
-    hl_eol = true,
-  })
-  vim.defer_fn(function()
-    if vim.api.nvim_buf_is_valid(bufnr) then
-      pcall(vim.api.nvim_buf_clear_namespace, bufnr, ns, 0, -1)
-    end
-  end, 900)
-end
-
----Write a whole result and put the cursor on its first changed line.
----@param bufnr integer
----@param lines string[]
----@param row integer 0-based target row
----@return boolean
-function M.write(bufnr, lines, row)
-  if not vim.api.nvim_buf_is_valid(bufnr) then
-    return false
-  end
-  local seq = M.begin(bufnr)
-  if not M.set_lines(bufnr, lines) then
-    return false
-  end
-  M.collapse_undo(bufnr, seq)
-  row = math.max(0, math.min(row, vim.api.nvim_buf_line_count(bufnr) - 1))
-  local win = vim.fn.bufwinid(bufnr)
-  if win ~= -1 and win ~= 0 and vim.api.nvim_win_is_valid(win) then
-    pcall(vim.api.nvim_win_set_cursor, win, { row + 1, 0 })
-    pcall(vim.api.nvim_win_call, win, function()
-      pcall(vim.cmd, "normal! zz")
+  local wrote = false
+  local ok, err = pcall(function()
+    vim.api.nvim_buf_call(buf, function()
+      for _, h in ipairs(ordered) do
+        if wrote then
+          vim.cmd("undojoin")
+        end
+        -- Refine equal-row replacements to byte columns, preserving marks
+        -- outside the actual changed text even on the same source line.
+        if #h.old_lines == 1 and #h.new_lines == 1 then
+          local a, b = h.old_lines[1], h.new_lines[1]
+          local prefix = 0
+          while prefix < math.min(#a, #b) and a:byte(prefix + 1) == b:byte(prefix + 1) do
+            prefix = prefix + 1
+          end
+          while prefix > 0 and a:byte(prefix + 1) and a:byte(prefix + 1) >= 128 and a:byte(prefix + 1) < 192 do
+            prefix = prefix - 1
+          end
+          local suffix = 0
+          while suffix < math.min(#a, #b) - prefix and a:byte(#a - suffix) == b:byte(#b - suffix) do
+            suffix = suffix + 1
+          end
+          while suffix > 0 and a:byte(#a - suffix + 1) >= 128 and a:byte(#a - suffix + 1) < 192 do
+            suffix = suffix - 1
+          end
+          vim.api.nvim_buf_set_text(buf, h.start, prefix, h.start, #a - suffix, { b:sub(prefix + 1, #b - suffix) })
+        else
+          vim.api.nvim_buf_set_lines(buf, h.start, h.start + #h.old_lines, false, h.new_lines)
+        end
+        wrote = true
+      end
     end)
+  end)
+  if not ok then
+    if wrote and vim.api.nvim_buf_is_valid(buf) then
+      vim.api.nvim_buf_call(buf, function()
+        pcall(vim.cmd, "silent undo " .. seq)
+      end)
+    end
+    return false, tostring(err)
   end
-  M.flash(bufnr, row, row)
   return true
 end
 
+function M.write(buf, lines, row)
+  if not vim.api.nvim_buf_is_valid(buf) then
+    return false, "buffer was closed"
+  end
+  local original = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
+  local ok, err = M.hunks(buf, original, result.hunks(original, lines))
+  if not ok then
+    return false, err
+  end
+  -- Do not change focus, cursor, or scroll in a window the user left.
+  if vim.api.nvim_get_current_buf() == buf then
+    row = math.max(0, math.min(row or 0, vim.api.nvim_buf_line_count(buf) - 1))
+    vim.api.nvim_win_set_cursor(0, { row + 1, 0 })
+  end
+  return true
+end
 return M

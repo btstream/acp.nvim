@@ -520,20 +520,25 @@ native/edgy/reconnect、性能 smoke、tail/spinner 附加 UI 回归通过。
 ## 内联编辑（2026-11-11）
 
 参考 Zed 的 `<rewrite_this>`/单事务模型与 CodeCompanion 的 ACP 临时副本实现后，采用后者作为
-架构基础：Agent 只能编辑私有副本，权限按工具种类过滤，结果按 hunk 过滤回可编辑范围。ACP
+架构基础：要求 Agent 编辑私有副本，权限严格匹配本次副本，结果按选区过滤回可编辑范围。ACP
 不能临时注册工具，因此不使用 Zed 的自定义工具协议。
 
 - `inline/selection`：在映射内用 `getregionpos()` 捕获；字符/行选择默认扩成整行，块选择逐行；
-  合并连续范围；空选区是插入点。
+  精确字符/块范围不扩大权限；空选区只允许插入。拒绝分割 Tab/宽字符的块范围。
 - `inline/copy`：同目录 `.acp-inline-*` 私有副本（0600），目录不可写时退回 state；行尾符跟随源 buffer。
-- `inline/result`：行级 diff、越界 hunk 丢弃、`changedtick` 与内容双重冲突检查。
-- `inline/apply`：两种审查方式共用的单次写入、undo 折叠与光标定位。
-- `inline/diff_session`：buffer 内逐 hunk 审查，`ga`/`gr`/`g2`/`g3`/`g1`，结束后单次撤销。
+- `inline/result`：行/UTF-8 字符 diff、越界过滤，始终按最初文本、文件名和换行快照检查冲突。
+- `inline/apply`：仅写入真实修改的 hunks，保留其它行的 extmarks，单次撤销。
+- `inline/diff_session`：独立只读 scratch 审查，`ga`/`gr`/`g2`/`g3`/`g1`；全部决定后才写源。
 - `inline/review`：`diff` / `write` 策略，精确 ft → 复合 ft 首段 → `*` → 默认；always-accept 优先。
 - 权限：读/搜索/思考/取回放行，仅副本的 edit 放行，其余拒绝；可配置放开写和命令。
-- 控制器转发内联会话事件并在断开时停止；聊天选区使用同一 token 机制，按位置发送
+- 当前 session 正常 prompt 回合，复用任务、权限路由、取消及队列结算；不创建新 session。
+  忙碌或队列非空时拒绝 inline 提交；普通聊天仍可排队，完整回复进入当前聊天记录。
+  断开/重配置时失效并清理；聊天选区使用同一 token 机制，按位置发送
   `resource` 或 `resource_link`，空光标取整行，无输入框时排队。
 
-验证：802 项单元测试、`tests/integration_inline.lua`（直接写回、逐块接受/拒绝、always-accept、
-副本清理）及既有集成通过。边界：未在真实 OpenCode/其它 Agent 上验证副本路径与权限请求形状；
-未实现多选区、冲突重定位、问题回复浮窗、撤销审查期间的 buffer 编辑。
+验证：815 项单元测试通过，新增精确范围、冲突、元数据变化、资源限制、extmark 回归；
+14 项 inline 集成检查覆盖当前 session、
+真实权限 RPC、取消/排队/断开、迟到结果、filetype 变化及单次覆盖。附加 UI 测试覆盖 Visual
+映射、行范围命令、草稿恢复和窄窗口；既有集成另行回归。
+边界：未在真实 OpenCode/其它 Agent 上验证工具副作用；权限不是 OS 沙箱。未实现多选区、
+冲突重定位或问题回复浮窗（回复在当前聊天记录）。崩溃孤儿仅按命名、PID 和一天 TTL 尝试清理。
