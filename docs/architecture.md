@@ -169,16 +169,24 @@ session 的 `Prompts:send`、scoped task、取消和 outbox 结算，不创建�
 `placement = "window"` 保留旧的窗口左上锚点。`inline/ui` 负责把
 `inline.window` 的 border、title_pos、style 和 highlight 组映射到浮窗。
 
-`inline/render` 是审阅行的纯函数：`split2` 输出整份文件的“旧行号 旧内容 │ 新行号
-新内容”，未修改行两侧都显示，变更行带符号，按两侧行数配对、缺行留空以保持列对齐；
-文件超过 `max_rows` 时切到 `hunks`（每个块加 `@@` 头与 `context` 行），宽度不足
-`min_split_width` 时返回 `unified`。它还输出 `row_hunk`（每行所属块）与 `rows`
-（每块首行），供 `diff_session` 把光标或 Visual 选区换算成 hunk 集合。
-Tab 按源 `tabstop` 展开，长行按显示宽度截断，行数受 `max_rows` 约束。
+`inline/review/align` 是纯函数对齐模型：按 hunk 切块，块内用 `result.hunk_pairs`
+（linematch 配对；块内没有相似行时退回从上到下配对）生成显示行序列
+`{old, new, hunk, kind, chars}`。`align.pane` 为原文/结果/提案三栏生成文本、真实行号与
+filler 标记，缺行的一侧用空行占位，三栏行数恒等；块高度与决策无关，接受/拒绝只替换结果列
+块内的文本。`align.decorations` 按「栏 × 状态」输出行底色与字符级范围（`result.char_ranges`，
+超过一半变化的行不做字符级标记），对齐与着色来自同一份数据。
 
-`diff_session` 默认新建 tabpage 放一个只读 scratch buffer（`review.target = "float"`
-可改回浮窗），只负责写 buffer、extmark、winbar 计数与按键；接受/拒绝只改状态标记，
-不移动文本，全部决定后才 `apply.hunks`。
+`inline/review/layout` 在新 tabpage 里建真实窗口，**不使用** Vim diff 模式（它会把所有 diff
+窗口互相比较，无法表达两组两两对比）。三栏行数相同，`scrollbind`/`cursorbind`/折叠原生同步；
+`statuscolumn` 从 `set_gutter` 的映射表绘制状态条与真实行号，`foldexpr` 折叠离 hunk 超过
+`context` 行的上下文。窗口用 `rightbelow vsplit` 创建，列顺序与 `'splitright'` 无关；
+`fillchars` 只写窗口局部，打开后恢复所有选项的继承值。结果列是 `nomodifiable`，`write`
+按差异逐段写入以保持光标与滚动稳定。审查不修改 `diffopt`。
+
+`inline/review/card` 是回退渲染：宽度不足 `min_split_width` 或 `target = "float"` 时，
+复用 `ui.diff` + `ui.diff_hl` 生成 card 行（同样的 `bg`、语法 segments 与截断），
+只额外加 `@@ Hunk i/n` 头、状态 gutter 和 `row_hunk` 映射。两条路径共用同一套
+pending/accepted/rejected 状态机，全部决定后才 `apply.hunks` 一次写入。
 
 ## 验证
 

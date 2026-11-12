@@ -351,23 +351,38 @@ M.defaults = {
         follow_cursor = true,
       },
       review = {
-        -- Where the review opens. "buffer" puts it in a new tabpage with a
-        -- scratch buffer; "float" keeps the floating window.
+        -- Where the review opens. "buffer" uses real side-by-side windows in a
+        -- new tabpage; "float" renders the card-style view inside a floating
+        -- window, since the side-by-side view needs real windows.
         target = "buffer",
-        -- "split2" is the whole-file two-column view; "hunks" limits it to
-        -- context around each change; "unified" is the -/+ list. "hunks" and
-        -- "unified" are also used automatically as fallbacks.
-        layout = "split2",
-        -- Below this many columns a two-column view is unreadable.
-        min_split_width = 40,
-        -- The whole-file view is used while it fits; past this many rows it
-        -- falls back to "hunks".
-        max_rows = 4000,
-        -- Unchanged lines kept around each change in the "hunks" layout.
+        -- "3-column" is original | result | proposal; "2-column" drops the
+        -- read-only original and shows result | proposal.
+        layout = "3-column",
+        -- Below this many columns the tabbed view falls back to the card
+        -- renderer, which needs far less width.
+        min_split_width = 90,
+        -- Unchanged lines kept around each change: shown around each card in
+        -- the fallback, and left unfolded around each hunk in the columns.
+        -- `syntax` colours the card rows with the file's own syntax.
         context = 3,
+        syntax = true,
+        -- Ceiling on rendered card rows.
+        max_rows = 4000,
         -- Jump to the next pending hunk after accepting/rejecting one.
         advance = false,
-        -- Float geometry. Ignored when target = "buffer".
+        -- Side-by-side window options: fold unchanged context, and keep the
+        -- columns scrolling and moving together.
+        fold = true,
+        sync_scroll = true,
+        -- Relative line numbers, counted in real lines (filler rows are
+        -- skipped). Off by default: absolute numbers can be compared across
+        -- columns.
+        relative_number = false,
+        -- Show the accept/reject keys after the hunk under the cursor.
+        hints = true,
+        -- Width of the fold column. 0 hides it and gains three columns of code.
+        foldcolumn = 1,
+        -- Float geometry. Only used when target = "float".
         placement = "center",
         width = 140,
         height = 25,
@@ -731,12 +746,15 @@ function M.validate(cfg)
   check_enum(review_window.target, { "buffer", "float" }, "inline.window.review.target")
   check_number(review_window.width, 20, 2000, "inline.window.review.width")
   check_number(review_window.height, 3, 500, "inline.window.review.height")
-  check_enum(review_window.layout, { "split2", "hunks", "unified" }, "inline.window.review.layout")
+  check_enum(review_window.layout, { "3-column", "2-column" }, "inline.window.review.layout")
   check_number(review_window.min_split_width, 10, 2000, "inline.window.review.min_split_width")
   check_number(review_window.max_rows, 10, 1000000, "inline.window.review.max_rows")
   check_number(review_window.context, 0, 1000, "inline.window.review.context")
-  if type(review_window.advance) ~= "boolean" then
-    fail("inline.window.review.advance must be a boolean")
+  check_number(review_window.foldcolumn, 0, 20, "inline.window.review.foldcolumn")
+  for _, key in ipairs({ "advance", "syntax", "fold", "sync_scroll", "relative_number", "hints" }) do
+    if type(review_window[key]) ~= "boolean" then
+      fail("inline.window.review.%s must be a boolean", key)
+    end
   end
 
   local images = cfg.context.images

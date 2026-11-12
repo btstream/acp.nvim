@@ -356,15 +356,23 @@ inline = {
 keymaps = { inline = { normal = "<leader>ai", visual = "<leader>ai" } },
 ```
 
-diff 默认在新 tabpage 的只读 buffer 中打开，显示整份文件的左右两栏对比：
-左侧原文、右侧 Agent 提案，未修改行两侧都显示，变更行带 `-`/`+`。最左列是状态标记
-（`▸` 当前、`✓` 已接受、`✗` 已拒绝）。源 buffer 在审查期间不变，全部决定后一次应用
-接受的块。文件过大时自动只显示每个变更块及其上下文；窗口过窄时回退为上下 `-`/`+`。
+diff 默认在新 tabpage 里打开并排的真实窗口：
+`3-column` 为「原文 │ 结果 │ 提案」，`2-column` 去掉只读的原文，只留「结果 │ 提案」。
+各栏**不使用** Vim 的 diff 模式（它会把同一 tab 里所有 diff 窗口互相比较，无法表达
+「原文↔结果」「结果↔提案」两组对比）：插件按同一份对齐表给每栏插入 filler 行，三栏行数
+完全相同，`scrollbind`/`cursorbind`/折叠由 Neovim 原生同步，语法高亮按文件自身语言启动。
+结果列初始等于原文；源 buffer 在审查期间不变，全部决定后一次应用接受的块。
+宽度不足 `min_split_width`，或 `target = "float"` 时，回退为复用工具卡片渲染的
+card 视图（同样的 diff 背景与语法高亮）。
 
 - 光标停在某个变更块上，`ga`/`gr` 接受/拒绝该块；Visual 选区可一次处理被覆盖的所有块。
-- `]c` / `[c` 跳到下一个/上一个块；`u` 把当前块的决定清回 pending。
+  三栏的显示行一一对应，所以在**任意一栏**都可以选择和决定。
+- `]c` / `[c`（或 `]h` / `[h`）按审查顺序循环跳到下一个/上一个块，已决定的块仍可访问；
+  光标留在当前栏。`u` 把当前块的决定清回 pending。
 - `g2` / `g3` 全部接受 / 全部拒绝，`g1` 全部接受并永久改用直接写回，
   `q` / `<Esc>` 拒绝剩余部分并关闭；`:Acp inline-reset` 清除 always-accept。
+- 结果列只用于展示决定结果，是 `nomodifiable`；手动编辑会被下一次决定覆盖，因此被禁止。
+- 审查不修改 `diffopt`，也不开启任何窗口的 `diff`。
 - 按结果到达时的 filetype 解析：精确 filetype、复合 filetype 的第一段、`"*"`、默认值。
 
 `:Acp inline [diff|write]`、`:Acp inline-stop`、`:Acp inline-reset` 是对应命令。
@@ -395,21 +403,85 @@ inline = {
       placement = "center",      -- center | cursor（仅 target = "float" 时生效）
       width = 140,
       height = 25,
-      target = "buffer",         -- buffer（新 tab 只读 buffer）| float（浮窗）
-      layout = "split2",         -- split2 | hunks | unified
-      context = 3,               -- hunks 布局保留的上下文行
+      target = "buffer",         -- buffer（新 tab 真实窗口）| float（浮窗）
+      layout = "3-column",       -- 3-column | 2-column
+      min_split_width = 90,      -- 更窄时回退 card 渲染
+      context = 3,               -- 上下文行数：card 回退保留的行，分栏中不折叠的行
+      syntax = true,             -- card 回退使用文件自身语法
       advance = false,           -- 决定后跳到下一个 pending 块
-      max_rows = 4000,           -- 超过后自动切到 hunks 布局
-      min_split_width = 40,      -- 更窄时自动回退 unified
+      max_rows = 4000,           -- card 回退的行数上限
+      fold = true,               -- 折叠离变更超过 context 行的未修改行
+      sync_scroll = true,        -- scrollbind/cursorbind
+      relative_number = false,   -- 相对行号（按真实行计算，跳过 filler）
+      hints = true,              -- 在当前块后显示 ga/gr 提示
+      foldcolumn = 1,            -- 折叠列宽度，0 隐藏
     },
   },
 },
 ```
 
 `placement = "cursor"` 优先放在光标下方，空间不足时翻到上方，水平位置跟随光标列，
-并始终夹在屏幕内；`follow_cursor = false` 可让输入框停在打开时的位置。审查 buffer 用
-`winbar` 显示 hunk 计数与状态。两栏使用 `AcpInlineDiffOld/New/Num/Divider/Context`、
-状态标记 `AcpInlineAccepted/Rejected` 和当前块 `AcpInlineCurrent`。
+并始终夹在屏幕内；`follow_cursor = false` 可让输入框停在打开时的位置。
+
+审查界面的外观（与常见的三栏 merge 视图一致）：
+
+- 三栏共用同一份对齐：块内的行用 `linematch` 按相似度配对，块里没有任何相似行
+  （整段改写、翻译）时改为从上到下配对。有对应的行是 `modify`，两侧都有内容；只在原文中
+  存在的是 `delete`，只在提案中存在的是 `add`，对面一定是 `╱` filler。着色与对齐来自
+  同一份数据，不会出现 modify 行对着 filler 的情况。
+- 每一栏只显示**它自己这一侧**相对结果的变化：
+
+  | 栏 | pending | 已接受 | 已拒绝 |
+  |---|---|---|---|
+  | 原文 | `AcpReviewDelete` + 字符级 `AcpReviewDeleteText` | `AcpReviewDimmed`（被替换） | 无底色（保留） |
+  | 结果 | `AcpReviewPending` | `AcpReviewAdd` + 字符级 `AcpReviewAddText` | 无底色 |
+  | 提案 | `AcpReviewAdd` + 字符级 `AcpReviewAddText` | `AcpReviewAdd`（已采用） | `AcpReviewDimmed`（被丢弃） |
+
+- 字符级标记只用于相似的行对；一行里超过一半都变了（改写、翻译）时只用整行底色，避免满行碎片。
+- 行号列由 `statuscolumn` 绘制：最左一格是块的状态条（`▎`，已接受/已拒绝块的首行为 `✓`/`✗`），
+  颜色为 `AcpReviewStatePending/Current/Accepted/Rejected`，三栏同一行同色；后面是**真实行号**
+  （原文/提案保留各自文件的行号，结果列按当前结果计数），filler 行没有行号。
+- 光标所在块在结果列行尾显示 `ga accept · gr reject · ]c next`（`AcpReviewHint`，`hints = false` 关闭）。
+- `winbar` 每栏一个彩色徽章（`A` 原文 / `→` 结果 / `B` 提案），只有结果列显示
+  `hunk i/n · ✓/✗/pending` 计数。
+- 光标行使用 `AcpReviewCursorLine`（复制主题 `CursorLine` 的底色、去掉下划线），
+  避免 `cursorbind` 把下划线画到三栏。
+- filler 用 `AcpReviewFiller`：固定的低对比灰 `fg`，不跟随主题。
+- 所有组都是**静态定义**：运行期不做混色。`AcpReviewAdd/Delete/Pending` 的底色复制自主题的
+  `DiffAdd/DiffDelete/DiffChange`，字符级标记复制自 `DiffText`（只复制 `bg`，不带主题的前景与下划线；
+  `ColorScheme` 时重新复制）。主题的颜色区分度不够时，用 `ui.highlights` 覆盖。
+- card 回退沿用 `AcpDiffAdd/AcpDiffDelete`，状态用 `AcpInlineAccepted/Rejected`。
+
+审查配色示例（放入 `setup()`，颜色按你的主题调整）：
+
+```lua
+ui = {
+  highlights = {
+    AcpReviewAdd = { bg = "#243c2c" },        -- 新增 / 提案侧
+    AcpReviewDelete = { bg = "#44292e" },     -- 删除 / 原文侧
+    AcpReviewPending = { bg = "#26384a" },    -- 结果列中未决定的块
+    AcpReviewAddText = { bg = "#2f5a3a" },    -- 提案侧变化的字符
+    AcpReviewDeleteText = { bg = "#6a3038" }, -- 原文侧变化的字符
+    AcpReviewFiller = { fg = "#4b5260" },
+  },
+}
+```
+
+也可在 `setup()` 之后用 `vim.api.nvim_set_hl(0, "AcpReviewPending", { bg = "#26384a" })`
+即时调整；希望切换主题后仍保留配置时，推荐使用上面的 `ui.highlights`。
+card 里的 diff 使用 `AcpDiffAdd/AcpDiffDelete`。
+
+审查窗口的行为约束：
+
+- 窗格选项只写窗口局部值，打开后会立刻把选项的“新窗口继承值”还给用户；审查期间
+  新开的补全、通知等浮窗不会继承审查的 `statuscolumn`、折叠、`winhighlight` 等选项。
+- 若外部仍换掉了窗格 buffer（例如手动关掉 `winfixbuf` 后 `:edit`），重新进入时会把
+  审查 buffer 放回并恢复选项。
+- 三个窗口都设置 `winfixbuf`，`:edit`、`:enew`、`:bnext` 和插件“在此打开”都会被拒绝
+  （`E1513`），因此结果列不会变成真实文件的 buffer。关闭窗口仍然允许。
+- 每栏按文件语言显式 `vim.treesitter.start()`，包括 `lua`/`markdown` 之外 Neovim 没有自带
+  ftplugin 的语言（Python、JavaScript、TypeScript、Go 等）；没有对应 parser 时静默回退到
+  legacy `syntax`，无 parser 也没 syntax 时就是纯文本。
 
 ### 可选的懒渲染与历史分页
 

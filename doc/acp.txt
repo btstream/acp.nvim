@@ -767,12 +767,52 @@ inline.max_copy_bytes 默认 8 MiB，限制副本/结果大小。
 
     inline.review.mode = "diff" | "write"
 
-diff 默认在新 tabpage 的只读 buffer 中打开，显示整份文件的左右两栏对比：左侧原文、
-右侧 Agent 提案，未修改行两侧都显示。最左列是状态标记（▸ 当前、✓ 接受、✗ 拒绝）。
+diff 默认在新 tabpage 中打开并排的真实窗口：3-column 为「原文 │ 结果 │ 提案」，
+2-column 为「结果 │ 提案」。各栏不使用 Vim 的 diff 模式（它会让所有 diff 窗口互相比较，
+无法表达「原文↔结果」「结果↔提案」两组对比）：插件按同一份对齐表给每栏插入 filler 行，
+三栏行数相同，scrollbind/cursorbind/折叠由 Neovim 原生同步。审查不修改 diffopt。
+结果列初始等于原文、是 nomodifiable，只展示决定结果。宽度不足 min_split_width 或
+target = "float" 时回退为工具卡片渲染（同样的 diff 背景与语法高亮）。
+
+对齐：块内的行用 linematch 按相似度配对；块里没有相似行（整段改写、翻译）时从上到下
+配对。有对应的行为 modify（两侧都有内容），只在原文中的为 delete、只在提案中的为 add
+（对面一定是 ╱ filler）。着色与对齐来自同一份数据。
+
+每栏只显示自己这一侧相对结果的变化：
+  原文  pending: AcpReviewDelete + AcpReviewDeleteText   接受: AcpReviewDimmed   拒绝: 无底色
+  结果  pending: AcpReviewPending   接受: AcpReviewAdd + AcpReviewAddText   拒绝: 无底色
+  提案  pending: AcpReviewAdd + AcpReviewAddText   接受: AcpReviewAdd   拒绝: AcpReviewDimmed
+字符级标记只用于相似的行对；超过一半都变了的行只用整行底色。
+
+statuscolumn 最左一格是状态条（▎，已决定块的首行为 ✓/✗），颜色为
+AcpReviewStatePending/Current/Accepted/Rejected，三栏同一行同色；后面是真实行号
+（原文/提案保留各自文件的行号，结果列按当前结果计数），filler 行没有行号。
+光标所在块在结果列行尾显示 ga/gr 提示（AcpReviewHint，hints = false 关闭）。
+winbar 每栏一个彩色徽章（A 原文 / → 结果 / B 提案），只有结果列显示计数。
+光标行用 AcpReviewCursorLine（复制 CursorLine 底色、去掉下划线）。
+filler 用 AcpReviewFiller，fg 是固定的低对比灰。
+所有组静态定义，运行期不算颜色：AcpReviewAdd/Delete/Pending 的底色复制自主题的
+DiffAdd/DiffDelete/DiffChange，AcpReviewAddText/DeleteText 复制自 DiffText（只复制 bg，
+ColorScheme 时重新复制）。card 使用 AcpDiffAdd/AcpDiffDelete。
+可通过 ui.highlights 配置（ColorScheme 后重新应用），或 setup 后 nvim_set_hl 即时调整：
+>
+  ui = { highlights = {
+    AcpReviewAdd = { bg = "#243c2c" },
+    AcpReviewDelete = { bg = "#44292e" },
+    AcpReviewPending = { bg = "#26384a" },
+    AcpReviewAddText = { bg = "#2f5a3a" },
+    AcpReviewDeleteText = { bg = "#6a3038" },
+    AcpReviewFiller = { fg = "#4b5260" },
+  } }
+<
+窗格选项只写窗口局部值，打开后立即恢复“新窗口继承值”，审查期间新开的浮窗不会继承
+statuscolumn、折叠或审查 winhighlight。若外部仍换掉窗格 buffer，重新进入时放回并
+恢复选项。审查窗口设置 winfixbuf，:edit/:enew/:bnext 会被拒绝（E1513），关闭窗口仍允许。
+每栏按文件语言显式启动 Tree-sitter；缺少 parser 时静默回退到 legacy syntax。
 光标停在变更块上时 ga 接受、gr 拒绝；Visual 选区可一次处理覆盖的所有块。
-]c/[c 跳到下/上一个块，u 清除当前块的决定。g2/g3 全部，g1 对本 buffer 永久接受，
-q/<Esc> 拒绝剩余并关闭。文件超过 max_rows 时只显示每个块及 context 行；窗口窄于
-min_split_width 时回退为上下 -/+。
+]c/[c（或 ]h/[h）按审查顺序循环跳到下/上一个块，已决定的块仍可访问；
+三栏显示行一一对应，任意一栏都可以选择、决定和跳转，光标留在当前栏。u 清除当前块的决定。g2/g3 全部，g1 对本 buffer 永久接受，
+q/<Esc> 拒绝剩余并关闭。
 write 直接写回，但仍可一次撤销。filetype 可单独覆盖：
 
     inline = {
@@ -807,18 +847,23 @@ write 直接写回，但仍可一次撤销。filetype 可单独覆盖：
           width = 140,
           height = 25,
           target = "buffer",    -- buffer | float
-          layout = "split2",    -- split2 | hunks | unified
+          layout = "3-column",  -- 3-column | 2-column
           context = 3,
+          syntax = true,
           advance = false,
           max_rows = 4000,
-          min_split_width = 40,
+          min_split_width = 90,
+          fold = true,
+          sync_scroll = true,
+          relative_number = false,
+          hints = true,
+          foldcolumn = 1,
         },
       },
     }
 
 placement = "cursor" 优先放在光标下方，空间不足时翻到上方，并始终夹在屏幕内；
 follow_cursor = false 让输入框停在打开时的位置。审查内容随窗口尺寸自动重排。
-两栏使用 AcpInlineDiffOld/New/Num/Divider/Context，状态标记 AcpInlineAccepted/Rejected。
 :Acp inline [diff|write]、:Acp inline-stop、:Acp inline-reset 是对应命令。
 内联通过当前 session 的正常 prompt 回合执行，回复保留在聊天记录，不创建新会话。
 当前回合或队列未完成时拒绝 inline 提交；inline 期间普通聊天仍可排队。

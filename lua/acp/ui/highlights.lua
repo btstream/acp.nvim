@@ -53,19 +53,55 @@ M.groups = {
   AcpInlineBorder = { link = "FloatBorder" },
   AcpInlineTitle = { link = "FloatTitle" },
   AcpInlineBanner = { link = "Comment" },
-  AcpInlinePending = { link = "DiffDelete" },
-  AcpInlineCurrent = { link = "DiffChange" },
-  AcpInlineApplied = { link = "DiffAdd" },
-  -- Side-by-side review. The gutter marks hunk state; the two content columns
-  -- use the diff backgrounds, and unchanged context stays quiet.
-  AcpInlineDiffOld = { link = "DiffDelete" },
-  AcpInlineDiffNew = { link = "DiffAdd" },
-  AcpInlineDiffOldSign = { link = "DiffDelete" },
-  AcpInlineDiffNewSign = { link = "DiffAdd" },
-  AcpInlineDiffNum = { link = "LineNr" },
-  AcpInlineDiffDivider = { link = "NonText" },
-  AcpInlineDiffGutter = { link = "NonText" },
-  AcpInlineDiffContext = { link = "Normal" },
+  -- Shared diff roles. Card rows paint these as a background; the review links
+  -- its hunk and bar groups to them, so one override reaches every diff surface.
+  -- They follow the theme's own diff colours on purpose: the plugin does no
+  -- colour maths at runtime.
+  AcpDiffAdd = { link = "DiffAdd" },
+  AcpDiffDelete = { link = "DiffDelete" },
+  AcpDiffModify = { link = "DiffChange" },
+  -- Side-by-side review. The columns are padded scratch buffers, not Vim
+  -- diff windows, so these are the only surfaces a review paints.
+  AcpReviewNormal = { link = "Normal" },
+  -- Filler rows: a hatch in a fixed subdued grey, visible on themes whose
+  -- `DiffDelete` sets no foreground.
+  AcpReviewFiller = { fg = "#5c6370" },
+  AcpReviewGutter = { link = "LineNr" },
+  AcpReviewGutterCur = { link = "CursorLineNr" },
+  AcpReviewFold = { link = "Folded" },
+  AcpReviewFoldCol = { link = "FoldColumn" },
+  AcpReviewEob = { link = "Normal" },
+  AcpReviewSep = { link = "WinSeparator" },
+  -- The cursor row, mirrored into every column by `cursorbind`. The background
+  -- is copied from `CursorLine` without its underline (see `define_review`).
+  AcpReviewCursorLine = { link = "CursorLine" },
+  -- Pane headers: a badge saying which side this is, its label and, on the
+  -- result column, the decision count.
+  AcpReviewBadgeOriginal = { link = "Comment" },
+  AcpReviewBadgeResult = { link = "DiagnosticInfo" },
+  AcpReviewBadgeProposal = { link = "DiagnosticOk" },
+  AcpReviewPath = { link = "Comment" },
+  AcpReviewVersion = { link = "NonText" },
+  -- Row surfaces. No foreground: syntax colours remain in charge of the text.
+  -- The original column shows what goes away, the proposal what comes in, the
+  -- result what is still undecided. Backgrounds are copied from the theme's
+  -- diff groups in `define_review`.
+  AcpReviewAdd = { link = "AcpDiffAdd" },
+  AcpReviewDelete = { link = "AcpDiffDelete" },
+  AcpReviewPending = { link = "AcpDiffModify" },
+  -- Characters that changed inside a paired row.
+  AcpReviewAddText = { link = "DiffText" },
+  AcpReviewDeleteText = { link = "DiffText" },
+  -- A side that lost the decision: the replaced original or the dropped
+  -- proposal. A foreground, so it overrides syntax colours.
+  AcpReviewDimmed = { link = "Comment" },
+  -- The one-cell state bar beside every row of a hunk, in every column.
+  AcpReviewStatePending = { link = "DiagnosticWarn" },
+  AcpReviewStateCurrent = { link = "DiagnosticInfo" },
+  AcpReviewStateAccepted = { link = "AcpInlineAccepted" },
+  AcpReviewStateRejected = { link = "AcpInlineRejected" },
+  -- Key hints after the hunk under the cursor.
+  AcpReviewHint = { link = "Comment" },
   AcpInlineAccepted = { link = "DiagnosticOk" },
   AcpInlineRejected = { link = "ErrorMsg" },
   AcpAssistant = { link = "Normal" },
@@ -94,8 +130,6 @@ M.groups = {
   -- Diffs inside a tool card. The line colour is the diff background itself, so
   -- a change reads like it does in a review window; the sign gets its own group
   -- because some themes only colour the background.
-  AcpDiffAdd = { link = "DiffAdd" },
-  AcpDiffDelete = { link = "DiffDelete" },
   AcpDiffAddSign = { link = "DiffAdd" },
   AcpDiffRemoveSign = { link = "DiffDelete" },
   AcpDiffHunk = { link = "@label" },
@@ -195,6 +229,9 @@ local overrides = {}
 local augroup = nil
 
 ---Define a group unless something already defined it.
+---
+---Built-in groups use `default` so a user value set with `nvim_set_hl` before
+---`setup` survives.
 ---@param name string
 ---@param spec table
 ---@return boolean
@@ -204,16 +241,66 @@ local function set_hl(name, spec)
   return pcall(vim.api.nvim_set_hl, 0, name, vim.tbl_extend("force", spec, { default = true }))
 end
 
+---@param name string
+---@param spec table
+local function force_hl(name, spec)
+  pcall(vim.api.nvim_set_hl, 0, name, spec)
+end
+
+---Names overridden by the last `setup`. They are redefined from scratch on the
+---next apply so removing an override falls back to the built-in spec instead of
+---keeping a stale colour.
+local forced = {}
+
+---Give the review row groups the theme's diff background.
+---
+---Only the background is copied, so the theme's diff foreground or underline
+---never replaces syntax colours. That is a read, never a blend: the colour is
+---still the theme's, and `ColorScheme` repeats the copy. A theme without a
+---diff background falls back to a link.
+local function define_review()
+  for _, kind in ipairs({
+    { "AcpReviewAdd", "DiffAdd" },
+    { "AcpReviewDelete", "DiffDelete" },
+    { "AcpReviewPending", "DiffChange" },
+    { "AcpReviewAddText", "DiffText" },
+    { "AcpReviewDeleteText", "DiffText" },
+    { "AcpReviewCursorLine", "CursorLine" },
+  }) do
+    local group, source = kind[1], kind[2]
+    local ok, def = pcall(vim.api.nvim_get_hl, 0, { name = source, link = false })
+    if ok and type(def) == "table" and def.bg then
+      force_hl(group, { bg = def.bg })
+    else
+      force_hl(group, { link = source })
+    end
+  end
+end
+
 ---Define every group. Safe to call again after a colorscheme change.
+---
+---Every group is a literal spec or a link; nothing is computed from the current
+---theme. That keeps overrides predictable: setting one role group reaches every
+---surface linked to it, and a review always resolves to the same definitions.
 local function apply()
+  for _, name in ipairs(forced) do
+    force_hl(name, {})
+  end
   for name, spec in pairs(M.groups) do
     set_hl(name, spec)
   end
-  -- Configured groups are forced, so calling `setup` again with new values takes
-  -- effect instead of being skipped as "already defined".
-  for name, spec in pairs(overrides) do
-    pcall(vim.api.nvim_set_hl, 0, name, spec)
+  define_review()
+  -- The previous overrides were cleared above, which makes `default` skip them;
+  -- put their built-in spec back before applying the current overrides.
+  for _, name in ipairs(forced) do
+    if M.groups[name] then
+      force_hl(name, M.groups[name])
+    end
   end
+  for name, spec in pairs(overrides) do
+    force_hl(name, spec)
+  end
+  forced = vim.tbl_keys(overrides)
 end
 
 M.apply = apply

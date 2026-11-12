@@ -81,6 +81,14 @@ return function(t)
       for name, target in pairs(expected) do
         t.eq(target, highlights.groups[name].link, name .. " should link to " .. target)
       end
+      -- Review row groups declare the shared diff role as their fallback (the
+      -- effective background is copied from the theme at apply time, without
+      -- the theme's foreground or underline).
+      t.eq("AcpDiffAdd", highlights.groups["AcpReviewAdd"].link)
+      t.eq("AcpDiffDelete", highlights.groups["AcpReviewDelete"].link)
+      t.eq("AcpDiffModify", highlights.groups["AcpReviewPending"].link)
+      t.eq("DiffText", highlights.groups["AcpReviewAddText"].link)
+      t.eq("DiffText", highlights.groups["AcpReviewDeleteText"].link)
     end)
 
     t.it("respects a user override made before setup", function()
@@ -142,12 +150,13 @@ return function(t)
       t.eq(nil, highlights.groups["AcpToolBody"], "card body must not define a group")
     end)
 
-    t.it("links the diff groups to the theme's diff highlights", function()
+    t.it("links the diff roles and review surfaces without computing colours", function()
       -- A diff inside a card has to read like a diff in a review window, so the
       -- line colours come from the theme rather than a blended colour.
       local expected = {
         AcpDiffAdd = "DiffAdd",
         AcpDiffDelete = "DiffDelete",
+        AcpDiffModify = "DiffChange",
         AcpDiffAddSign = "DiffAdd",
         AcpDiffRemoveSign = "DiffDelete",
         AcpDiffHunk = "@label",
@@ -157,6 +166,14 @@ return function(t)
       for name, target in pairs(expected) do
         t.eq(target, highlights.groups[name].link, name .. " should link to " .. target)
       end
+      -- Review row groups declare the shared diff role as their fallback (the
+      -- effective background is copied from the theme at apply time, without
+      -- the theme's foreground or underline).
+      t.eq("AcpDiffAdd", highlights.groups["AcpReviewAdd"].link)
+      t.eq("AcpDiffDelete", highlights.groups["AcpReviewDelete"].link)
+      t.eq("AcpDiffModify", highlights.groups["AcpReviewPending"].link)
+      t.eq("DiffText", highlights.groups["AcpReviewAddText"].link)
+      t.eq("DiffText", highlights.groups["AcpReviewDeleteText"].link)
     end)
 
     t.it("applies groups passed through the config", function()

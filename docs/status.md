@@ -531,13 +531,32 @@ native/edgy/reconnect、性能 smoke、tail/spinner 附加 UI 回归通过。
 - `inline/diff_session`：独立只读 scratch 审查，`ga`/`gr`/`g2`/`g3`/`g1`；全部决定后才写源。
 - `inline/anchor`：纯几何；`cursor` 优先下方、空间不足翻上方，记录屏幕格并夹进屏幕；
   源窗口滚动/光标移动/resize 重算，`window` 保留窗口左上锚点。
-- `inline/render`：纯渲染；`split2` 为整文件的“旧行号 旧内容 │ 新行号 新内容”，未修改行
-  两侧都显示、变更行配对并留空对齐；超过 `max_rows` 切 `hunks`（块头 + `context` 行），
-  窄于 `min_split_width` 回退 `unified`。同时输出 `row_hunk`/`rows` 供选中与跳转。
-  Tab 按源 `tabstop` 展开，长行按显示宽度截断。
-- `inline/diff_session`：默认新 tabpage 的只读 buffer（`review.target = "float"` 可改浮窗）；
-  光标选中当前块、Visual 多选，`ga/gr/g2/g3/g1/q`/`]c`/`[c`/`u`，`advance` 默认关闭；
-  决定只更新标记与 winbar 计数，关闭时清理 tabpage 和 scratch buffer。
+- `inline/review/layout`：窗格选项只写局部值，打开后恢复继承值，避免浮窗继承 statuscolumn/折叠/winhighlight；
+  `BufWinEnter` 发现窗格 buffer 被换掉时放回并恢复选项。每栏设置 `winfixbuf`，`:edit`/`:enew`/`:bnext` 与插件切 buffer
+  均以 `E1513` 拒绝，结果列不会变成真实文件；scratch 用 `bufhidden=hide` 兜底，
+  真正销毁由 `close()` 负责。按文件语言显式 `vim.treesitter.start()`（复用
+  `ui.code_hl` 的语言解析，覆盖无自带 ftplugin 的语言），失败静默回退 legacy `syntax`。
+  新 tabpage 的真实窗口，**不用** Vim diff 模式：`3-column`（原文│结果│提案）或
+  `2-column`（结果│提案）三栏按 `review/align` 插入 filler 行，行数恒等，
+  `scrollbind`/`cursorbind`/`foldexpr` 折叠原生同步；`statuscolumn` 绘制状态条与真实行号；
+  不修改 `diffopt`；打开失败时回滚窗口、buffer、autocmd 与选项。
+- `inline/review/align`：纯函数对齐模型。块内行配对来自 `result.hunk_pairs`（linematch，块内无相似行时
+  从上到下），行类型（modify/delete/add）、filler 与字符级范围（`result.char_ranges`，超过一半变化的行
+  不做字符级标记）都来自同一份配对，modify 行对面必有内容、add/delete 行对面必为 filler。
+  块高度与决策无关，决定只替换结果列块内文本。
+- 外观：每栏只显示自己一侧相对结果的变化——原文 pending 为 `AcpReviewDelete`(+DeleteText)、接受后
+  `AcpReviewDimmed`、拒绝后无底色；结果 pending 为 `AcpReviewPending`、接受后 `AcpReviewAdd`(+AddText)；
+  提案为 `AcpReviewAdd`(+AddText)、拒绝后 `AcpReviewDimmed`。状态条 `AcpReviewState*`（三栏同行同色，
+  已决定块首行 ✓/✗）；当前块在结果列行尾提示 ga/gr（`hints`）。winbar 徽章每栏一个，计数只在结果列。
+  `AcpReviewCursorLine` 复制 `CursorLine` 底色去掉下划线。底色在 setup/ColorScheme 时从主题
+  `DiffAdd/DiffDelete/DiffChange/DiffText` 复制（只复制 bg），运行期不算色；filler 为固定灰。
+- `inline/review/card`：`min_split_width` 以下或 `target = "float"` 时回退；复用
+  `ui.diff`/`ui.diff_hl` 的 `bg` 与语法 segments，只加 `@@` 头、状态 gutter 与 `row_hunk`。
+  从原文提取上下文，不混入相邻提案；状态符号的语法偏移按 UTF-8 字节计算。
+- `inline/diff_session`：两条路径共用状态机；接受 = 把提案行写入结果列，拒绝 = 不动；
+  `ga/gr/g2/g3/g1/q`/`]c`/`[c`/`u`，`advance` 默认关闭；全部决定后 `apply.hunks` 一次写入。
+  `]c/[c` 与 `]h/[h` 按稳定审查 hunk 顺序循环（含已决定块，支持撤销）；
+  三栏显示行一致，任意一栏都能选择/决定/跳转，光标留在当前栏并打开目标折叠。
 - `inline/ui`：从 `inline.window` 读取 border、title_pos、style、highlight 组、尺寸与
   offset；`follow_cursor` 控制是否随源光标移动；review 窗 resize 后重新渲染。
 - `inline/review`：`diff` / `write` 策略，精确 ft → 复合 ft 首段 → `*` → 默认；always-accept 优先。
@@ -547,12 +566,20 @@ native/edgy/reconnect、性能 smoke、tail/spinner 附加 UI 回归通过。
   断开/重配置时失效并清理；聊天选区使用同一 token 机制，按位置发送
   `resource` 或 `resource_link`，空光标取整行，无输入框时排队。
 
-验证：835 项单元测试通过，新增精确范围、冲突、元数据变化、资源限制、extmark 回归、
-普通模式提示与自由编辑、锚点翻转/夹取、双栏与 hunks/unified 回退、光标与 Visual 选块、
-Tab/宽字符截断与外观配置校验；
+验证：863 项单元测试通过，新增精确范围、冲突、元数据变化、资源限制、extmark 回归、
+普通模式提示与自由编辑、锚点翻转/夹取、三/两栏对齐布局、card 回退、不修改 diffopt、
+光标与 Visual 选块与外观配置校验；补充两种布局的 EOF 插入逐块接受/拒绝、
+对齐模型（modify 必对内容、add/delete 必对 filler、中英文改写从上到下配对）、字符级范围与 UTF-8 边界、
+按决策重绘三栏、任意栏决定、状态条与提示随光标刷新、分屏失败回滚、高亮覆盖和 card 上下文/字节偏移回归；
 16 项 inline 集成检查覆盖当前 session、普通模式按请求编辑、Visual 越界丢弃、
 真实权限 RPC、取消/排队/断开、迟到结果、filetype 变化及单次覆盖。附加 UI 测试覆盖 Visual
-映射、行范围命令、草稿恢复、窄窗口、双栏审查、tab/浮窗目标、配置化边框/标题/高亮与光标跟随；
+映射、行范围命令、草稿恢复、窄窗口、分栏审查、card 回退、tab/浮窗目标、
+配置化边框/标题/高亮与光标跟随；
+`integration_inline_highlights.py` 检查实际 UI grid RGB，覆盖两/三栏「栏 × 决策」的逐行逐列底色、
+字符级 AddText 区段、dimmed 前景、filler 斜线与无行号、状态条字形与颜色、
+光标行无下划线、ColorScheme 后持久化；
+附加检查 `winfixbuf` 对 `:edit`/`:enew`/`:bnext` 的拒绝与关窗仍可用、
+浮窗不继承审查窗口选项/winhighlight、以及逐行 Tree-sitter 启动；
 既有集成另行回归。
 边界：未在真实 OpenCode/其它 Agent 上验证工具副作用；权限不是 OS 沙箱。未实现多选区、
 冲突重定位或问题回复浮窗（回复在当前聊天记录）。崩溃孤儿仅按命名、PID 和一天 TTL 尝试清理。

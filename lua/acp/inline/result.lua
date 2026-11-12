@@ -5,6 +5,203 @@
 -- hunks completely outside are reverted and reported rather than applied.
 local M = {}
 
+-- `linematch` pairs changed rows by similarity instead of matching them from the
+-- top. Probed once: 0.10 has no such option and must fall back to plain
+-- pairing. The value matches the review `diffopt`, so our rows line up with the
+-- rows Vim actually paints.
+local LINEMATCH
+---@return integer|nil
+local function linematch()
+  if LINEMATCH ~= nil then
+    return LINEMATCH or nil
+  end
+  local ok = pcall(vim.diff, "a\n", "b\n", { result_type = "indices", linematch = 60 })
+  LINEMATCH = ok and 60 or false
+  return LINEMATCH or nil
+end
+
+---Stable kind in the original -> proposal plan, independent of review decisions.
+---@param hunk table
+---@return "add"|"delete"|"modify"
+function M.hunk_kind(hunk)
+  if #hunk.old_lines == 0 then
+    return "add"
+  elseif #hunk.new_lines == 0 then
+    return "delete"
+  end
+  -- An unequal-length replacement is still a modification.
+  return "modify"
+end
+
+---Row pairing inside one hunk, top to bottom.
+---
+---A hunk is not a single kind. A replacement followed by an insertion is a
+---`modify` row next to an `add` row: a row with a counterpart is `modify`, a
+---row only the old side has is `delete`, a row only the new side has is `add`.
+---Rows are paired with `linematch`, so similar rows sit side by side instead of
+---being matched from the top. Rows that are equal inside the hunk come back as
+---`same`.
+---
+---This is the single source of truth for both the review's row alignment and
+---its colours, so a `modify` row always has a counterpart beside it and an
+---`add`/`delete` row always faces filler.
+---@param hunk table
+---@return {old: integer|nil, new: integer|nil, kind: "modify"|"delete"|"add"|"same"}[]
+local function pair_rows(hunk, use_linematch)
+  local old_lines, new_lines = hunk.old_lines or {}, hunk.new_lines or {}
+  local old_count, new_count = #old_lines, #new_lines
+  local pairs_out = {}
+  local function push(old, new, kind)
+    pairs_out[#pairs_out + 1] = { old = old, new = new, kind = kind }
+  end
+  if old_count == 0 or new_count == 0 then
+    for i = 1, old_count do
+      push(i, nil, "delete")
+    end
+    for i = 1, new_count do
+      push(nil, i, "add")
+    end
+    return pairs_out
+  end
+  local indices = vim.diff(table.concat(old_lines, "\n") .. "\n", table.concat(new_lines, "\n") .. "\n", {
+    result_type = "indices",
+    algorithm = "histogram",
+    ctxlen = 0,
+    linematch = use_linematch and linematch() or nil,
+  })
+  -- `oi`/`ni` are the next unconsumed rows; equal rows between sub-hunks are
+  -- emitted as `same` pairs so both sides advance together.
+  local oi, ni = 1, 1
+  for _, index in ipairs(indices) do
+    local old_start, old_len, new_start, new_len = unpack(index)
+    -- vim.diff reports the row *before* a zero-length side.
+    local old_first = old_len == 0 and old_start + 1 or old_start
+    local new_first = new_len == 0 and new_start + 1 or new_start
+    while oi < old_first and ni < new_first do
+      push(oi, ni, "same")
+      oi, ni = oi + 1, ni + 1
+    end
+    local paired = math.min(old_len, new_len)
+    for offset = 0, paired - 1 do
+      push(old_first + offset, new_first + offset, "modify")
+    end
+    for offset = paired, old_len - 1 do
+      push(old_first + offset, nil, "delete")
+    end
+    for offset = paired, new_len - 1 do
+      push(nil, new_first + offset, "add")
+    end
+    oi, ni = old_first + old_len, new_first + new_len
+  end
+  while oi <= old_count and ni <= new_count do
+    push(oi, ni, "same")
+    oi, ni = oi + 1, ni + 1
+  end
+  -- Unreachable for a consistent diff, but never drop a row.
+  for i = oi, old_count do
+    push(i, nil, "delete")
+  end
+  for i = ni, new_count do
+    push(nil, i, "add")
+  end
+  return pairs_out
+end
+
+function M.hunk_pairs(hunk)
+  local matched = pair_rows(hunk, true)
+  -- `linematch` pairs by similarity. When nothing in the hunk is actually
+  -- similar (a rewrite, a translation) its choice is arbitrary, and plain
+  -- top-down pairing reads far more naturally.
+  for _, pair in ipairs(matched) do
+    if pair.kind == "same" then
+      return matched
+    end
+    if pair.kind == "modify" then
+      local ranges = M.char_ranges(hunk.old_lines[pair.old], hunk.new_lines[pair.new])
+      if #ranges.old > 0 or #ranges.new > 0 then
+        return matched
+      end
+    end
+  end
+  return pair_rows(hunk, false)
+end
+
+---Per-row kinds for one hunk, keyed by each side's own 1-based row.
+---
+---`old[i]` is the kind of the old row, `new[i]` of the proposal row. Rows that
+---are unchanged inside the hunk are absent. Derived from `hunk_pairs`.
+---@param hunk table
+---@return {old: table<integer, string>, new: table<integer, string>}
+function M.hunk_rows(hunk)
+  local kinds = { old = {}, new = {} }
+  for _, pair in ipairs(M.hunk_pairs(hunk)) do
+    if pair.kind ~= "same" then
+      if pair.old then
+        kinds.old[pair.old] = pair.kind
+      end
+      if pair.new then
+        kinds.new[pair.new] = pair.kind
+      end
+    end
+  end
+  return kinds
+end
+
+-- Lines longer than this are not refined character by character: the row
+-- background already marks them, and the per-character diff is quadratic.
+local CHAR_LIMIT = 4096
+
+---Changed byte ranges between two paired rows.
+---
+---Ranges are 0-based and end-exclusive, always on UTF-8 character boundaries.
+---When most of the line changed (a rewrite or a translation), character-level
+---marks would be noise across the whole row, so nothing is returned and the
+---row's own background carries the change.
+---@param old string
+---@param new string
+---@return {old: {[1]: integer, [2]: integer}[], new: {[1]: integer, [2]: integer}[]}
+function M.char_ranges(old, new)
+  local out = { old = {}, new = {} }
+  if old == new or #old + #new > CHAR_LIMIT then
+    return out
+  end
+  local a, b = vim.fn.split(old, "\\zs"), vim.fn.split(new, "\\zs")
+  local ao, bo = { 0 }, { 0 }
+  for j, char in ipairs(a) do
+    ao[j + 1] = ao[j] + #char
+  end
+  for j, char in ipairs(b) do
+    bo[j + 1] = bo[j] + #char
+  end
+  local changes = vim.diff(
+    table.concat(a, "\n") .. (#a > 0 and "\n" or ""),
+    table.concat(b, "\n") .. (#b > 0 and "\n" or ""),
+    { result_type = "indices", algorithm = "histogram" }
+  )
+  local changed_old, changed_new = 0, 0
+  for _, c in ipairs(changes) do
+    local x = c[2] == 0 and c[1] or c[1] - 1
+    local y = c[4] == 0 and c[3] or c[3] - 1
+    if c[2] > 0 then
+      local s, e = ao[x + 1], ao[x + c[2] + 1]
+      out.old[#out.old + 1] = { s, e }
+      changed_old = changed_old + (e - s)
+    end
+    if c[4] > 0 then
+      local s, e = bo[y + 1], bo[y + c[4] + 1]
+      out.new[#out.new + 1] = { s, e }
+      changed_new = changed_new + (e - s)
+    end
+  end
+  -- Ignore leading indentation when judging how much of the row changed.
+  local body_old = #old - #(old:match("^%s*") or "")
+  local body_new = #new - #(new:match("^%s*") or "")
+  if changed_old >= 0.5 * body_old and changed_new >= 0.5 * body_new then
+    return { old = {}, new = {} }
+  end
+  return out
+end
+
 ---Line hunks between two snapshots. Insertions use the line they follow.
 ---@param original string[]
 ---@param edited string[]

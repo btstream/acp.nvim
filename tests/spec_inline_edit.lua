@@ -160,37 +160,6 @@ return function(t)
     end)
   end)
 
-  t.describe("inline diff session", function()
-    t.it("accepts and rejects independently, then collapses to one undo", function()
-      local _, buf = win_with({ "a", "b", "c", "d" })
-      local finished
-      local ok = diff_session.open({
-        bufnr = buf,
-        lines = { "A", "b", "c", "D" },
-        on_finish = function(accepted, total)
-          finished = { accepted, total }
-        end,
-      })
-      t.truthy(ok)
-      t.eq({ "a", "b", "c", "d" }, vim.api.nvim_buf_get_lines(buf, 0, -1, false))
-      local view = table.concat(vim.api.nvim_buf_get_lines(0, 0, -1, false), "\n")
-      -- Whole-file two-column view: unchanged lines on both sides.
-      t.match("1%s+- a", view)
-      t.match("│%s+1%s+%+ A", view)
-      t.match("2%s+b", view)
-      -- `advance` defaults to false, so navigation is explicit.
-      vim.api.nvim_feedkeys("gr", "x", false)
-      t.eq({ "a", "b", "c", "d" }, vim.api.nvim_buf_get_lines(buf, 0, -1, false))
-      vim.api.nvim_feedkeys("]c", "x", false)
-      vim.api.nvim_feedkeys("ga", "x", false)
-      t.eq({ "a", "b", "c", "D" }, vim.api.nvim_buf_get_lines(buf, 0, -1, false))
-      t.eq({ 1, 2 }, finished)
-      vim.cmd("silent undo")
-      t.eq({ "a", "b", "c", "d" }, vim.api.nvim_buf_get_lines(buf, 0, -1, false))
-      vim.api.nvim_buf_delete(buf, { force = true })
-    end)
-  end)
-
   t.describe("chat selection attachments", function()
     t.it("links to the line range and keeps its place in the prompt", function()
       local context = require("acp.context")
@@ -572,160 +541,985 @@ return function(t)
     end)
   end)
 
-  t.describe("inline review rendering", function()
-    local render = require("acp.inline.render")
+  t.describe("inline review card rendering", function()
+    local card = require("acp.inline.review.card")
     local original = { "a", "b", "c", "d" }
     local edited = { "A", "b", "c", "D" }
     local hunks = result.hunks(original, edited)
     local function build(over)
-      return render.build(vim.tbl_extend("force", {
+      return card.build(vim.tbl_extend("force", {
+        hunks = hunks,
         original = original,
         edited = edited,
-        hunks = hunks,
-        width = 100,
+        path = "/tmp/sample.lua",
+        width = 60,
+        context = 0,
       }, over or {}))
     end
-    t.it("shows a whole-file two-column view and falls back on narrow width", function()
+    t.it("reuses the card renderer and maps every row to its hunk", function()
       local view = build()
-      t.eq("split2", view.layout)
-      t.match("^%s+1%s+- a%s", view.lines[1])
-      t.match("│%s+1%s+%+ A", view.lines[1])
-      t.match("^%s+2%s+  b%s", view.lines[2])
+      t.match("@@ Hunk 1/2", view.lines[1])
       t.eq(1, view.row_hunk[1])
-      t.falsy(view.row_hunk[2])
-      local narrow = build({ width = 30 })
-      t.eq("unified", narrow.layout)
-      t.truthy(table.concat(narrow.lines, "\n"):find("- a", 1, true))
+      t.eq(1, view.row_hunk[2])
+      t.truthy(table.concat(view.lines, "\n"):find("- a", 1, true))
+      t.truthy(table.concat(view.lines, "\n"):find("+ A", 1, true))
+      t.eq(2, view.rendered)
     end)
-    t.it("keeps the proposal on the right and marks a rejected hunk", function()
-      hunks[1].decided, hunks[1].accepted = true, false
-      local view = build()
-      t.match("✗", view.lines[1])
-      t.match("│%s+1%s+%+ A", view.lines[1])
+    t.it("marks accepted and rejected hunks in the gutter", function()
+      hunks[1].decided, hunks[1].accepted = true, true
+      t.match("^✓", build().lines[1])
+      hunks[1].accepted = false
+      t.match("^✗", build().lines[1])
+      t.match("rejected", build().lines[1])
       hunks[1].decided, hunks[1].accepted = nil, nil
     end)
-    t.it("aligns inserts and deletes of different lengths", function()
-      local uneven = result.hunks({ "a", "b" }, { "a", "x", "y", "b" })
-      local view =
-        render.build({ original = { "a", "b" }, edited = { "a", "x", "y", "b" }, hunks = uneven, width = 100 })
-      local text = table.concat(view.lines, "\n")
-      t.match("%+ x", text)
-      t.match("%+ y", text)
-      -- Both inserted lines belong to the same hunk; the delete side is blank.
-      t.eq(1, view.row_hunk[2])
-      t.eq(1, view.row_hunk[3])
-      t.falsy(view.row_hunk[1])
-    end)
-    t.it("expands tabs and truncates long lines within the column", function()
-      local original = { "\told" }
-      local edited = { "\tnew" }
-      local tabbed = result.hunks(original, edited)
-      local view = render.build({ original = original, edited = edited, hunks = tabbed, width = 80, tabstop = 4 })
-      t.falsy(view.lines[1]:find("\t", 1, true))
-      local long_old = { string.rep("x", 500) }
-      local long = result.hunks(long_old, { "y" })
-      local clipped = render.build({ original = long_old, edited = { "y" }, hunks = long, width = 80 })
-      t.truthy(vim.fn.strdisplaywidth(clipped.lines[1]) <= 80)
-      t.match("…", clipped.lines[1])
-    end)
-    t.it("falls back to hunks past max_rows and truncates safely", function()
+    t.it("truncates past max_rows instead of overrunning", function()
       local many_old, many_edited, many_hunks = {}, {}, {}
       for i = 1, 40 do
         many_old[i] = "old" .. i
         many_edited[i] = "new" .. i
         many_hunks[i] = { start = i - 1, old_lines = { "old" .. i }, new_lines = { "new" .. i }, new_start = i - 1 }
       end
-      local view = render.build({
+      local view = build({
+        hunks = many_hunks,
         original = many_old,
         edited = many_edited,
-        hunks = many_hunks,
-        width = 100,
         max_rows = 20,
       })
-      t.eq("hunks", view.layout)
       t.truthy(#view.lines <= 20)
-      t.match("@@ Hunk 1/40", view.lines[1])
+      t.truthy(view.rendered < #many_hunks)
+      t.match("truncated", view.lines[#view.lines])
+    end)
+    t.it("keeps syntax segments from the card renderer", function()
+      local lua = { "local a = 1", "local b = 2" }
+      local changed = { "local a = 42", "local b = 2" }
+      local view = build({
+        hunks = result.hunks(lua, changed),
+        original = lua,
+        edited = changed,
+        path = "/tmp/sample.lua",
+        width = 80,
+        syntax = true,
+      })
+      local groups = {}
+      for _, span in ipairs(view.spans) do
+        if span.group then
+          groups[span.group] = true
+        end
+      end
+      t.truthy(groups.AcpDiffAdd or groups.AcpDiffDelete, vim.inspect(vim.tbl_keys(groups)))
+    end)
+
+    t.it("uses byte offsets after accepted and rejected UTF-8 markers", function()
+      for _, accepted in ipairs({ true, false }) do
+        local h = result.hunks({ "local a = 1" }, { "local a = 2" })
+        h[1].decided, h[1].accepted = true, accepted
+        local view = build({ hunks = h, original = { "local a = 1" }, edited = { "local a = 2" } })
+        local found = false
+        for _, span in ipairs(view.spans) do
+          if span.group == "AcpDiffAddSign" or span.group == "AcpDiffRemoveSign" then
+            found = true
+            t.eq(4, span.start)
+            t.eq(6, span.stop)
+            t.truthy(({ ["+ "] = true, ["- "] = true })[view.lines[span.row + 1]:sub(span.start + 1, span.stop)])
+          end
+        end
+        t.truthy(found)
+      end
+    end)
+
+    t.it("shows configured original context without including neighboring changes", function()
+      local old = { "left", "old", "middle", "other", "right" }
+      local new = { "left", "new", "middle", "OTHER", "right" }
+      local h = result.hunks(old, new)
+      local view = build({ hunks = { h[1] }, original = old, edited = new, context = 3 })
+      local text = table.concat(view.lines, "\n")
+      t.truthy(text:find("left", 1, true))
+      t.truthy(text:find("middle", 1, true))
+      t.truthy(text:find("other", 1, true))
+      t.falsy(text:find("OTHER", 1, true))
+      local plain = build({ hunks = { h[1] }, original = old, edited = new, context = 0 })
+      t.falsy(table.concat(plain.lines, "\n"):find("left", 1, true))
+    end)
+
+    t.it("keeps configured review highlights ahead of the static defaults", function()
+      local hl = require("acp.ui.highlights")
+      local saved = {
+        DiffAdd = vim.api.nvim_get_hl(0, { name = "DiffAdd" }),
+        DiffDelete = vim.api.nvim_get_hl(0, { name = "DiffDelete" }),
+        DiffChange = vim.api.nvim_get_hl(0, { name = "DiffChange" }),
+      }
+      vim.api.nvim_set_hl(0, "DiffAdd", { bg = "#005500" })
+      vim.api.nvim_set_hl(0, "DiffDelete", { bg = "#550000" })
+      vim.api.nvim_set_hl(0, "DiffChange", { bg = "#000055" })
+      hl.setup({
+        AcpDiffModify = { bg = "#123456" },
+        AcpReviewAdd = { bg = "#abcdef" },
+        AcpReviewDelete = { bg = "#fedcba" },
+        AcpReviewPending = { bg = "#456789" },
+        AcpReviewFiller = { fg = "#334455" },
+      })
+      for _ = 1, 2 do
+        t.eq(0x123456, vim.api.nvim_get_hl(0, { name = "AcpDiffModify", link = false }).bg)
+        t.eq(0xabcdef, vim.api.nvim_get_hl(0, { name = "AcpReviewAdd", link = false }).bg)
+        t.eq(0xfedcba, vim.api.nvim_get_hl(0, { name = "AcpReviewDelete", link = false }).bg)
+        t.eq(0x456789, vim.api.nvim_get_hl(0, { name = "AcpReviewPending", link = false }).bg)
+        t.eq(0x334455, vim.api.nvim_get_hl(0, { name = "AcpReviewFiller", link = false }).fg)
+        vim.api.nvim_exec_autocmds("ColorScheme", {})
+      end
+      for name, spec in pairs(saved) do
+        vim.api.nvim_set_hl(0, name, spec)
+      end
+      hl.setup({})
+    end)
+
+    t.it("copies the theme diff surfaces onto the review rows", function()
+      local hl = require("acp.ui.highlights")
+      local saved = {}
+      for _, name in ipairs({ "DiffAdd", "DiffDelete", "DiffChange", "DiffText", "CursorLine" }) do
+        saved[name] = vim.api.nvim_get_hl(0, { name = name })
+      end
+      vim.api.nvim_set_hl(0, "DiffAdd", { bg = "#103010", fg = "#ffffff" })
+      vim.api.nvim_set_hl(0, "DiffDelete", { bg = "#301010", fg = "#ffffff" })
+      vim.api.nvim_set_hl(0, "DiffChange", { bg = "#101030", underline = true })
+      vim.api.nvim_set_hl(0, "DiffText", { bg = "#404070", bold = true })
+      vim.api.nvim_set_hl(0, "CursorLine", { bg = "#202020", underline = true })
+      hl.setup({})
+      for group, expected in pairs({
+        AcpReviewAdd = 0x103010,
+        AcpReviewDelete = 0x301010,
+        AcpReviewPending = 0x101030,
+        AcpReviewAddText = 0x404070,
+        AcpReviewDeleteText = 0x404070,
+        AcpReviewCursorLine = 0x202020,
+      }) do
+        local def = vim.api.nvim_get_hl(0, { name = group, link = false })
+        t.eq(expected, def.bg, group)
+        -- Only the surface is copied: syntax keeps the text colour, and the
+        -- theme's underline must not be drawn across every column.
+        t.falsy(def.fg, group .. " carries a foreground")
+        t.falsy(def.underline, group .. " carries an underline")
+      end
+      -- The copy follows the theme.
+      vim.api.nvim_set_hl(0, "DiffAdd", { bg = "#105510" })
+      vim.api.nvim_exec_autocmds("ColorScheme", {})
+      t.eq(0x105510, vim.api.nvim_get_hl(0, { name = "AcpReviewAdd", link = false }).bg)
+      -- An explicit override wins.
+      hl.setup({ AcpReviewAdd = { bg = "#224422" } })
+      t.eq(0x224422, vim.api.nvim_get_hl(0, { name = "AcpReviewAdd", link = false }).bg)
+      for name, spec in pairs(saved) do
+        vim.api.nvim_set_hl(0, name, spec)
+      end
+      hl.setup({})
+    end)
+
+    t.it("classifies hunks by old/new content, not row counts or decisions", function()
+      for _, case in ipairs({
+        { {}, { "new" }, "add" },
+        { { "old" }, {}, "delete" },
+        { { "old" }, { "new" }, "modify" },
+        { { "old" }, { "new", "extra" }, "modify" },
+        { { "old", "extra" }, { "new" }, "modify" },
+      }) do
+        local hunk = { old_lines = case[1], new_lines = case[2] }
+        t.eq(case[3], result.hunk_kind(hunk))
+        hunk.decided, hunk.accepted = true, true
+        t.eq(case[3], result.hunk_kind(hunk))
+        hunk.accepted = false
+        t.eq(case[3], result.hunk_kind(hunk))
+      end
+    end)
+
+    t.it("uses fixed subdued filler foregrounds on every theme", function()
+      local hl = require("acp.ui.highlights")
+      local saved = {}
+      for _, name in ipairs({ "Normal", "NormalFloat", "DiffDelete" }) do
+        saved[name] = vim.api.nvim_get_hl(0, { name = name })
+      end
+      for _, bg in ipairs({ "#202020", "#ffffff", "NONE" }) do
+        vim.api.nvim_set_hl(0, "Normal", { bg = bg, fg = "#ffffff" })
+        vim.api.nvim_set_hl(0, "NormalFloat", { bg = bg })
+        vim.api.nvim_set_hl(0, "DiffDelete", { bg = "#602020", fg = "#ffffff" })
+        hl.setup({})
+        t.eq(0x5c6370, vim.api.nvim_get_hl(0, { name = "AcpReviewFiller", link = false }).fg)
+        -- No background: the row/Normal background shows through.
+        t.falsy(vim.api.nvim_get_hl(0, { name = "AcpReviewFiller", link = false }).bg)
+        vim.api.nvim_exec_autocmds("ColorScheme", {})
+        t.eq(0x5c6370, vim.api.nvim_get_hl(0, { name = "AcpReviewFiller", link = false }).fg)
+      end
+      for name, spec in pairs(saved) do
+        vim.api.nvim_set_hl(0, name, spec)
+      end
+      hl.setup({})
     end)
   end)
 
-  t.describe("inline review selection", function()
-    local render = require("acp.inline.render")
-    local res = require("acp.inline.result")
+  t.describe("inline review session", function()
+    local session_mod = require("acp.inline.diff_session")
     local original = { "a", "b", "c", "d", "e" }
     local edited = { "A", "b", "c", "D", "e" }
-    local hunks = res.hunks(original, edited)
-    local function view()
-      return render.build({ original = original, edited = edited, hunks = hunks, width = 100 })
-    end
-    t.it("maps changed rows to their hunk and leaves context unmapped", function()
-      local v = view()
-      t.eq(1, render.hunk_at(v, 1))
-      t.falsy(render.hunk_at(v, 2))
-      t.eq(2, render.hunk_at(v, 4))
-      t.eq({ 1 }, render.selected(v, 1, 1))
-      t.eq({ 1, 2 }, render.selected(v, 1, 4))
-      t.eq({}, render.selected(v, 2, 3))
-    end)
-    t.it("reports each hunk's row range", function()
-      local v = view()
-      local from, to = render.hunk_range(v, 1)
-      t.eq(1, from)
-      t.truthy(to >= from)
-      local second_from = render.hunk_range(v, 2)
-      t.truthy(second_from > from)
-    end)
-    t.it("selects a hunk header as well as its changed rows", function()
-      local hunks_view = render.build({
-        original = { "a", "b" },
-        edited = { "A", "b", "x" },
-        hunks = res.hunks({ "a", "b" }, { "A", "b", "x" }),
-        width = 100,
-        layout = "hunks",
-        context = 0,
-      })
-      t.eq("hunks", hunks_view.layout)
-      t.eq(1, render.hunk_at(hunks_view, 1))
-      t.eq(1, render.hunk_at(hunks_view, 2))
-    end)
-    t.it("acts on the whole Visual range", function()
-      local win, buf = win_with(original)
-      local accepted = {}
-      local ok = require("acp.inline.diff_session").open({
+
+    local function open(over)
+      local _, buf = win_with(original)
+      local cfg_now = cfg()
+      -- Force the native layout regardless of the test screen width.
+      cfg_now.inline.window.review.min_split_width = 20
+      for key, value in pairs(over or {}) do
+        cfg_now.inline.window.review[key] = value
+      end
+      local finished = {}
+      local ok, err = session_mod.open({
         bufnr = buf,
         lines = edited,
+        config = cfg_now,
         on_finish = function(count)
-          accepted.count = count
+          finished.count = count
         end,
       })
-      t.truthy(ok)
-      local review_win = vim.api.nvim_get_current_win()
-      t.truthy(review_win ~= win)
-      vim.api.nvim_win_set_cursor(review_win, { 1, 0 })
-      vim.cmd("normal! V")
-      vim.api.nvim_win_set_cursor(review_win, { 4, 0 })
+      return ok, err, buf, finished
+    end
+
+    ---Review windows ordered left to right, with their buffers.
+    local function sorted_panes()
+      local panes = {}
+      for _, win in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
+        panes[#panes + 1] = {
+          col = vim.api.nvim_win_get_position(win)[2],
+          win = win,
+          buf = vim.api.nvim_win_get_buf(win),
+        }
+      end
+      table.sort(panes, function(a, b)
+        return a.col < b.col
+      end)
+      return panes
+    end
+
+    ---Row decorations of a review buffer: `row -> group` (filler rows by their
+    ---line highlight, changed rows by their row surface).
+    local function row_groups(buf)
+      local ns = vim.api.nvim_get_namespaces()["acp.inline.review"]
+      local out = {}
+      for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(buf, ns, 0, -1, { details = true })) do
+        local d = mark[4]
+        if d.line_hl_group then
+          out[mark[2] + 1] = d.line_hl_group
+        elseif d.hl_eol then
+          out[mark[2] + 1] = d.hl_group
+        end
+      end
+      return out
+    end
+
+    t.it("classifies each row of a mixed hunk on its own side", function()
+      -- Nothing similar: plain top-down pairing, the surplus row is the addition.
+      local mixed = result.hunk_rows({ old_lines = { "old" }, new_lines = { "new", "added" } })
+      t.eq("modify", mixed.old[1])
+      t.eq("modify", mixed.new[1])
+      t.eq("add", mixed.new[2])
+      t.eq(nil, mixed.old[2])
+
+      -- Something similar: linematch pairs it wherever it sits.
+      local similar = result.hunk_rows({
+        old_lines = { "local x = 1" },
+        new_lines = { "-- a new comment", "local x = 2" },
+      })
+      t.eq("modify", similar.old[1])
+      t.eq("add", similar.new[1])
+      t.eq("modify", similar.new[2])
+
+      -- Unequal replacement: the matched row modifies, the surplus old row is
+      -- the deletion.
+      local shrunk = result.hunk_rows({ old_lines = { "o1", "o2" }, new_lines = { "n1" } })
+      t.eq("modify", shrunk.old[1])
+      t.eq("delete", shrunk.old[2])
+      t.eq("modify", shrunk.new[1])
+
+      -- linematch pairs the surviving line wherever it sits, so a three-line
+      -- replacement of one line marks the last old row as the modification and
+      -- the first two as deletions.
+      local paired_last = result.hunk_rows({
+        old_lines = { "a = 1", "b = 2", "return a + b" },
+        new_lines = { "return a + b + 1" },
+      })
+      t.eq({ delete = true, delete_b = true, modify = true }, {
+        delete = paired_last.old[1] == "delete",
+        delete_b = paired_last.old[2] == "delete",
+        modify = paired_last.old[3] == "modify",
+      })
+      t.eq("modify", paired_last.new[1])
+
+      local added = result.hunk_rows({ old_lines = {}, new_lines = { "a", "b" } })
+      t.eq({ add = true, add_b = true }, { add = added.new[1] == "add", add_b = added.new[2] == "add" })
+      local removed = result.hunk_rows({ old_lines = { "a", "b" }, new_lines = {} })
+      t.eq(
+        { delete = true, delete_b = true },
+        { delete = removed.old[1] == "delete", delete_b = removed.old[2] == "delete" }
+      )
+    end)
+
+    t.it("aligns rows so modified rows face content and added rows face filler", function()
+      local align = require("acp.inline.review.align")
+      local cases = {
+        { { "a", "b", "c" }, { "a", "B", "x", "c" } },
+        { { "a", "b" }, { "z", "a", "b", "y" } },
+        { { "a", "b", "c" }, { "c" } },
+        { {}, { "new" } },
+        { { "only" }, {} },
+        {
+          { "--- Builds a greeting string.", "---", "--- Every argument is optional", "--- error.", "---", "x" },
+          { "--- 构造一个问候字符串。", "---", "--- 每个参数都是可选的", "---", "x" },
+        },
+      }
+      for _, case in ipairs(cases) do
+        local old, new = case[1], case[2]
+        local hunks = result.hunks(old, new)
+        local model = align.build(old, new, hunks)
+        local left = align.pane(model, "original", hunks)
+        local right = align.pane(model, "proposal", hunks)
+        t.eq(#left.lines, #right.lines, "columns differ in height")
+        for r, row in ipairs(model.rows) do
+          if row.kind == "modify" or row.kind == "same" then
+            t.falsy(left.filler[r] or right.filler[r], "a paired row faces filler")
+          elseif row.kind == "add" then
+            t.truthy(left.filler[r] and not right.filler[r], "an added row does not face filler")
+          elseif row.kind == "delete" then
+            t.truthy(right.filler[r] and not left.filler[r], "a deleted row does not face filler")
+          end
+        end
+        -- Every real line is shown exactly once, in order.
+        local seen_old, seen_new = {}, {}
+        for r = 1, #model.rows do
+          if not left.filler[r] then
+            seen_old[#seen_old + 1] = left.lines[r]
+          end
+          if not right.filler[r] then
+            seen_new[#seen_new + 1] = right.lines[r]
+          end
+        end
+        t.eq(old, seen_old)
+        t.eq(new, seen_new)
+      end
+      -- The translated comment pairs top-down, not by accident of similarity.
+      local old, new = cases[6][1], cases[6][2]
+      local model = align.build(old, new, result.hunks(old, new))
+      t.eq(3, model.rows[3].old)
+      t.eq(3, model.rows[3].new)
+      t.eq("delete", model.rows[4].kind)
+    end)
+
+    t.it("marks only the changed characters of a similar row", function()
+      t.eq({ old = { { 10, 13 } }, new = { { 10, 13 } } }, result.char_ranges("local x = foo(1)", "local x = bar(1)"))
+      -- A rewrite would light up the whole row: the row surface is enough.
+      t.eq({ old = {}, new = {} }, result.char_ranges("-- Builds a greeting", "-- 构造一个问候"))
+      -- Ranges stay on UTF-8 boundaries.
+      local ranges = result.char_ranges("名字 = 1", "名称 = 1")
+      t.eq({ { 3, 6 } }, ranges.old)
+      t.eq({ { 3, 6 } }, ranges.new)
+    end)
+
+    t.it("pads every column to the same rows and paints each side", function()
+      local _, buf = win_with({ "a", "old", "z" })
+      local c = cfg()
+      c.inline.window.review.min_split_width = 20
+      assert(session_mod.open({ bufnr = buf, lines = { "a", "new", "added", "z" }, config = c }))
+      local panes = sorted_panes()
+      local lines = {}
+      for i, pane in ipairs(panes) do
+        lines[i] = vim.api.nvim_buf_get_lines(pane.buf, 0, -1, false)
+      end
+      t.eq({ "a", "old", "", "z" }, lines[1])
+      t.eq({ "a", "old", "", "z" }, lines[2])
+      t.eq({ "a", "new", "added", "z" }, lines[3])
+      -- Original: what goes away. Result: still undecided. Proposal: what comes in.
+      t.eq({ [2] = "AcpReviewDelete", [3] = "AcpReviewFiller" }, row_groups(panes[1].buf))
+      t.eq({ [2] = "AcpReviewPending", [3] = "AcpReviewFiller" }, row_groups(panes[2].buf))
+      t.eq({ [2] = "AcpReviewAdd", [3] = "AcpReviewAdd" }, row_groups(panes[3].buf))
+      -- Real line numbers: filler rows have none, the proposal keeps its own.
+      local layout = require("acp.inline.review.layout")
+      local lnums = layout.gutter(panes[1].buf).lnums
+      t.eq({ 1, 2, nil, 3 }, { lnums[1], lnums[2], lnums[3], lnums[4] })
+      t.eq(4, layout.gutter(panes[3].buf).lnums[4])
+      -- One state bar per hunk row, the same in every column.
+      for _, pane in ipairs(panes) do
+        local bars = layout.gutter(pane.buf).bars
+        t.falsy(bars[1])
+        t.truthy(bars[2] and bars[3])
+        t.falsy(bars[4])
+      end
+      session_mod.close_all()
+      vim.api.nvim_buf_delete(buf, { force = true })
+    end)
+
+    t.it("repaints every column from the decision", function()
+      local _, buf = win_with({ "a", "old", "z", "q" })
+      local c = cfg()
+      c.inline.window.review.min_split_width = 20
+      c.inline.window.review.fold = false
+      assert(session_mod.open({ bufnr = buf, lines = { "a", "new", "z", "Q" }, config = c }))
+      local panes = sorted_panes()
+      local result_win = panes[2].win
+      vim.api.nvim_set_current_win(result_win)
+      vim.api.nvim_win_set_cursor(result_win, { 2, 0 })
+      vim.api.nvim_feedkeys("ga", "x", false)
+      -- Accepted: the result shows the proposal, the replaced original dims.
+      t.eq({ "a", "new", "z", "q" }, vim.api.nvim_buf_get_lines(panes[2].buf, 0, -1, false))
+      t.eq("AcpReviewDimmed", row_groups(panes[1].buf)[2])
+      t.eq("AcpReviewAdd", row_groups(panes[2].buf)[2])
+      t.eq("AcpReviewAdd", row_groups(panes[3].buf)[2])
+      local layout = require("acp.inline.review.layout")
+      t.eq("AcpReviewStateAccepted", layout.gutter(panes[1].buf).bars[2].group)
+      t.eq("✓", layout.gutter(panes[3].buf).bars[2].glyph)
+      -- Rejected: the original is kept as is, the dropped proposal dims.
+      vim.api.nvim_win_set_cursor(result_win, { 4, 0 })
+      vim.api.nvim_feedkeys("u", "x", false)
+      t.eq("AcpReviewStateCurrent", layout.gutter(panes[2].buf).bars[4].group)
+      session_mod.close_all()
+      vim.api.nvim_buf_delete(buf, { force = true })
+
+      _, buf = win_with({ "a", "old", "z", "q" })
+      assert(session_mod.open({ bufnr = buf, lines = { "a", "new", "z", "Q" }, config = c }))
+      panes = sorted_panes()
+      vim.api.nvim_set_current_win(panes[2].win)
+      vim.api.nvim_win_set_cursor(panes[2].win, { 2, 0 })
+      vim.api.nvim_feedkeys("gr", "x", false)
+      t.eq(nil, row_groups(panes[1].buf)[2])
+      t.eq(nil, row_groups(panes[2].buf)[2])
+      t.eq("AcpReviewDimmed", row_groups(panes[3].buf)[2])
+      t.eq("AcpReviewStateRejected", layout.gutter(panes[2].buf).bars[2].group)
+      session_mod.close_all()
+      vim.api.nvim_buf_delete(buf, { force = true })
+    end)
+
+    t.it("starts Tree-sitter for languages Neovim does not cover by default", function()
+      local layout = require("acp.inline.review.layout")
+      local sources = {
+        python = { "def f(x):", "    return x + 1" },
+        javascript = { "function f(x) {", "  return x + 1", "}" },
+        lua = { "local function f(x)", "  return x + 1", "end" },
+      }
+      for lang, lines in pairs(sources) do
+        local buf = layout.scratch(lines, lang, false)
+        t.truthy(vim.treesitter.highlighter.active[buf], lang .. " was not highlighted by Tree-sitter")
+        t.eq("", vim.bo[buf].syntax, lang .. " fell back to legacy syntax")
+        vim.api.nvim_buf_delete(buf, { force = true })
+      end
+      -- An unknown language falls back silently to the legacy syntax file.
+      local odd = layout.scratch({ "whatever" }, "totally_unknown_lang", false)
+      t.falsy(vim.treesitter.highlighter.active[odd])
+      t.eq("totally_unknown_lang", vim.bo[odd].syntax)
+      vim.api.nvim_buf_delete(odd, { force = true })
+    end)
+
+    t.it("pins every review window so its buffer cannot be replaced", function()
+      local ok, err, buf = open()
+      t.truthy(ok, err)
+      for _, win in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
+        t.truthy(vim.api.nvim_get_option_value("winfixbuf", { win = win }), "unpinned window " .. win)
+        local before = vim.api.nvim_win_get_buf(win)
+        for _, command in ipairs({ "enew", "bnext", "edit /tmp/acp-review-should-not-open.lua" }) do
+          local changed, failure = pcall(function()
+            vim.api.nvim_win_call(win, function()
+              vim.cmd(command)
+            end)
+          end)
+          t.falsy(changed, command .. " -> " .. tostring(failure))
+          t.match("E1513", tostring(failure))
+          t.eq(before, vim.api.nvim_win_get_buf(win))
+        end
+      end
+      -- Closing is still allowed, and it settles the review like any other exit.
+      -- The teardown is scheduled, so the session disappears one event-loop turn
+      -- after the tab is gone.
+      vim.cmd("tabclose")
+      vim.wait(200, function()
+        return not session_mod.active(buf)
+      end)
+      t.falsy(session_mod.active(buf))
+      vim.api.nvim_buf_delete(buf, { force = true })
+    end)
+
+    t.it("leaves window options and later floats untouched", function()
+      local function global(name)
+        return vim.api.nvim_get_option_value(name, { scope = "global" })
+      end
+      local saved = { diff = global("diff"), winhighlight = global("winhighlight") }
+      vim.o.diffopt = "internal,filler,context:2"
+      vim.api.nvim_set_option_value("winhighlight", "DiffAdd:Error", { scope = "global" })
+      local ok, err, buf = open()
+      t.truthy(ok, err)
+      local float = vim.api.nvim_open_win(vim.api.nvim_create_buf(false, true), false, {
+        relative = "editor",
+        row = 1,
+        col = 1,
+        width = 20,
+        height = 3,
+        style = "minimal",
+      })
+      t.falsy(vim.api.nvim_get_option_value("diff", { win = float }), "float joined the diff")
+      t.falsy(
+        vim.api.nvim_get_option_value("winhighlight", { win = float }):find("AcpReview", 1, true),
+        "float inherited the review winhighlight"
+      )
+      t.eq(saved.diff, global("diff"))
+      -- A pre-existing global value survives and is not overwritten with the
+      -- review's own winhighlight.
+      t.eq("DiffAdd:Error", global("winhighlight"))
+      vim.api.nvim_win_close(float, true)
+      session_mod.close_all()
+      t.eq(saved.diff, global("diff"))
+      t.eq("DiffAdd:Error", global("winhighlight"))
+      vim.api.nvim_set_option_value("winhighlight", saved.winhighlight, { scope = "global" })
+      vim.api.nvim_buf_delete(buf, { force = true })
+    end)
+
+    t.it("brings a pane back after its buffer was swapped", function()
+      local ok, err, buf = open()
+      t.truthy(ok, err)
+      local win = vim.api.nvim_get_current_win()
+      local pane_buf = vim.api.nvim_win_get_buf(win)
+      vim.api.nvim_set_option_value("winfixbuf", false, { win = win })
+      vim.api.nvim_win_call(win, function()
+        vim.cmd("edit " .. vim.fn.tempname())
+      end)
+      t.truthy(
+        vim.wait(500, function()
+          return vim.api.nvim_win_get_buf(win) == pane_buf
+        end),
+        "the review buffer was not restored"
+      )
+      t.truthy(vim.api.nvim_get_option_value("winfixbuf", { win = win }))
+      -- The hunk mappings belong to the restored buffer again.
+      t.truthy(vim.api.nvim_win_call(win, function()
+        return vim.fn.maparg("ga", "n", false, true).callback ~= nil
+      end))
+      session_mod.close_all()
+      vim.api.nvim_buf_delete(buf, { force = true })
+    end)
+
+    t.it("opens the native three-window layout in its own tab", function()
+      local tabs = #vim.api.nvim_list_tabpages()
+      local ok, err, buf = open()
+      t.truthy(ok, err)
+      t.eq(tabs + 1, #vim.api.nvim_list_tabpages())
+      local wins = vim.api.nvim_tabpage_list_wins(0)
+      t.eq(3, #wins)
+      for _, win in ipairs(wins) do
+        -- Not Vim's diff mode: it would diff all three columns against each
+        -- other. Rows are aligned by padding instead.
+        t.falsy(vim.wo[win].diff, "window is in diff mode")
+        t.truthy(vim.wo[win].scrollbind)
+        t.truthy(vim.wo[win].cursorbind)
+      end
+      local counts = {}
+      for _, win in ipairs(wins) do
+        counts[#counts + 1] = vim.api.nvim_buf_line_count(vim.api.nvim_win_get_buf(win))
+      end
+      t.eq({ counts[1], counts[1], counts[1] }, counts)
+      session_mod.close_all()
+      vim.api.nvim_buf_delete(buf, { force = true })
+    end)
+
+    t.it("keeps the column order regardless of 'splitright'", function()
+      local saved = vim.o.splitright
+      for _, value in ipairs({ false, true }) do
+        vim.o.splitright = value
+        local ok, err, buf = open()
+        t.truthy(ok, err)
+        local ordered = {}
+        for _, win in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
+          ordered[#ordered + 1] = { col = vim.api.nvim_win_get_position(win)[2], win = win }
+        end
+        table.sort(ordered, function(a, b)
+          return a.col < b.col
+        end)
+        local firsts = {}
+        for _, entry in ipairs(ordered) do
+          firsts[#firsts + 1] = vim.api.nvim_buf_get_lines(vim.api.nvim_win_get_buf(entry.win), 0, 1, false)[1]
+        end
+        -- original | result | proposal
+        t.eq({ "a", "a", "A" }, firsts, "splitright=" .. tostring(value))
+        session_mod.close_all()
+        vim.api.nvim_buf_delete(buf, { force = true })
+      end
+      vim.o.splitright = saved
+    end)
+
+    t.it("applies the review appearance options", function()
+      local ok, err, buf = open()
+      t.truthy(ok, err)
+      for _, win in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
+        t.eq("no", vim.wo[win].signcolumn)
+        t.falsy(vim.wo[win].relativenumber)
+        t.eq("1", vim.wo[win].foldcolumn)
+        t.eq("expr", vim.wo[win].foldmethod)
+        t.truthy(vim.wo[win].statuscolumn:find("acp.inline.review.layout", 1, true))
+        local fcs = vim.api.nvim_get_option_value("fillchars", { win = win, scope = "local" })
+        t.truthy(fcs:find("vert:│", 1, true), fcs)
+        t.truthy(vim.wo[win].winhl:find("CursorLine:AcpReviewCursorLine", 1, true))
+      end
+      -- The gutter shows the bar cell and the real line number.
+      local win = vim.api.nvim_get_current_win()
+      local text = vim.api.nvim_eval_statusline(vim.wo[win].statuscolumn, { winid = win, use_statuscol_lnum = 1 }).str
+      t.match("1 $", text)
+      -- The global option must not be touched by the window-local assignment.
+      t.falsy(vim.api.nvim_get_option_value("statuscolumn", { scope = "global" }):find("acp", 1, true))
+      session_mod.close_all()
+      vim.api.nvim_buf_delete(buf, { force = true })
+    end)
+
+    t.it("paints only the rows each pane actually changes", function()
+      local _, buf = win_with({ "a", "b", "c", "d", "e" })
+      local c = cfg()
+      c.inline.window.review.min_split_width = 20
+      assert(session_mod.open({ bufnr = buf, lines = { "a", "b", "NEW", "c", "d", "e" }, config = c }))
+      local panes = sorted_panes()
+      t.truthy(session_mod.active(buf))
+      -- A pure insertion has no row on the old side: the original and the
+      -- (still unmodified) result columns show filler there, the proposal the
+      -- inserted line. Neighbouring unchanged lines stay unpainted.
+      t.eq({ [3] = "AcpReviewFiller" }, row_groups(panes[1].buf))
+      t.eq({ [3] = "AcpReviewFiller" }, row_groups(panes[2].buf))
+      t.eq({ [3] = "AcpReviewAdd" }, row_groups(panes[3].buf))
+      for _, pane in ipairs(panes) do
+        t.eq(6, vim.api.nvim_buf_line_count(pane.buf))
+      end
+      session_mod.close_all()
+      vim.api.nvim_buf_delete(buf, { force = true })
+    end)
+
+    t.it("does not paint unchanged insertion anchors as hunk rows", function()
+      local _, buf = win_with({ "a", "", "c", "d", "e" })
+      local c = cfg()
+      c.inline.window.review.min_split_width = 20
+      assert(session_mod.open({ bufnr = buf, lines = { "a", "", "NEW", "c", "d", "e" }, config = c }))
+      local ns = vim.api.nvim_get_namespaces()["acp.inline.review"]
+      local panes = sorted_panes()
+      for _, pane in ipairs(panes) do
+        -- The empty anchor line above the insertion is untouched everywhere.
+        t.eq({}, vim.api.nvim_buf_get_extmarks(pane.buf, ns, { 1, 0 }, { 1, -1 }, {}))
+      end
+      local marks = vim.api.nvim_buf_get_extmarks(panes[3].buf, ns, { 2, 0 }, { 2, -1 }, { details = true })
+      t.eq(1, #marks)
+      t.eq("AcpReviewAdd", marks[1][4].hl_group)
+      t.eq(3, marks[1][4].end_row)
+      t.eq(0, marks[1][4].end_col)
+      t.truthy(marks[1][4].hl_eol)
+      session_mod.close_all()
+      vim.api.nvim_buf_delete(buf, { force = true })
+    end)
+
+    t.it("uses two windows for 2-column", function()
+      local ok, err, buf = open({ layout = "2-column" })
+      t.truthy(ok, err)
+      t.eq(2, #vim.api.nvim_tabpage_list_wins(0))
+      session_mod.close_all()
+      vim.api.nvim_buf_delete(buf, { force = true })
+    end)
+
+    t.it("decides pure EOF insertions individually in both native layouts", function()
+      for _, mode in ipairs({ "2-column", "3-column" }) do
+        for _, action in ipairs({ "ga", "gr" }) do
+          local _, buf = win_with({ "a", "b" })
+          local c = cfg()
+          c.inline.window.review.min_split_width = 20
+          c.inline.window.review.layout = mode
+          assert(session_mod.open({ bufnr = buf, lines = { "a", "b", "NEW" }, config = c }))
+          vim.api.nvim_feedkeys("]c", "x", false)
+          -- The inserted row is a display row of its own, after `b`.
+          t.eq(3, vim.api.nvim_win_get_cursor(0)[1])
+          vim.api.nvim_feedkeys(action, "x", false)
+          wait_close(buf)
+          t.falsy(session_mod.active(buf))
+          t.eq(action == "ga" and { "a", "b", "NEW" } or { "a", "b" }, vim.api.nvim_buf_get_lines(buf, 0, -1, false))
+          vim.api.nvim_buf_delete(buf, { force = true })
+        end
+      end
+    end)
+
+    t.it("updates the current hunk bar when the cursor moves", function()
+      local ok, err, buf = open({ fold = false })
+      t.truthy(ok, err)
+      local layout = require("acp.inline.review.layout")
+      local mid = vim.api.nvim_get_current_buf()
+      local function bar(row)
+        local entry = layout.gutter(mid).bars[row]
+        return entry and entry.group
+      end
+      local ns = vim.api.nvim_get_namespaces()["acp.inline.review"]
+      local function hint_row()
+        for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(mid, ns, 0, -1, { details = true })) do
+          if mark[4].virt_text_pos == "eol" then
+            return mark[2] + 1
+          end
+        end
+      end
+      vim.api.nvim_win_set_cursor(0, { 4, 0 })
+      vim.api.nvim_exec_autocmds("CursorMoved", { buffer = mid })
+      t.eq("AcpReviewStateCurrent", bar(4))
+      t.eq("AcpReviewStatePending", bar(1))
+      t.eq(4, hint_row())
+      vim.api.nvim_win_set_cursor(0, { 2, 0 })
+      vim.api.nvim_exec_autocmds("CursorMoved", { buffer = mid })
+      t.eq("AcpReviewStatePending", bar(4))
+      t.eq(nil, hint_row())
+      session_mod.close_all()
+      vim.api.nvim_buf_delete(buf, { force = true })
+    end)
+
+    t.it("never touches diffopt or diff mode", function()
+      local saved = vim.o.diffopt
+      vim.o.diffopt = "internal,filler,context:2"
+      local _, _, b1 = open()
+      t.eq("internal,filler,context:2", vim.o.diffopt)
+      vim.cmd("tabnew")
+      local source_tab2 = vim.api.nvim_get_current_tabpage()
+      local _, _, b2 = open()
+      t.eq("internal,filler,context:2", vim.o.diffopt)
+      session_mod.close_all()
+      t.eq("internal,filler,context:2", vim.o.diffopt)
+      vim.api.nvim_buf_delete(b1, { force = true })
+      vim.api.nvim_buf_delete(b2, { force = true })
+      if vim.api.nvim_tabpage_is_valid(source_tab2) then
+        vim.cmd("tabclose " .. vim.api.nvim_tabpage_get_number(source_tab2))
+      end
+      vim.o.diffopt = saved
+    end)
+
+    t.it("rolls back options, buffers and autocmds when splitting fails", function()
+      local _, buf = win_with(original)
+      local before_tabs = #vim.api.nvim_list_tabpages()
+      local before_buffers = vim.api.nvim_list_bufs()
+      local before_opt = vim.o.diffopt
+      local width, minwidth = vim.o.winwidth, vim.o.winminwidth
+      local c = cfg()
+      c.inline.window.review.min_split_width = 20
+      vim.o.winwidth = vim.o.columns
+      vim.o.winminwidth = math.floor(vim.o.columns / 2)
+      local ok, err = session_mod.open({ bufnr = buf, lines = edited, config = c })
+      vim.o.winminwidth = minwidth
+      vim.o.winwidth = width
+      t.falsy(ok)
+      t.truthy(err:find("E36", 1, true), err)
+      t.eq(before_opt, vim.o.diffopt)
+      t.eq(before_tabs, #vim.api.nvim_list_tabpages())
+      t.eq(before_buffers, vim.api.nvim_list_bufs())
+      t.falsy(session_mod.active(buf))
+      t.falsy(pcall(vim.api.nvim_get_autocmds, { group = "AcpInlineReview" .. buf }))
+      assert(session_mod.open({ bufnr = buf, lines = edited, config = c }))
+      session_mod.close_all()
+      vim.api.nvim_buf_delete(buf, { force = true })
+    end)
+
+    t.it("accepts one hunk and leaves the rest untouched", function()
+      local ok, err, buf = open()
+      t.truthy(ok, err)
+      local win = vim.api.nvim_get_current_win()
+      vim.api.nvim_win_set_cursor(win, { 1, 0 })
+      vim.api.nvim_feedkeys("ga", "x", false)
+      t.truthy(session_mod.active(buf))
+      session_mod.close_all()
+      t.eq({ "a", "b", "c", "d", "e" }, vim.api.nvim_buf_get_lines(buf, 0, -1, false))
+      vim.api.nvim_buf_delete(buf, { force = true })
+    end)
+
+    t.it("writes accepted hunks on finish and rejects on close", function()
+      local ok, err, buf, finished = open({ advance = true })
+      t.truthy(ok, err)
+      local win = vim.api.nvim_get_current_win()
+      vim.api.nvim_win_set_cursor(win, { 1, 0 })
+      vim.api.nvim_feedkeys("g2", "x", false)
+      wait_close(buf)
+      t.eq(2, finished.count)
+      t.eq({ "A", "b", "c", "D", "e" }, vim.api.nvim_buf_get_lines(buf, 0, -1, false))
+      vim.cmd("silent undo")
+      t.eq(original, vim.api.nvim_buf_get_lines(buf, 0, -1, false))
+      vim.api.nvim_buf_delete(buf, { force = true })
+    end)
+
+    t.it("decides hunks from any column, since rows are aligned", function()
+      local ok, err, buf = open()
+      t.truthy(ok, err)
+      local panes = sorted_panes()
+      -- The proposal column selects the hunk on the same display row.
+      vim.api.nvim_set_current_win(panes[3].win)
+      vim.api.nvim_win_set_cursor(panes[3].win, { 1, 0 })
+      vim.api.nvim_feedkeys("ga", "x", false)
+      t.truthy(session_mod.active(buf))
+      -- So does the original column.
+      vim.api.nvim_set_current_win(panes[1].win)
+      vim.api.nvim_win_set_cursor(panes[1].win, { 4, 0 })
+      vim.api.nvim_feedkeys("gr", "x", false)
+      wait_close(buf)
+      t.eq({ "A", "b", "c", "d", "e" }, vim.api.nvim_buf_get_lines(buf, 0, -1, false))
+      vim.api.nvim_buf_delete(buf, { force = true })
+    end)
+
+    t.it("keeps the remaining hunks reachable after an accepted one", function()
+      local _, buf = win_with(original)
+      local c = cfg()
+      c.inline.window.review.min_split_width = 20
+      local wide_edited = { "A", "b", "c", "d", "E" }
+      assert(session_mod.open({ bufnr = buf, lines = wide_edited, config = c }))
+      local win = vim.api.nvim_get_current_win()
+      vim.api.nvim_win_set_cursor(win, { 5, 0 })
+      vim.api.nvim_feedkeys("ga", "x", false)
+      -- `advance` is off, so the cursor stays put; the accepted hunk vanishes
+      -- from the diff and `]c` must still reach the remaining pending hunk.
+      t.eq(5, vim.api.nvim_win_get_cursor(win)[1])
+      vim.api.nvim_feedkeys("]c", "x", false)
+      t.eq(1, vim.api.nvim_win_get_cursor(win)[1])
       vim.api.nvim_feedkeys("ga", "x", false)
       wait_close(buf)
+      t.eq({ "A", "b", "c", "d", "E" }, vim.api.nvim_buf_get_lines(buf, 0, -1, false))
+      vim.api.nvim_buf_delete(buf, { force = true })
+    end)
+
+    t.it("navigates review hunks in order from every pane after line shifts", function()
+      for _, mode in ipairs({ "2-column", "3-column" }) do
+        local old = {}
+        for i = 1, 24 do
+          old[i] = "original line " .. i
+        end
+        local new = vim.deepcopy(old)
+        new[3], new[10], new[20] = "CHANGED 3", "CHANGED 10", "CHANGED 20"
+        table.insert(new, 4, "INSERTED")
+        local _, buf = win_with(old)
+        local c = cfg()
+        c.inline.window.review.layout = mode
+        c.inline.window.review.min_split_width = 20
+        assert(session_mod.open({ bufnr = buf, lines = new, config = c }))
+        local function move(key, expected, win)
+          win = win or vim.api.nvim_get_current_win()
+          vim.api.nvim_feedkeys(key, "x", false)
+          -- Navigation stays in the column it started from.
+          t.eq(win, vim.api.nvim_get_current_win())
+          t.eq(expected, vim.api.nvim_win_get_cursor(0)[1], mode .. " " .. key)
+        end
+        -- Display rows: the insertion after line 3 is a row of its own, so the
+        -- later hunks sit one row lower, in every column and whatever is decided.
+        move("]c", 3)
+        move("]c", 11)
+        move("]h", 21)
+        move("[h", 11)
+        move("[c", 3)
+        move("[c", 21)
+        move("]c", 3)
+        vim.api.nvim_feedkeys("ga", "x", false)
+        move("]c", 11)
+        move("]c", 21)
+        move("]c", 3) -- decided hunks remain reachable for undo
+        vim.api.nvim_feedkeys("u", "x", false)
+        move("]c", 11)
+        vim.api.nvim_win_set_cursor(0, { 6, 0 })
+        move("]c", 11)
+        vim.api.nvim_win_set_cursor(0, { 6, 0 })
+        move("[c", 3)
+        local result_win = vim.api.nvim_get_current_win()
+        for _, win in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
+          if win ~= result_win then
+            vim.api.nvim_set_current_win(win)
+            vim.api.nvim_win_set_cursor(win, { 1, 0 })
+            move("]c", 3, win)
+          end
+        end
+        session_mod.close_all()
+        vim.api.nvim_buf_delete(buf, { force = true })
+      end
+    end)
+
+    t.it("navigates card hunks from headers and unchanged separators", function()
+      local ok, err, buf = open({ min_split_width = 10000, context = 0 })
+      t.truthy(ok, err)
+      local lines = vim.api.nvim_buf_get_lines(0, 0, -1, false)
+      local second
+      for row, line in ipairs(lines) do
+        if line:find("@@ Hunk 2/2", 1, true) then
+          second = row
+        end
+      end
+      t.truthy(second)
+      vim.api.nvim_feedkeys("]c", "x", false)
+      t.eq(second, vim.api.nvim_win_get_cursor(0)[1])
+      vim.api.nvim_feedkeys("]c", "x", false)
+      t.eq(1, vim.api.nvim_win_get_cursor(0)[1])
+      vim.api.nvim_feedkeys("[c", "x", false)
+      t.eq(second, vim.api.nvim_win_get_cursor(0)[1])
+      vim.api.nvim_win_set_cursor(0, { second - 1, 0 })
+      vim.api.nvim_feedkeys("[c", "x", false)
+      t.eq(1, vim.api.nvim_win_get_cursor(0)[1])
+      session_mod.close_all()
+      vim.api.nvim_buf_delete(buf, { force = true })
+    end)
+
+    t.it("keeps the result column read-only so decisions are not lost", function()
+      local ok, err, buf = open()
+      t.truthy(ok, err)
+      local mid = vim.api.nvim_get_current_buf()
+      t.falsy(vim.bo[mid].modifiable)
+      t.falsy(pcall(vim.api.nvim_buf_set_lines, mid, 0, 1, false, { "MANUAL" }))
+      vim.api.nvim_feedkeys("g2", "x", false)
+      wait_close(buf)
       t.eq({ "A", "b", "c", "D", "e" }, vim.api.nvim_buf_get_lines(buf, 0, -1, false))
-      t.eq(2, accepted.count)
+      vim.cmd("silent undo")
+      t.eq(original, vim.api.nvim_buf_get_lines(buf, 0, -1, false))
       vim.api.nvim_buf_delete(buf, { force = true })
     end)
-    t.it("refuses a decision on an unchanged row", function()
-      local win, buf = win_with(original)
-      assert(require("acp.inline.diff_session").open({ bufnr = buf, lines = edited }))
-      vim.api.nvim_win_set_cursor(vim.api.nvim_get_current_win(), { 2, 0 })
-      vim.api.nvim_feedkeys("ga", "x", false)
-      t.eq({ "a", "b", "c", "d", "e" }, vim.api.nvim_buf_get_lines(buf, 0, -1, false))
-      require("acp.inline.diff_session").close_all()
+
+    t.it("drops the session when the review tab is closed", function()
+      local saved = vim.o.diffopt
+      local ok, err, buf = open()
+      t.truthy(ok, err)
+      vim.cmd("tabclose")
+      vim.wait(200, function()
+        return false
+      end)
+      t.falsy(session_mod.active(buf))
+      t.eq(saved, vim.o.diffopt)
+      local reopened, why = session_mod.open({
+        bufnr = buf,
+        lines = edited,
+        config = cfg(),
+      })
+      t.truthy(reopened, why)
+      session_mod.close_all()
       vim.api.nvim_buf_delete(buf, { force = true })
     end)
-    t.it("keeps the cursor in place unless advance is enabled", function()
-      local win, buf = win_with(original)
-      assert(require("acp.inline.diff_session").open({ bufnr = buf, lines = edited }))
-      local review_win = vim.api.nvim_get_current_win()
-      vim.api.nvim_win_set_cursor(review_win, { 1, 0 })
-      vim.api.nvim_feedkeys("gr", "x", false)
-      t.eq(1, vim.api.nvim_win_get_cursor(review_win)[1])
-      require("acp.inline.diff_session").close_all()
+
+    t.it("drops the session when the source buffer is wiped", function()
+      local ok, err, buf = open()
+      t.truthy(ok, err)
+      vim.api.nvim_buf_delete(buf, { force = true })
+      t.falsy(session_mod.active(buf))
+      t.eq(1, #vim.api.nvim_list_tabpages())
+    end)
+
+    t.it("does not leak the tab placeholder buffer", function()
+      local before = {}
+      for _, buf in ipairs(vim.api.nvim_list_bufs()) do
+        before[buf] = true
+      end
+      local ok, err, buf = open()
+      t.truthy(ok, err)
+      session_mod.close_all()
+      vim.api.nvim_buf_delete(buf, { force = true })
+      for _, leftover in ipairs(vim.api.nvim_list_bufs()) do
+        if not before[leftover] and vim.api.nvim_buf_is_valid(leftover) then
+          t.falsy(vim.bo[leftover].buftype == "", "leftover normal buffer " .. leftover)
+        end
+      end
+    end)
+
+    t.it("falls back to the card renderer on a narrow screen", function()
+      local _, buf = win_with(original)
+      local c = cfg()
+      c.inline.window.review.min_split_width = 10000
+      local ok, err = session_mod.open({ bufnr = buf, lines = edited, config = c })
+      t.truthy(ok, err)
+      local current = vim.api.nvim_get_current_buf()
+      t.eq("acp_inline_review", vim.bo[current].filetype)
+      t.truthy(table.concat(vim.api.nvim_buf_get_lines(current, 0, -1, false), "\n"):find("@@ Hunk", 1, true))
+      session_mod.close_all()
       vim.api.nvim_buf_delete(buf, { force = true })
     end)
   end)
@@ -750,7 +1544,7 @@ return function(t)
               placement = "cursor",
               width = 100,
               height = 10,
-              layout = "unified",
+              layout = "2-column",
               min_split_width = 70,
               max_rows = 50,
             },
@@ -759,7 +1553,7 @@ return function(t)
       })
       t.eq("double", c.inline.window.border)
       t.eq("MyTitle", c.inline.window.highlights.title)
-      t.eq("unified", c.inline.window.review.layout)
+      t.eq("2-column", c.inline.window.review.layout)
     end)
     t.it("accepts an explicit border character list", function()
       local c = cfg({ inline = { window = { border = { "a", "b", "c", "d", "e", "f", "g", "h" } } } })
