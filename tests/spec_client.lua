@@ -42,6 +42,70 @@ return function(t)
   end
 
   t.describe("client", function()
+    t.it("sends session/cancel before withdrawing the prompt RPC", function()
+      local sent = {}
+      local client = new_client({})
+      client.rpc = require("acp.transport.jsonrpc").new({
+        send = function(payload)
+          sent[#sent + 1] = vim.json.decode(payload)
+          return true
+        end,
+      })
+      local id = client.rpc:request("session/prompt", {}, function() end)
+      client.active_requests["session/prompt"] = id
+      client:cancel("s1")
+      t.eq("session/cancel", sent[2].method)
+      t.eq("$/cancel_request", sent[3].method)
+      t.eq(id, sent[3].params.id)
+      t.eq(nil, client.active_requests["session/prompt"])
+    end)
+
+    t.it("extends an extendable timeout while updates keep arriving", function()
+      local client = new_client({})
+      local rpc = require("acp.transport.jsonrpc").new({
+        send = function()
+          return true
+        end,
+      })
+      client.rpc = rpc
+      local done
+      async.run(function()
+        done = { client:request("session/load", {}, 500, true) }
+      end)
+      wait_for(function()
+        return next(rpc.pending) ~= nil
+      end, 2000)
+      for _ = 1, 10 do
+        vim.wait(30)
+        client:touch_timeout("session/load")
+      end
+      local id = next(rpc.pending)
+      t.truthy(id, "request timed out despite extensions")
+      rpc:handle({ jsonrpc = "2.0", id = id, result = {} })
+      wait_for(function()
+        return done ~= nil
+      end, 2000)
+      t.truthy(done[1], "extended request timed out")
+    end)
+
+    t.it("times out an extendable request that stops being touched", function()
+      local client = new_client({})
+      client.rpc = require("acp.transport.jsonrpc").new({
+        send = function()
+          return true
+        end,
+      })
+      local done
+      async.run(function()
+        done = { client:request("session/load", {}, 30, true) }
+      end)
+      wait_for(function()
+        return done ~= nil
+      end, 2000)
+      t.falsy(done[1])
+      t.eq(-32000, done[2].code)
+    end)
+
     t.it("routes only registered agent requests through the registry", function()
       local sent = {}
       local client = new_client({})

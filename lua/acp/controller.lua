@@ -637,6 +637,21 @@ function M.cancel()
     refresh_chrome()
     return
   end
+  if session.status == "cancelling" then
+    -- A second cancel request must not be a no-op: end the turn locally and
+    -- release its task instead of waiting for an agent that may never reply.
+    operations:cancel_session(session)
+    session.prompt_task = nil
+    session:finish_turn("cancelled")
+    if S.client then
+      S.client:cancel(session.id)
+    end
+    refresh_chrome()
+    if S.chat then
+      S.chat:schedule_render()
+    end
+    return
+  end
   if not session:cancel_turn() then
     return
   end
@@ -673,6 +688,9 @@ function M.on_client_event(name, payload)
 
   if name == "session_update" then
     local update = payload.update or {}
+    if S.replaying and S.client and S.client.touch_timeout then
+      S.client:touch_timeout("session_load")
+    end
     local session, changed, buffered = S.runtime:apply(payload.sessionId, update)
     if not session then
       if not buffered then

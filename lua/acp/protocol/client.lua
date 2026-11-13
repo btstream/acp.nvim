@@ -13,12 +13,18 @@ local CLIENT_INFO = { name = "acp.nvim", title = "acp.nvim", version = "0.1.0" }
 local REQUEST_TIMEOUT = 30000
 
 ---Resolve the effective request timeout from the client's transport limits.
+---Per-method overrides come first, then the generic request timeout.
 ---@param self AcpClient
+---@param method string
 ---@param fallback integer
 ---@return integer|nil
-local function request_timeout(self, fallback)
+local function request_timeout(self, method, fallback)
   local limits = self.limits or {}
-  local value = limits.request_timeout
+  local by_method = limits.timeouts
+  local value = type(by_method) == "table" and by_method[method] or nil
+  if type(value) ~= "number" then
+    value = limits.request_timeout
+  end
   if value == 0 then
     return nil
   end
@@ -52,6 +58,9 @@ function M.new(opts)
     on_event = opts.on_event or function() end,
     permissions = {},
     permission_seq = 0,
+    active_requests = {},
+    settles = {},
+    timeout_extensions = {},
     generation = 0,
     proc = nil,
     rpc = nil,
@@ -155,7 +164,7 @@ function Client:do_start(generation)
     protocolVersion = PROTOCOL_VERSION,
     clientCapabilities = self.client_capabilities,
     clientInfo = CLIENT_INFO,
-  }, request_timeout(self, REQUEST_TIMEOUT))
+  }, request_timeout(self, "initialize", REQUEST_TIMEOUT))
 
   if not ok then
     self:emit("connection_error", result)
@@ -191,8 +200,9 @@ end
 ---@param method string
 ---@param params any
 ---@param timeout integer|nil
+---@param extendable boolean|nil reset the timer via `touch_timeout(method)`
 ---@return boolean ok, any value
-function Client:request(method, params, timeout)
+function Client:request(method, params, timeout, extendable)
   local settled = false
   local yielded, immediate = false, nil
   local id
@@ -210,12 +220,16 @@ function Client:request(method, params, timeout)
       return
     end
     settled = true
+    self.timeout_extensions[method] = nil
     if timer then
       timer:stop()
       timer:close()
       timer = nil
     end
     if id then
+      if self.active_requests[method] == id then
+        self.active_requests[method] = nil
+      end
       rpc:cancel(id)
     end
   end)
@@ -224,10 +238,17 @@ function Client:request(method, params, timeout)
       return
     end
     settled = true
+    self.timeout_extensions[method] = nil
     if timer then
       timer:stop()
       timer:close()
       timer = nil
+    end
+    if id and self.active_requests[method] == id then
+      self.active_requests[method] = nil
+    end
+    if id then
+      self.settles[id] = nil
     end
     if yielded then
       async.resume(co, ok, value)
@@ -239,24 +260,49 @@ function Client:request(method, params, timeout)
   if not id then
     settle(false, { message = "connection closed" })
   end
+  if id then
+    self.active_requests[method] = id
+    self.settles[id] = settle
+  end
   if timeout and timeout > 0 and not settled then
-    timer = vim.uv.new_timer()
-    timer:start(timeout, 0, function()
-      vim.schedule(function()
-        if settled then
+    local function arm()
+      timer = vim.uv.new_timer()
+      timer:start(timeout, 0, function()
+        vim.schedule(function()
+          if settled then
+            return
+          end
+          Log.warn("request %s timed out after %dms", method, timeout)
+          rpc:cancel(id)
+          settle(false, { code = -32000, message = "request timed out: " .. method })
+        end)
+      end)
+    end
+    arm()
+    if extendable then
+      self.timeout_extensions[method] = function()
+        if settled or not timer then
           return
         end
-        Log.warn("request %s timed out after %dms", method, timeout)
-        rpc:cancel(id)
-        settle(false, { code = -32000, message = "request timed out: " .. method })
-      end)
-    end)
+        timer:stop()
+        arm()
+      end
+    end
   end
   if immediate then
     return immediate.ok, immediate.value
   end
   yielded = true
   return coroutine.yield()
+end
+
+---Restart the timeout of an extendable request (used during session replay).
+---@param method string
+function Client:touch_timeout(method)
+  local extend = self.timeout_extensions[method]
+  if extend then
+    extend()
+  end
 end
 
 function Client:on_line(line)
@@ -453,7 +499,7 @@ function Client:new_session(cwd)
   return self:request("session/new", {
     cwd = cwd,
     mcpServers = {},
-  }, request_timeout(self, REQUEST_TIMEOUT))
+  }, request_timeout(self, "session_new", REQUEST_TIMEOUT))
 end
 
 ---Load an existing session (replays history through session/update).
@@ -465,7 +511,7 @@ function Client:load_session(session_id, cwd)
     sessionId = session_id,
     cwd = cwd,
     mcpServers = {},
-  }, request_timeout(self, REQUEST_TIMEOUT))
+  }, request_timeout(self, "session_load", REQUEST_TIMEOUT), true)
 end
 
 ---List sessions known to the agent.
@@ -482,7 +528,7 @@ function Client:list_sessions(cwd, cursor)
   if cursor then
     params.cursor = cursor
   end
-  return self:request("session/list", params, request_timeout(self, REQUEST_TIMEOUT))
+  return self:request("session/list", params, request_timeout(self, "", REQUEST_TIMEOUT))
 end
 
 ---Delete a session from the agent's history.
@@ -490,7 +536,8 @@ end
 ---@param session_id string
 ---@return boolean ok, any value
 function Client:delete_session(session_id)
-  local ok, result = self:request("session/delete", { sessionId = session_id }, request_timeout(self, REQUEST_TIMEOUT))
+  local ok, result =
+    self:request("session/delete", { sessionId = session_id }, request_timeout(self, "", REQUEST_TIMEOUT))
   if not ok and type(result) == "table" and result.code == -32002 then
     -- The spec says an unknown session counts as a successful delete.
     return true, {}
@@ -543,7 +590,21 @@ function Client:cancel(session_id)
     return
   end
   self:cancel_permissions(session_id)
+  -- The turn must be told first, then the pending RPC is withdrawn. The order
+  -- matters: the agent needs session/cancel to stop work, and $/cancel_request
+  -- only releases the response waiter.
   self.rpc:notify("session/cancel", { sessionId = session_id })
+  local prompt_id = self.active_requests["session/prompt"]
+  if prompt_id then
+    local settle = self.settles[prompt_id]
+    self.rpc:cancel(prompt_id)
+    self.active_requests["session/prompt"] = nil
+    -- Withdrawing the RPC also removes its response waiter. Settle it locally
+    -- with the same stop reason the agent would have reported.
+    if settle then
+      settle(true, { stopReason = "cancelled" })
+    end
+  end
   self:emit("cancel_requested", { session_id = session_id })
 end
 
@@ -556,7 +617,7 @@ function Client:set_config_option(session_id, config_id, value)
   if type(value) == "boolean" then
     params.type = "boolean"
   end
-  return self:request("session/set_config_option", params, request_timeout(self, REQUEST_TIMEOUT))
+  return self:request("session/set_config_option", params, request_timeout(self, "", REQUEST_TIMEOUT))
 end
 
 ---@param session_id string
@@ -566,14 +627,14 @@ function Client:set_mode(session_id, mode_id)
   return self:request(
     "session/set_mode",
     { sessionId = session_id, modeId = mode_id },
-    request_timeout(self, REQUEST_TIMEOUT)
+    request_timeout(self, "", REQUEST_TIMEOUT)
   )
 end
 
 ---@param session_id string
 ---@return boolean ok, any value
 function Client:authenticate(method_id)
-  return self:request("authenticate", { methodId = method_id }, request_timeout(self, REQUEST_TIMEOUT))
+  return self:request("authenticate", { methodId = method_id }, request_timeout(self, "", REQUEST_TIMEOUT))
 end
 
 function Client:handle_exit(code, stderr, generation)

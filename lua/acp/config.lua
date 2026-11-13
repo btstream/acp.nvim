@@ -75,6 +75,12 @@ M.defaults = {
     shutdown_timeout = 2000,
     -- Milliseconds to wait for a response to a regular request.
     request_timeout = 30000,
+    -- Per-method overrides. npx-based adapters can take a long time to boot.
+    timeouts = {
+      initialize = 120000,
+      session_new = 60000,
+      session_load = 120000,
+    },
     -- Absolute ceiling for a prompt turn, in milliseconds. Prompts may run for
     -- minutes, so this is deliberately generous; it exists only so a wedged
     -- agent cannot hang the turn forever. 0 disables it.
@@ -626,6 +632,12 @@ function M.validate(cfg)
   check_number(cfg.transport.stderr_keep_bytes, 0, 1024 * 1024 * 1024, "transport.stderr_keep_bytes")
   check_number(cfg.transport.shutdown_timeout, 0, 600000, "transport.shutdown_timeout")
   check_number(cfg.transport.request_timeout, 0, 3600000, "transport.request_timeout")
+  if type(cfg.transport.timeouts) ~= "table" then
+    fail("transport.timeouts must be a table, got %s", type(cfg.transport.timeouts))
+  end
+  for _, method in ipairs({ "initialize", "session_new", "session_load" }) do
+    check_number(cfg.transport.timeouts[method], 0, 24 * 3600 * 1000, "transport.timeouts." .. method)
+  end
   check_number(cfg.transport.prompt_timeout, 0, 24 * 3600 * 1000, "transport.prompt_timeout")
   -- 0 disables the total cap; any positive value must still be usable.
   check_number(cfg.transport.max_pending_bytes, 0, 1024 * 1024 * 1024, "transport.max_pending_bytes")
