@@ -6,7 +6,7 @@
 -- connection. Both re-run the operation that failed.
 local async = require("acp.async")
 local log = require("acp.log")
-local picker = require("acp.ui.picker")
+local presenter = require("acp.app.presenter")
 
 local M, Auth = {}, {}
 Auth.__index = Auth
@@ -354,7 +354,7 @@ function Auth:login(methods, retry)
       value = method,
     }
   end
-  picker.select({
+  presenter.select({
     title = "Log in",
     items = items,
     on_choice = function(method)

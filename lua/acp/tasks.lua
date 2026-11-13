@@ -9,22 +9,40 @@ function M.new(state)
   return setmetatable({ state = state, generation = 0, sequence = 0, active = {} }, Scope)
 end
 
+---Read the connection/session facts a task fences on.
+---
+---The controller's state is partitioned (`app/stores`), but tests and small
+---doubles pass a plain `{client = ..., sessions = {}}`. Resolving through the
+---store view when it exists, and falling back to the flat fields otherwise,
+---keeps both working without leaking the store layout into `tasks`.
+---@param state table
+---@return table|null client, table sessions, table|null runtime
+local function facts(state)
+  local stores = require("acp.app.stores")
+  if state.conn or state.sess then
+    local split = stores.stores(state)
+    return split.connection.client, split.session.all, split.session.runtime
+  end
+  return state.client, state.sessions or {}, state.runtime
+end
+
 function Task:context_current()
-  local state = self.scope.state()
+  local client = facts(self.scope.state())
   return self.generation == self.scope.generation
     and self.scope.active[self.key] == self
-    and state.client == self.client
+    and client == self.client
     and (not self.client or self.client.generation == self.client_generation)
 end
 
 function Task:current()
-  local state = self.scope.state()
-  return self:context_current()
-    and (
-      not self.session
-      or (state.runtime and state.runtime:owns(self.session))
-      or state.sessions[self.session.id] == self.session
-    )
+  if not self:context_current() then
+    return false
+  end
+  if not self.session then
+    return true
+  end
+  local _, sessions, runtime = facts(self.scope.state())
+  return (runtime and runtime:owns(self.session)) or sessions[self.session.id] == self.session
 end
 
 function Task:check()

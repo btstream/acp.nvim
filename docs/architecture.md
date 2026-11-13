@@ -1,6 +1,6 @@
 # 运行时架构与所有权
 
-更新：2026-11-10。本文描述当前实现，不是待实施计划。
+更新：2026-11-13。本文描述当前实现，不是待实施计划。
 
 ## 模块边界
 
@@ -9,7 +9,17 @@ transport/process + framing
   └─ 有界、有序、按时间片分发完整协议行
        └─ protocol/client + jsonrpc
             ├─ RPC 匹配、超时、初始化与权限协议
-            └─ controller：装配、选择与跨模块协调
+            └─ controller：公开入口、状态与跨模块协调（< 600 行）
+                 ├─ app/bootstrap：构造服务并接线（原先 500 行的 setup）
+                 ├─ app/stores：connection / session / view 三个状态存储
+                 ├─ app/events：client 事件分发表，按名字路由
+                 ├─ app/turn：提交与取消回合
+                 ├─ app/window：窗口事件、keymap 与 session 切换
+                 ├─ app/status：statusline、winbar 与动画同步
+                 ├─ app/attachments：图片、文件、选区、诊断等附件
+                 ├─ app/runtime_ops：outbox 派发、LRU 清理、cwd 解析
+                 ├─ app/connection_flow：登录后重发与 agent 切换
+                 ├─ app/presenter：`app/*` 访问 UI 的唯一入口
                  ├─ app/connection：client 创建、启动、断连与重连
                  ├─ app/sessions：创建、加载、恢复、删除与会话浏览
                  ├─ app/catalog：会话列表、标题与 cwd 缓存
@@ -29,6 +39,15 @@ Controller 只保留公开入口、会话选择、服务装配和跨模块协调
 `app/*` 承担；展示计算与编辑器交互由 `ui/*` 承担。
 
 - `app/*` 不反向依赖 `acp.controller`，也不直接操作 Chat/Input；激活会话通过回调交给控制器。
+  `acp.inline` 同样不再 require controller：`inline.setup({state, send, is_question})` 注入它需要的
+  三个钩子。
+- `app/*` 通过 `app/presenter` 使用 picker、表单、权限详情与会话浏览器。这样服务层不绑定某个
+  具体的 UI 后端，测试替换 `acp.ui.picker.select` 之类的入口仍然生效（presenter 在调用时
+  require，不做缓存绑定）。
+- 状态按所有者存放在 `app/stores` 的三张表里：`connection`（client、连接阶段、登录后重发的
+  槽位）、`session`（runtime、当前会话、catalog 缓存）、`view`（panel、chat、input、chrome、
+  各服务）。`config` 属于插件实例，留在顶层。旧的扁平名（`state.session`、`state.chat`）是
+  只读兼容视图，新代码应写 `state.session.current` / `state.view.chat`。
 - `ui/transcript` 只做 block → 行/元数据/位置映射；`ui/buffer_renderer` 只做 buffer 差异写入、高亮与背景 extmark。
 - transport 接收与分发表共享 `dispatch_budget_ms`；到期后不再同步派发剩余输入元素，
   改由下一次调度消费。单条 JSON 解码和替换语义的工具更新不可抢占。

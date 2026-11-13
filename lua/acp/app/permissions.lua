@@ -3,8 +3,7 @@
 -- Pending state lives in `app/interactions`; this module only turns one
 -- interaction into a picker and decides which requests may be pre-approved.
 local log = require("acp.log")
-local picker = require("acp.ui.picker")
-local details = require("acp.ui.permission_details")
+local presenter = require("acp.app.presenter")
 
 local Permissions = {}
 Permissions.__index = Permissions
@@ -160,13 +159,13 @@ function Permissions:present(interaction)
   end
 
   if (self.config().permissions or {}).show_details ~= false then
-    details.open(request, {
+    presenter.details.open(request, {
       title = title,
       cwd = tool.locations and tool.locations[1] and tool.locations[1].path or nil,
     })
   end
 
-  local handle = picker.select({
+  local handle = presenter.select({
     title = "Permission required: " .. title,
     items = items,
     width = math.min(90, math.max(50, vim.o.columns - 20)),
@@ -193,7 +192,7 @@ function Permissions:dismiss_presented()
   if handle and handle.close then
     pcall(handle.close)
   end
-  details.close()
+  presenter.details.close()
 end
 
 return Permissions

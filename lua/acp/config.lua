@@ -524,6 +524,26 @@ end
 ---Validate and normalize a merged configuration table.
 ---@param cfg table
 ---@return table
+---The configuration last accepted by `setup`.
+---
+---Health checks need the effective config, but they must not go through the
+---controller: that would make the diagnostic module depend on the whole app just
+---to read a table. `setup` stores the validated result here.
+---@type table|nil
+M.current = nil
+
+---Remember the config a `setup` call settled on.
+---@param cfg table
+function M.remember(cfg)
+  M.current = cfg
+end
+
+---The effective configuration, falling back to the defaults before any setup.
+---@return table
+function M.effective()
+  return M.current or M.validate(M.merge(M.defaults, {}))
+end
+
 function M.validate(cfg)
   M.normalize_keymaps(cfg)
   local completion = cfg.completion

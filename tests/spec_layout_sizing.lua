@@ -58,10 +58,10 @@ return function(t)
         })
         controller.open()
         local S = controller.state()
-        vim.wait(15000, function() return S.session ~= nil end, 20)
-        local chat_w = vim.api.nvim_win_get_width(S.chat.win)
-        local input_w = vim.api.nvim_win_get_width(S.input.win)
-        local input_h = vim.api.nvim_win_get_height(S.input.win)
+        vim.wait(15000, function() return S.sess.current ~= nil end, 20)
+        local chat_w = vim.api.nvim_win_get_width(S.view.chat.win)
+        local input_w = vim.api.nvim_win_get_width(S.view.input.win)
+        local input_h = vim.api.nvim_win_get_height(S.view.input.win)
         local expected = config.panel_width(S.config, vim.o.columns)
         local min_w = S.config.layout.min_width
         local max_w = S.config.layout.max_width
@@ -148,8 +148,8 @@ return function(t)
         controller.setup({})
         local layout = require("acp.layout")
         local S = controller.state()
-        S.input.win = layout.create_input_win(S.input.buf, nil)
-        S.chat.win = layout.create_chat_win(S.chat.buf)
+        S.view.input.win = layout.create_input_win(S.view.input.buf, nil)
+        S.view.chat.win = layout.create_chat_win(S.view.chat.buf)
         local n = 0
         for _, win in ipairs(vim.api.nvim_list_wins()) do
           if vim.bo[vim.api.nvim_win_get_buf(win)].filetype == "acp_chat" then

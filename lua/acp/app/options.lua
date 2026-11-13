@@ -4,8 +4,7 @@
 -- picker never has to guess which agent reported what. Changing a control uses
 -- the method that produced it: `session/set_mode` for legacy `modes`, and
 -- `session/set_config_option` for config options.
-local Icons = require("acp.ui.icons")
-local picker = require("acp.ui.picker")
+local presenter = require("acp.app.presenter")
 local controls_mod = require("acp.session.controls")
 
 local Options = {}
@@ -116,7 +115,7 @@ end
 ---@param generation integer
 ---@param session table
 function Options:pick_control(control, title, client, generation, session)
-  local ic = Icons.get(self.config().ui.icons)
+  local ic = presenter.icons(self.config().ui.icons)
   local items = {}
   for _, entry in ipairs(control.options or {}) do
     local marked = entry.value == control.current and (ic.check_circle .. " ") or (ic.tool_pending .. " ")
@@ -130,7 +129,7 @@ function Options:pick_control(control, title, client, generation, session)
     self.notify("this option has no values", vim.log.levels.INFO)
     return
   end
-  picker.select({
+  presenter.select({
     title = picker_title(control, title),
     items = items,
     on_choice = function(value)
@@ -210,7 +209,7 @@ function Options:pick_config()
     self.notify("this agent offers no session options", vim.log.levels.INFO)
     return
   end
-  picker.select({
+  presenter.select({
     title = "Configure",
     items = items,
     on_choice = function(choice)

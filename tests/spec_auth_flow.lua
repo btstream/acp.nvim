@@ -24,7 +24,7 @@ return function(t)
     controller.open()
     local S = controller.state()
     vim.wait(8000, function()
-      return S.connection == "ready" or S.connection == "disconnected"
+      return S.conn.phase == "ready" or S.conn.phase == "disconnected"
     end, 20)
     return S
   end
@@ -32,7 +32,7 @@ return function(t)
   ---Replace the terminal runner with a stub that records the command.
   local function capture_terminal(S)
     local runs = {}
-    S.auth.open_terminal = function(command, opts)
+    S.view.auth.open_terminal = function(command, opts)
       runs[#runs + 1] = { command = command, opts = opts }
       return 1
     end
@@ -42,10 +42,10 @@ return function(t)
   t.describe("controller authentication", function()
     t.it("offers the agent's login methods when the agent declares one", function()
       local S = setup()
-      t.eq("ready", S.connection)
-      t.truthy(S.client)
-      t.eq(1, #S.client.auth_methods)
-      t.eq("opencode-login", S.client.auth_methods[1].id)
+      t.eq("ready", S.conn.phase)
+      t.truthy(S.conn.client)
+      t.eq(1, #S.conn.client.auth_methods)
+      t.eq("opencode-login", S.conn.client.auth_methods[1].id)
       controller.hide()
     end)
 
@@ -55,14 +55,14 @@ return function(t)
       vim.fn.writefile({}, marker)
       local S = setup(nil, { logged_in = true })
       vim.wait(10000, function()
-        return S.session ~= nil
+        return S.sess.current ~= nil
       end, 20)
-      t.truthy(S.session, "session was not created while logged in")
+      t.truthy(S.sess.current, "session was not created while logged in")
       vim.fn.delete(marker)
       local runs = capture_terminal(S)
       local auth_requests = 0
-      local original_require = S.auth.require
-      S.auth.require = function(self, err, opts)
+      local original_require = S.view.auth.require
+      S.view.auth.require = function(self, err, opts)
         auth_requests = auth_requests + 1
         return original_require(self, err, opts)
       end
@@ -82,7 +82,7 @@ return function(t)
       runs[1].opts.on_exit(0)
       vim.wait(15000, function()
         local text = ""
-        for _, block in ipairs(S.session and S.session.blocks or {}) do
+        for _, block in ipairs(S.sess.current and S.sess.current.blocks or {}) do
           if block.kind == "agent" then
             text = text .. (block.text or "")
           end
@@ -90,7 +90,7 @@ return function(t)
         return text:find("RESULT", 1, true) ~= nil
       end, 20)
       local text = ""
-      for _, block in ipairs(S.session.blocks) do
+      for _, block in ipairs(S.sess.current.blocks) do
         if block.kind == "agent" then
           text = text .. (block.text or "")
         end
@@ -103,30 +103,30 @@ return function(t)
     t.it("does not route a non-auth error through login", function()
       local S = setup({ capabilities = { auth_terminal = false } })
       vim.wait(8000, function()
-        return S.session ~= nil
+        return S.sess.current ~= nil
       end, 20)
       local ran = false
-      S.auth.open_terminal = function()
+      S.view.auth.open_terminal = function()
         ran = true
         return 1
       end
       controller.submit("plain", {})
       vim.wait(8000, function()
-        return S.session ~= nil and S.session.status == "idle"
+        return S.sess.current ~= nil and S.sess.current.status == "idle"
       end, 20)
       t.falsy(ran)
       -- The mock only offers methods to clients that declared support.
-      t.eq(0, #S.client.auth_methods, "auth must stay unadvertised when disabled")
+      t.eq(0, #S.conn.client.auth_methods, "auth must stay unadvertised when disabled")
       controller.hide()
     end)
 
     t.it("logs out only when the agent declares it", function()
       local S = setup()
       vim.wait(8000, function()
-        return S.session ~= nil
+        return S.sess.current ~= nil
       end, 20)
-      local original = S.auth.can_logout
-      S.auth.can_logout = function()
+      local original = S.view.auth.can_logout
+      S.view.auth.can_logout = function()
         return false
       end
       local notified
@@ -134,17 +134,17 @@ return function(t)
       vim.notify = function(message)
         notified = message
       end
-      S.auth:logout()
+      S.view.auth:logout()
       vim.notify = previous
       t.match("does not support", notified or "")
-      S.auth.can_logout = original
+      S.view.auth.can_logout = original
       controller.hide()
     end)
 
     t.it("picks a login method when several are offered", function()
       local S = setup()
-      local original = S.client.auth_methods
-      S.client.auth_methods = {
+      local original = S.conn.client.auth_methods
+      S.conn.client.auth_methods = {
         { id = "claude-ai", name = "claude.ai" },
         { id = "console", name = "Console", type = "terminal", args = { "login" } },
       }
@@ -155,13 +155,13 @@ return function(t)
       end
       local ok, err = pcall(function()
         runs = capture_terminal(S)
-        S.auth:login()
+        S.view.auth:login()
         t.eq(2, #seen.items)
         seen.on_choice(seen.items[2].value)
         t.eq(1, #runs)
       end)
       picker.select = picker_original
-      S.client.auth_methods = original
+      S.conn.client.auth_methods = original
       if not ok then
         error(err, 0)
       end

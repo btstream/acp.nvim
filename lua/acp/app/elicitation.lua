@@ -1,5 +1,5 @@
 -- Elicitation presentation: a form for schema requests, a confirm for URLs.
-local form = require("acp.ui.form")
+local presenter = require("acp.app.presenter")
 
 local Elicitation = {}
 Elicitation.__index = Elicitation
@@ -17,7 +17,7 @@ function Elicitation:present(interaction)
   if request.mode == "url" or url then
     self.notify((request.message or "Open this URL to continue?") .. (url and ("\n" .. url) or ""), vim.log.levels.INFO)
     local items = { { label = "Open in browser", value = "open" } }
-    require("acp.ui.picker").select({
+    presenter.select({
       title = "Agent needs a browser",
       items = items,
       on_choice = function()
@@ -32,7 +32,7 @@ function Elicitation:present(interaction)
     })
     return true
   end
-  return form.open(request, {
+  return presenter.form.open(request, {
     on_submit = function(content)
       self.answer(interaction, { action = "accept", content = content })
     end,
@@ -47,7 +47,7 @@ function Elicitation:present(interaction)
 end
 
 function Elicitation:dismiss()
-  form.dismiss()
+  presenter.form.dismiss()
 end
 
 return Elicitation

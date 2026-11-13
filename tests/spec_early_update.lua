@@ -26,17 +26,17 @@ return function(t)
     t.it("applies updates that arrive before session/new returns", function()
       local S = setup({ ACP_MOCK_EARLY_UPDATE = "1" })
       vim.wait(8000, function()
-        return S.session ~= nil
+        return S.sess.current ~= nil
       end, 20)
-      t.truthy(S.session)
+      t.truthy(S.sess.current)
       local found
-      for _, command in ipairs(S.session.commands or {}) do
+      for _, command in ipairs(S.sess.current.commands or {}) do
         if command.name == "early" then
           found = command
         end
       end
       t.truthy(found, "early available_commands_update was dropped")
-      t.eq(nil, S.runtime.creating)
+      t.eq(nil, S.sess.runtime.creating)
       controller.hide()
     end)
 
@@ -47,10 +47,10 @@ return function(t)
         capabilities = { auth_terminal = false },
       })
       vim.wait(8000, function()
-        return S.runtime.creating == nil
+        return S.sess.runtime.creating == nil
       end, 20)
       vim.fn.delete("/tmp/opencode/never-created")
-      local session, changed, buffered = S.runtime:apply("sess_unknown", {
+      local session, changed, buffered = S.sess.runtime:apply("sess_unknown", {
         sessionUpdate = "agent_message_chunk",
         content = { type = "text", text = "x" },
       })

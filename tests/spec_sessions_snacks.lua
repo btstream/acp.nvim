@@ -27,7 +27,7 @@ return function(t)
     controller.open()
     local S = controller.state()
     vim.wait(8000, function()
-      return S.session ~= nil
+      return S.sess.current ~= nil
     end, 20)
     return S
   end
@@ -112,7 +112,7 @@ return function(t)
       local icons = require("acp.ui.icons").get(true)
       local found
       for _, item in ipairs(picker:items()) do
-        if item.session.sessionId == S.session.id then
+        if item.session.sessionId == S.sess.current.id then
           found = item
         end
       end
@@ -131,7 +131,7 @@ return function(t)
       t.truthy(picker)
       local other
       for _, item in ipairs(picker:items()) do
-        if item.session.sessionId ~= S.session.id then
+        if item.session.sessionId ~= S.sess.current.id then
           other = item
         end
       end
@@ -194,13 +194,13 @@ return function(t)
       end
       picker:action("acp_delete", picker:current())
       vim.wait(6000, function()
-        return S.sessions["sess_old"] == nil
+        return S.sess.all["sess_old"] == nil
       end, 20)
       vim.ui.select = original
 
       t.match("Old conversation", prompt)
-      t.eq(nil, S.sessions["sess_old"])
-      t.truthy(S.session and S.session.id == "sess_mock", "active session was affected")
+      t.eq(nil, S.sess.all["sess_old"])
+      t.truthy(S.sess.current and S.sess.current.id == "sess_mock", "active session was affected")
 
       -- The picker stays open and drops the row.
       vim.wait(3000, function()
@@ -230,7 +230,7 @@ return function(t)
 
     t.it("refuses to delete when the agent cannot", function()
       local S = setup()
-      S.client.has_session_capability = function(_, name)
+      S.conn.client.has_session_capability = function(_, name)
         return name ~= "delete"
       end
       local picker = open_browser(S)
@@ -279,14 +279,14 @@ return function(t)
       vim.wait(500)
       picker:action("acp_open", picker:current())
       vim.wait(8000, function()
-        return S.session and S.session.id == "sess_old"
+        return S.sess.current and S.sess.current.id == "sess_old"
       end, 20)
-      t.eq("sess_old", S.session.id)
+      t.eq("sess_old", S.sess.current.id)
       -- Loading replays history asynchronously; the title is applied after.
       vim.wait(6000, function()
-        return S.session.title ~= nil
+        return S.sess.current.title ~= nil
       end, 20)
-      t.eq("Old conversation", S.session.title)
+      t.eq("Old conversation", S.sess.current.title)
       controller.hide()
     end)
   end)

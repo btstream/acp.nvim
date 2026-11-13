@@ -10,7 +10,31 @@ local review = require("acp.inline.review")
 local diff = require("acp.inline.diff_session")
 local ui = require("acp.inline.ui")
 local prompt_builder = require("acp.inline.prompt")
+local presenter = require("acp.app.presenter")
 local M = {}
+
+-- The inline editor is a leaf: it never requires the controller. The
+-- application injects the three things it needs — controller state, the prompt
+-- entry point, and the agent-initiated question probe — through `setup`.
+local deps = {
+  state = nil,
+  send = nil,
+  is_question = nil,
+}
+
+---Wire the application-level dependencies.
+---
+---Called by the controller during setup. Keeping this explicit removes the
+---`require("acp.controller")` back-edge that made the module graph cyclic in
+---spirit and made `acp.inline` unusable in a plain unit test.
+---@param opts {state: fun(): table, send: fun(session: table, text: string, hooks: table|nil): boolean,
+---  is_question: fun(interaction: table): boolean}
+function M.setup(opts)
+  deps.state = opts.state
+  deps.send = opts.send
+  deps.is_question = opts.is_question
+end
+
 local current
 local drafts = {}
 vim.api.nvim_create_autocmd("BufWipeout", {
@@ -19,7 +43,10 @@ vim.api.nvim_create_autocmd("BufWipeout", {
   end,
 })
 local function state()
-  return require("acp.controller").state()
+  if not deps.state then
+    error("acp.inline: setup() was never called", 2)
+  end
+  return deps.state()
 end
 local function notify(text, level)
   vim.notify("acp.nvim: " .. text, level or vim.log.levels.INFO)
@@ -28,11 +55,11 @@ end
 local function live(inv)
   local s = state()
   return current == inv
-    and s.client == inv.client
+    and s.conn.client == inv.client
     and inv.client.generation == inv.generation
     and s.config == inv.config
-    and s.runtime
-    and s.runtime:owns(inv.session)
+    and s.sess.runtime
+    and s.sess.runtime:owns(inv.session)
 end
 local function release(inv)
   copy.remove(inv.copy)
@@ -135,7 +162,7 @@ local function decide(inv, payload)
 end
 
 function M.on_permission(inv, payload)
-  local client = inv.client or state().client
+  local client = inv.client or state().conn.client
   -- An allow_always option is not an acceptable substitute for allow_once.
   client:resolve_permission(payload.key, decide(inv, payload))
   return true
@@ -162,10 +189,10 @@ function M.policy(interaction)
   if interaction.type ~= "permission" then
     return nil
   end
-  -- `Permissions.is_question` is the single place that recognises a question
-  -- wrapped in a permission request (pi's select, Claude's ExitPlanMode).
-  local permissions = require("acp.app.permissions")
-  if permissions.question(interaction) then
+  -- `Permissions.question` is the single place that recognises a question
+  -- wrapped in a permission request (pi's select, Claude's ExitPlanMode). The
+  -- callback is injected so inline never imports the permissions service.
+  if deps.is_question and deps.is_question(interaction) then
     return nil
   end
   local choice = decide(inv, interaction.request or {})
@@ -200,7 +227,7 @@ function M.offer_direct_write_recovery(inv)
   end
   local path = inv.selection.path
   local verified = result.verify(inv.selection)
-  require("acp.ui.picker").select({
+  presenter.select({
     title = "The agent wrote the file directly. Keep which version?",
     items = {
       { label = "Reload from disk", description = "take the agent's write, discard the buffer", value = "reload" },
@@ -228,7 +255,7 @@ function M.offer_direct_write_recovery(inv)
           return
         end
         local current = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
-        local rows = require("acp.ui.diff").lines({
+        local rows = presenter.diff_lines({
           { path = path or "", oldText = table.concat(current, "\n"), newText = table.concat(lines, "\n") },
         }, { cwd = inv.session and inv.session.cwd, width = math.max(20, vim.o.columns - 20) })
         local text = {}
@@ -348,7 +375,7 @@ function M.finish(inv, ok, response)
     notify("inline result was not applied (" .. reason .. ")", vim.log.levels.WARN)
     return
   end
-  if state().session ~= inv.session then
+  if state().sess.current ~= inv.session then
     notify("active session changed; inline result discarded", vim.log.levels.WARN)
     return
   end
@@ -420,7 +447,7 @@ function M.submit(inv, prompt)
   if current ~= inv or inv.phase ~= "prompt" then
     return false
   end
-  if not live(inv) or state().session ~= inv.session then
+  if not live(inv) or state().sess.current ~= inv.session then
     notify("session or connection changed", vim.log.levels.WARN)
     ui.close()
     return false
@@ -463,7 +490,7 @@ function M.submit(inv, prompt)
   ui.close("submit")
   -- The hook lives inside the existing scoped prompt task. It is never an
   -- independent coroutine which can outlive cancellation or reconfiguration.
-  local accepted = require("acp.controller").send_inline(inv.session, request, {
+  local accepted = deps.send(inv.session, request, {
     -- A generated inline prompt is mostly instructions; the transcript shows
     -- the user's request, not the whole envelope.
     local_user = { display_text = "inline: " .. (prompt ~= "" and prompt or "edit request") },
@@ -497,7 +524,7 @@ function M.open(opts)
     notify("inline editing is disabled", vim.log.levels.WARN)
     return false
   end
-  if not s.client or s.connection ~= "ready" or not s.session then
+  if not s.conn.client or s.conn.phase ~= "ready" or not s.sess.current then
     notify("open an agent session before inline editing", vim.log.levels.WARN)
     return false
   end
@@ -525,9 +552,9 @@ function M.open(opts)
   local inv = {
     selection = sel,
     config = s.config,
-    client = s.client,
-    generation = s.client.generation,
-    session = s.session,
+    client = s.conn.client,
+    generation = s.conn.client.generation,
+    session = s.sess.current,
     phase = "prompt",
     override = opts.review,
   }

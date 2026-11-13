@@ -27,8 +27,11 @@ function M.check()
   end
 
   if controller_ok then
+    -- The controller is only consulted for *runtime* facts (the live client);
+    -- configuration comes from the config module so this check still describes
+    -- the right settings when the panel was never opened.
     local st = controller.state()
-    local cfg = st.config
+    local cfg = require("acp.config").effective()
     if cfg then
       local agent = cfg.agents[cfg.agent]
       local profile = require("acp.agents").get(agent, cfg.agent)
@@ -118,9 +121,10 @@ Add to your edgy config:
     health.info("image cache: " .. require("acp.context.image").dir())
   end
 
+  -- Read the effective config from the config module itself: the health check
+  -- must not depend on the controller (and must still work before setup ran).
   local ok_inline, inline = pcall(function()
-    return require("acp.controller").state().config
-      or require("acp.config").validate(require("acp.config").merge(require("acp.config").defaults, {}))
+    return require("acp.config").effective()
   end)
   if ok_inline and inline then
     local mode = inline.inline.review.mode

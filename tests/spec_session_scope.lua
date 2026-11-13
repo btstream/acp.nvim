@@ -14,7 +14,7 @@ return function(t)
     controller.open()
     local S = controller.state()
     vim.wait(8000, function()
-      return S.session ~= nil
+      return S.sess.current ~= nil
     end, 20)
     -- Let the title refresh that follows session creation settle, so it cannot
     -- be confused with the requests made by the test itself.
@@ -60,13 +60,13 @@ return function(t)
       for _, session in ipairs(captured[1].opts.sessions) do
         ids[session.sessionId] = true
       end
-      t.truthy(ids[S.session.id], "the active session is missing from the list")
+      t.truthy(ids[S.sess.current.id], "the active session is missing from the list")
       controller.hide()
     end)
 
     t.it("creates sessions in the editor cwd", function()
       local S = setup()
-      t.eq(vim.fn.getcwd(), S.session.cwd, "the session cwd must match Neovim's cwd")
+      t.eq(vim.fn.getcwd(), S.sess.current.cwd, "the session cwd must match Neovim's cwd")
       controller.hide()
     end)
 
@@ -98,8 +98,8 @@ return function(t)
     t.it("reports an empty result only when the agent has nothing at all", function()
       local S = setup()
       local captured, restore = capture_pickers()
-      local original = S.client.list_sessions
-      S.client.list_sessions = function(_, cwd)
+      local original = S.conn.client.list_sessions
+      S.conn.client.list_sessions = function(_, cwd)
         return true, { sessions = {} }
       end
 
@@ -109,7 +109,7 @@ return function(t)
         return false
       end, 50)
       restore()
-      S.client.list_sessions = original
+      S.conn.client.list_sessions = original
 
       t.eq(0, #captured, "a picker should not open for an empty list")
       controller.hide()
@@ -118,18 +118,18 @@ return function(t)
     t.it("loads a session with the session's own cwd", function()
       local S = setup()
       local used
-      local original = S.client.load_session
-      S.client.load_session = function(_, session_id, cwd)
+      local original = S.conn.client.load_session
+      S.conn.client.load_session = function(_, session_id, cwd)
         used = cwd
-        return original(S.client, session_id, cwd)
+        return original(S.conn.client, session_id, cwd)
       end
       -- A session stored under another directory, as reported by session/list.
-      S.session_cwds["sess_other"] = "/some/other/project"
+      S.sess.cwds["sess_other"] = "/some/other/project"
       controller.load_session("sess_other")
       vim.wait(6000, function()
         return used ~= nil
       end, 20)
-      S.client.load_session = original
+      S.conn.client.load_session = original
       t.eq("/some/other/project", used, "loading must use the session's own directory")
       controller.hide()
     end)

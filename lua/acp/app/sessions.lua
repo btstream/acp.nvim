@@ -3,8 +3,7 @@
 -- The runtime still owns the registry, replay staging and the outbox. This
 -- module orchestrates the user-visible flow and reports activation through
 -- callbacks, so it never touches the panel or the composer directly.
-local session_picker = require("acp.ui.session_picker")
-local session_snacks = require("acp.ui.session_snacks")
+local presenter = require("acp.app.presenter")
 local capabilities = require("acp.protocol.capabilities")
 
 local Sessions = {}
@@ -509,12 +508,9 @@ function Sessions:pick()
       end,
     }
 
-    -- snacks is the default when it is installed; otherwise fall back to the
-    -- built-in window instead of failing.
-    if self.config().ui.session_picker == "snacks" and session_snacks.open(picker_opts) then
-      return
-    end
-    session_picker.open(picker_opts)
+    -- snacks is the default when it is installed; the presenter falls back to
+    -- the built-in window instead of failing.
+    presenter.open_session_browser(picker_opts, self.config().ui.session_picker)
   end)
 end
 

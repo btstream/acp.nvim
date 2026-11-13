@@ -20,7 +20,7 @@ return function(t)
       controller.setup({ ui = {}, permissions = { prompt = "native" } })
       local S = controller.state()
       local resolved
-      S.interactions:open("permission", {
+      S.view.interactions:open("permission", {
         sessionId = "s1",
         toolCall = { title = "Write file" },
         options = {
@@ -33,14 +33,14 @@ return function(t)
       controller.resolve_permission("perm1", nil, true)
       t.truthy(resolved)
       t.eq("r", resolved.outcome.optionId)
-      t.eq("answered", S.interactions:get("perm1").state)
+      t.eq("answered", S.view.interactions:get("perm1").state)
     end)
 
     t.it("resolves with the cancelled outcome when no reject exists", function()
       controller.setup({ ui = {}, permissions = { prompt = "native" } })
       local S = controller.state()
       local resolved
-      S.interactions:open("permission", {
+      S.view.interactions:open("permission", {
         sessionId = "s1",
         options = { { optionId = "a", name = "Allow", kind = "allow_once" } },
       }, function(response)
@@ -49,18 +49,18 @@ return function(t)
       controller.resolve_permission("perm2", nil, true)
       t.truthy(resolved)
       t.eq("cancelled", resolved.outcome.outcome)
-      t.eq("cancelled", S.interactions:get("perm2").state)
+      t.eq("cancelled", S.view.interactions:get("perm2").state)
     end)
 
     t.it("reports waiting_permission in the status payload", function()
       controller.setup({ ui = {}, permissions = { prompt = "native" } })
       local S = controller.state()
       local session = state.new("s1", "/tmp")
-      S.session = session
-      S.interactions:open("permission", { sessionId = "s1", options = {} }, function() end, 1, "perm3")
+      S.sess.current = session
+      S.view.interactions:open("permission", { sessionId = "s1", options = {} }, function() end, 1, "perm3")
       local st = controller.status()
       t.truthy(st.waiting_permission)
-      S.interactions:cancel("perm3")
+      S.view.interactions:cancel("perm3")
       t.falsy(controller.status().waiting_permission)
     end)
 
@@ -74,7 +74,7 @@ return function(t)
         choices[#choices + 1] = opts
       end
       local ok, err = pcall(function()
-        S.interactions:open(
+        S.view.interactions:open(
           "permission",
           { sessionId = "s1", options = { { optionId = "a", name = "Allow", kind = "allow_once" } } },
           function() end,
@@ -82,9 +82,9 @@ return function(t)
           "perm9"
         )
         t.eq(1, #choices)
-        S.interactions:on_remote_cancel(9)
-        t.eq("expired", S.interactions:get("perm9").state)
-        t.eq(0, #S.interactions:pending())
+        S.view.interactions:on_remote_cancel(9)
+        t.eq("expired", S.view.interactions:get("perm9").state)
+        t.eq(0, #S.view.interactions:pending())
         t.falsy(controller.status().waiting_permission)
       end)
       picker.select = original
@@ -157,7 +157,7 @@ return function(t)
         seen = opts
       end
       local ok, err = pcall(function()
-        S.interactions:open("permission", {
+        S.view.interactions:open("permission", {
           sessionId = "s1",
           _meta = { permission = { title = "Ready to code?" } },
           toolCall = {
@@ -182,13 +182,13 @@ return function(t)
     t.it("renders a compact statusline component", function()
       controller.setup({ ui = {}, permissions = { prompt = "native" } })
       local S = controller.state()
-      S.connection = "ready"
-      S.session = nil
+      S.conn.phase = "ready"
+      S.sess.current = nil
       local ic = require("acp.ui.icons").get(true)
       t.eq(ic.assistant, controller.statusline())
       local session = state.new("s1", "/tmp")
       session.status = "running"
-      S.session = session
+      S.sess.current = session
       t.eq(ic.assistant .. " " .. ic.tool_run, controller.statusline())
     end)
   end)

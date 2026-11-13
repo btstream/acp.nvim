@@ -48,23 +48,23 @@ Connection.client_capabilities = build_client_capabilities
 ---Open the panel's agent process, starting it when needed.
 function Connection:connect()
   local S = self.state()
-  if S.connection == "starting" then
+  if S.conn.phase == "starting" then
     return
   end
   -- A stopped client carries old event bindings and an old RPC generation.
   -- Reopening after a crash uses a fresh client just like explicit reconnect.
-  if S.client and not S.client:is_ready() then
-    local previous = S.client
+  if S.conn.client and not S.conn.client:is_ready() then
+    local previous = S.conn.client
     self.reset_operations()
     self.runtime_lost()
-    S.client = nil
+    S.conn.client = nil
     previous:shutdown(true)
   end
-  S.connection = "starting"
+  S.conn.phase = "starting"
   self.on_changed()
 
   local cfg = self.config()
-  if not S.client then
+  if not S.conn.client then
     local client
     local generation = self.generation()
     client = client_mod.new({
@@ -77,7 +77,7 @@ function Connection:connect()
       limits = cfg.transport,
       on_event = function(name, payload)
         local function dispatch()
-          if self.state().client == client and self.generation() == generation then
+          if self.state().conn.client == client and self.generation() == generation then
             self.on_event(name, payload, client)
           end
         end
@@ -90,32 +90,32 @@ function Connection:connect()
         end
       end,
     })
-    S.client = client
+    S.conn.client = client
   end
 
-  if not S.client:is_ready() then
-    local client = S.client
+  if not S.conn.client:is_ready() then
+    local client = S.conn.client
     local generation = self.generation()
-    S.client:start(function(ok, err)
+    S.conn.client:start(function(ok, err)
       vim.schedule(function()
         -- The connection may have been replaced or torn down between `start`
         -- and this callback; adopt the result only for the live client.
-        if self.state().client ~= client or self.generation() ~= generation then
+        if self.state().conn.client ~= client or self.generation() ~= generation then
           return
         end
         if ok then
-          self.state().connection = "ready"
+          self.state().conn.phase = "ready"
           self.on_changed()
           self.on_ready()
         else
-          self.state().connection = "disconnected"
+          self.state().conn.phase = "disconnected"
           self.on_changed()
           self.on_start_failed(err)
         end
       end)
     end)
   else
-    S.connection = "ready"
+    S.conn.phase = "ready"
     self.on_changed()
     self.on_ready()
   end
@@ -127,12 +127,12 @@ function Connection:disconnect()
   self.reset_operations()
   self.runtime_lost()
   self.reset_permissions()
-  local client = S.client
-  S.client = nil
+  local client = S.conn.client
+  S.conn.client = nil
   if client then
     client:shutdown()
   end
-  S.connection = "stopped"
+  S.conn.phase = "stopped"
   self.stop_animation()
   self.on_render()
   self.on_changed()
@@ -141,7 +141,7 @@ end
 ---Reconnect after a crash or an explicit disconnect.
 function Connection:reconnect()
   local S = self.state()
-  if S.connection == "starting" or S.connection == "ready" then
+  if S.conn.phase == "starting" or S.conn.phase == "ready" then
     return
   end
   self:restart()
@@ -154,16 +154,16 @@ end
 ---in that state, which is why this path exists separately.
 function Connection:restart()
   local S = self.state()
-  local previous = S.session
+  local previous = S.sess.current
   self.reset_operations()
   self.runtime_lost()
   self.reset_permissions()
   self.pending_reload = previous and previous.id or nil
-  if S.client then
-    S.client:shutdown(true)
-    S.client = nil
+  if S.conn.client then
+    S.conn.client:shutdown(true)
+    S.conn.client = nil
   end
-  S.connection = "stopped"
+  S.conn.phase = "stopped"
   self:connect()
 end
 
@@ -183,11 +183,11 @@ end
 ---@return boolean interrupted
 function Connection:lost(payload)
   local S = self.state()
-  local session = S.session
+  local session = S.sess.current
   local interrupted = session and session.status ~= "idle" or false
   self.reset_operations()
   self.runtime_lost()
-  S.connection = "disconnected"
+  S.conn.phase = "disconnected"
   self.stop_animation()
   -- The agent is gone: its pending permission prompts can never be answered,
   -- so clear them instead of leaving the picker (and the toolbar badge) up.
@@ -202,9 +202,9 @@ end
 
 function Connection:terminate()
   local S = self.state()
-  if S.client then
-    S.client:shutdown(true)
-    S.client = nil
+  if S.conn.client then
+    S.conn.client:shutdown(true)
+    S.conn.client = nil
   end
   log.debug("agent process terminated")
 end

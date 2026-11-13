@@ -25,7 +25,7 @@ return function(t)
     controller.open()
     local S = controller.state()
     vim.wait(8000, function()
-      return S.session ~= nil
+      return S.sess.current ~= nil
     end, 20)
     return S
   end
@@ -105,13 +105,13 @@ return function(t)
   t.describe("controller session controls", function()
     t.it("switches pi thinking levels through set_config_option", function()
       local S = setup("pi")
-      t.truthy(S.session.controls.model)
-      t.truthy(S.session.controls.thinking)
-      t.eq(nil, S.session.controls.mode, "pi modes are a duplicate of thought_level")
+      t.truthy(S.sess.current.controls.model)
+      t.truthy(S.sess.current.controls.thinking)
+      t.eq(nil, S.sess.current.controls.mode, "pi modes are a duplicate of thought_level")
 
       local sent = {}
-      local original = S.client.set_config_option
-      S.client.set_config_option = function(_, session_id, config_id, value)
+      local original = S.conn.client.set_config_option
+      S.conn.client.set_config_option = function(_, session_id, config_id, value)
         sent[#sent + 1] = { id = config_id, value = value }
         return true, {}
       end
@@ -122,7 +122,7 @@ return function(t)
       captured.on_choice(captured.items[1].value)
       vim.wait(500)
       t.eq("model", sent[1].id)
-      S.client.set_config_option = original
+      S.conn.client.set_config_option = original
       controller.hide()
     end)
 
@@ -138,7 +138,7 @@ return function(t)
     t.it("toggles a boolean extra instead of opening a picker", function()
       local S = setup("claude")
       local extra
-      for _, control in ipairs(S.session.controls.extras) do
+      for _, control in ipairs(S.sess.current.controls.extras) do
         if control.id == "fast" then
           extra = control
         end
@@ -146,19 +146,19 @@ return function(t)
       t.truthy(extra, "the boolean config option is missing")
 
       local sent = {}
-      local original = S.client.set_config_option
-      S.client.set_config_option = function(_, session_id, config_id, value)
+      local original = S.conn.client.set_config_option
+      S.conn.client.set_config_option = function(_, session_id, config_id, value)
         sent[#sent + 1] = { id = config_id, value = value }
         return true, {}
       end
       local captured = capture(function()
-        S.options:toggle(extra, S.client, S.options.generation(), S.session)
+        S.view.options:toggle(extra, S.conn.client, S.view.options.generation(), S.sess.current)
       end)
       vim.wait(500)
       t.eq(nil, captured, "a boolean must not open a second picker")
       t.eq("fast", sent[1].id)
       t.eq(true, sent[1].value)
-      S.client.set_config_option = original
+      S.conn.client.set_config_option = original
       controller.hide()
     end)
 

@@ -514,6 +514,40 @@ replayed」；两者都不支持才新建会话。`session/close` 在切换会�
 **验收（M4）**：没有循环 require（加一个测试：遍历模块的 require 图，断言没有环）；
 protocol 和 session 两层不 require `ui/*`；controller 少于 600 行。
 
+**状态**：已完成，验收条件全部由 `tests/spec_architecture.lua` 守护（14 项）。
+
+- 9.1 已完成：`app/events` 是事件分发表（`handlers[name]`），`dispatch` 忽略未知事件，
+  `register` 允许服务或测试替换单个处理器。controller 的 `on_client_event` 只剩一次转发。
+- 9.2 已完成：`protocol/*` 与 `session/*` 都不 require `acp.ui*`；调度器由连接服务注入。
+- 9.3 已完成：`acp.inline.setup({ state, send, is_question })` 注入三个钩子，inline 不再 require
+  controller；`presenter.select` / `presenter.diff_lines` 取代对 `ui.picker`、`ui.diff` 的直接依赖。
+- 9.4 已完成：`app/presenter` 是 `app/*` 访问 UI 的唯一入口（picker、form、权限详情、会话浏览器、
+  图标、diff）。它按调用时 require，因此测试替换 `acp.ui.picker.select` 等仍然生效。
+- 9.5 已完成，按「真拆」执行：`app/stores` 把状态拆成 `connection` / `session` / `view` 三张
+  真实表，字段按语义命名（`session.current`、`connection.phase`），`config` 留在顶层。扁平名
+  （`state.session`、`state.chat`）只是 metatable 提供的兼容视图，`rawget` 读不到；`controller.stores()`
+  返回三张表。controller、`app/*`、`tasks` 与全部测试都改为显式 store 路径（685 处）。
+- 9.6 已完成：`config.remember()` / `config.effective()` 保存并读取最近一次有效配置；
+  `health` 只在需要运行时事实（活动 client 的登录方法）时才访问 controller。
+- 9.7 已完成：`docs/architecture.md` 与 `docs/status.md` 已更新。
+
+controller 拆到 599 行。为了守住这个数字，同时把原先内联在它里面的职责移出：
+
+| 新模块 | 原职责 |
+|---|---|
+| `app/bootstrap` | 服务构造与接线（原先 ~550 行的 `setup`） |
+| `app/turn` | 提交、取消、系统块 |
+| `app/window` | 窗口事件、keymap、`activate_session`、panel open/hide/focus |
+| `app/status` | statusline、winbar、动画同步 |
+| `app/attachments` | 图片 / 文件 / 选区 / 诊断 / 打开位置 |
+| `app/runtime_ops` | outbox 派发、LRU 清理、cwd 解析、`ui_current`、`debug_state` |
+| `app/connection_flow` | 登录后重发、agent 切换 |
+| `app/events` | client 事件分发 |
+| `app/presenter` | `app/*` → UI 的单向出口 |
+
+验证：1101 项单元/组件测试通过，0 失败，0 项 pending（阶段 9 新增 14 项架构门禁与状态存储测试）。
+`tests/integration_inline_safety.lua` 3 项通过。
+
 ---
 
 ## 3. 新增与变更的配置项

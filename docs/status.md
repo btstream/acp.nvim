@@ -777,3 +777,31 @@ mock 新增 `resumeonly` profile（可 resume、不可 load）、`session/resume
 
 切换离开仍在运行的会话不会发送 close：那只会打断用户打算留在后台的工作，等它结束
 后（或退出编辑器时）才释放。
+
+## 多 agent 兼容阶段 9（2026-11-13）
+
+架构收尾，四条验收标准全部由 `tests/spec_architecture.lua`（14 项）守护。
+
+- **事件分发表**：`app/events` 用 `handlers[name]` 代替 controller 里的 if 链，未知事件被忽略，
+  服务或测试可以替换单个处理器。
+- **inline 依赖注入**：`acp.inline.setup({ state, send, is_question })`。inline 不再 require
+  controller，也不再直接 require `app.permissions`、`ui.picker`、`ui.diff`。
+- **呈现器边界**：新增 `app/presenter`，picker、表单、权限详情、会话浏览器、图标与 diff 都从
+  这里取。它按调用时 require，所以测试替换具体后端（如 `acp.ui.picker.select`）仍然生效。
+- **状态真拆**：`app/stores` 把全局 `S` 拆成 `connection` / `session` / `view` 三张真实表，
+  字段按语义命名（`session.current`、`connection.phase`），`config` 留在顶层。旧的扁平名是
+  metatable 提供的兼容视图，`rawget` 读不到；`controller.stores()` 暴露三张表。controller、
+  `app/*`、`tasks` 与全部测试改为显式 store 路径（685 处）。
+- **health 解耦**：`config.remember()` / `config.effective()` 保存并读取最近一次有效配置，
+  health 只在需要运行时事实时才访问 controller。
+
+controller 从 1851 行降到 599 行。移出的职责：`app/bootstrap`（服务构造与接线，原 ~550 行
+`setup`）、`app/turn`、`app/window`、`app/status`、`app/attachments`、`app/runtime_ops`、
+`app/connection_flow`、`app/events`、`app/presenter`。
+
+分层门禁：模块 require 图无环；`protocol/*` 与 `session/*` 不 require `acp.ui*`；`app/*` 只能
+经 `app/presenter` 使用 picker/form/详情/会话浏览器/图标/diff（`app.connection` 的
+`ui.work_scheduler` 例外，它属于调度而非呈现）。
+
+验证：1101 项单元/组件测试通过，0 失败，0 项 pending；`tests/integration_inline_safety.lua`
+3 项通过。行数与依赖约束由测试断言，不是一次性统计。

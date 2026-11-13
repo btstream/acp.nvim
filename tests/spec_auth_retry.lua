@@ -20,7 +20,7 @@ return function(t)
     controller.open()
     local S = controller.state()
     vim.wait(8000, function()
-      return S.connection == "ready"
+      return S.conn.phase == "ready"
     end, 20)
     return S
   end
@@ -40,12 +40,12 @@ return function(t)
       vim.fn.writefile({}, marker)
       local S = setup()
       vim.wait(10000, function()
-        return S.session ~= nil
+        return S.sess.current ~= nil
       end, 20)
-      t.truthy(S.session, "session was not created")
+      t.truthy(S.sess.current, "session was not created")
       vim.fn.delete(marker)
       local runs = {}
-      S.auth.open_terminal = function(command, opts)
+      S.view.auth.open_terminal = function(command, opts)
         runs[#runs + 1] = { command = command, opts = opts }
         return 1
       end
@@ -56,22 +56,22 @@ return function(t)
       end, 20)
       t.eq(1, #runs)
       -- The message was never delivered, so it must stay visible exactly once.
-      t.eq(1, count(S.session, "user"), "the user message was dropped or duplicated")
-      t.eq(0, count(S.session, "error"), "the failed attempt left an error block")
+      t.eq(1, count(S.sess.current, "user"), "the user message was dropped or duplicated")
+      t.eq(0, count(S.sess.current, "error"), "the failed attempt left an error block")
 
       vim.fn.writefile({}, marker)
       runs[1].opts.on_exit(0)
       vim.wait(15000, function()
         local text = ""
-        for _, block in ipairs(S.session and S.session.blocks or {}) do
+        for _, block in ipairs(S.sess.current and S.sess.current.blocks or {}) do
           if block.kind == "agent" then
             text = text .. (block.text or "")
           end
         end
         return text:find("RESULT", 1, true) ~= nil
       end, 20)
-      t.eq(1, count(S.session, "user"), "the retried message was added twice")
-      t.eq(0, count(S.session, "error"), "a turn that will be retried left an error")
+      t.eq(1, count(S.sess.current, "user"), "the retried message was added twice")
+      t.eq(0, count(S.sess.current, "error"), "a turn that will be retried left an error")
       vim.fn.delete(marker)
       controller.hide()
     end)
@@ -80,10 +80,10 @@ return function(t)
       vim.fn.writefile({}, marker)
       local S = setup()
       vim.wait(10000, function()
-        return S.session ~= nil
+        return S.sess.current ~= nil
       end, 20)
       local runs = {}
-      S.auth.open_terminal = function(command, opts)
+      S.view.auth.open_terminal = function(command, opts)
         runs[#runs + 1] = opts
         return 1
       end
@@ -91,7 +91,7 @@ return function(t)
       -- A provider failure with a non-reserved code.
       controller.submit("fail", {})
       vim.wait(6000, function()
-        return S.session and S.session.status == "idle"
+        return S.sess.current and S.sess.current.status == "idle"
       end, 20)
       t.eq(0, #runs, "a generic error started a login")
 
@@ -99,11 +99,11 @@ return function(t)
       -- the loss instead of sleeping for a fixed period.
       controller.submit("slow", {})
       vim.wait(2000, function()
-        return S.session and S.session.status == "running"
+        return S.sess.current and S.sess.current.status == "running"
       end, 20)
-      S.client.proc:stop(true)
+      S.conn.client.proc:stop(true)
       local settled = vim.wait(10000, function()
-        return S.connection == "disconnected" and (S.session == nil or S.session.status == "idle")
+        return S.conn.phase == "disconnected" and (S.sess.current == nil or S.sess.current.status == "idle")
       end, 20)
       t.truthy(settled, "the agent crash was not observed")
       -- Give any (wrong) login decision a chance to run before asserting.

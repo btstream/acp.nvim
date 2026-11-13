@@ -39,10 +39,10 @@ return function(t)
       local before_statusline = vim.o.statusline
       local S = setup()
       controller.open()
-      t.truthy(S.chat and S.chat:is_visible(), "chat window missing")
-      t.truthy(S.input and S.input:is_visible(), "composer missing")
-      t.eq("acp_chat", vim.bo[S.chat.buf].filetype)
-      t.eq("acp_input", vim.bo[S.input.buf].filetype)
+      t.truthy(S.view.chat and S.view.chat:is_visible(), "chat window missing")
+      t.truthy(S.view.input and S.view.input:is_visible(), "composer missing")
+      t.eq("acp_chat", vim.bo[S.view.chat.buf].filetype)
+      t.eq("acp_input", vim.bo[S.view.input.buf].filetype)
       t.eq(before_statusline, vim.o.statusline, "global statusline was modified")
       t.eq(3, vim.o.laststatus, "laststatus was modified")
       controller.hide()
@@ -52,12 +52,12 @@ return function(t)
       local S = setup()
       controller.open()
       vim.wait(4000, function()
-        return S.session ~= nil
+        return S.sess.current ~= nil
       end, 20)
-      local session = S.session
+      local session = S.sess.current
       controller.hide()
-      t.falsy(S.chat.win, "chat window still recorded")
-      t.eq(session, S.session, "session was dropped")
+      t.falsy(S.view.chat.win, "chat window still recorded")
+      t.eq(session, S.sess.current, "session was dropped")
     end)
 
     t.it("never leaves the transcript in insert mode", function()
@@ -67,13 +67,13 @@ return function(t)
       for _, key in ipairs({ "I", "a", "A", "o", "O", "s", "c", "C", "gR", "gi", "gI" }) do
         local result = probe(key).after
         t.eq("n", result.mode, key .. " entered insert mode")
-        t.eq(S.chat.buf, result.buf)
+        t.eq(S.view.chat.buf, result.buf)
       end
       t.eq("acp: add diagnostics", vim.fn.maparg("R", "n", false, true).desc)
       t.eq("acp: add selection", vim.fn.maparg("S", "n", false, true).desc)
       -- `i` is deliberately bound to the composer instead.
       local result = probe("i").after
-      t.eq(S.input.buf, result.buf)
+      t.eq(S.view.input.buf, result.buf)
       t.eq("i", result.mode, "composer no longer enters insert mode")
       controller.hide()
     end)
@@ -81,12 +81,13 @@ return function(t)
     t.it("leaves insert mode when switching directly from the composer to chat", function()
       local S = setup()
       controller.open()
-      vim.api.nvim_set_current_win(S.input.win)
-      local samples =
-        probe("i<Cmd>lua _G._acp_panel_mode_probe('before'); vim.api.nvim_set_current_win(" .. S.chat.win .. ")<CR>")
+      vim.api.nvim_set_current_win(S.view.input.win)
+      local samples = probe(
+        "i<Cmd>lua _G._acp_panel_mode_probe('before'); vim.api.nvim_set_current_win(" .. S.view.chat.win .. ")<CR>"
+      )
       t.eq("i", samples.before.mode)
       t.eq("n", samples.after.mode)
-      t.eq(S.chat.buf, samples.after.buf)
+      t.eq(S.view.chat.buf, samples.after.buf)
       controller.hide()
     end)
 
@@ -96,13 +97,14 @@ return function(t)
       local scratch = vim.api.nvim_create_buf(false, true)
       local win =
         vim.api.nvim_open_win(scratch, true, { relative = "editor", row = 0, col = 0, width = 40, height = 5 })
-      local samples =
-        probe("i<Cmd>lua _G._acp_panel_mode_probe('before'); vim.api.nvim_set_current_buf(" .. S.chat.buf .. ")<CR>")
+      local samples = probe(
+        "i<Cmd>lua _G._acp_panel_mode_probe('before'); vim.api.nvim_set_current_buf(" .. S.view.chat.buf .. ")<CR>"
+      )
       vim.api.nvim_win_close(win, true)
       vim.api.nvim_buf_delete(scratch, { force = true })
       t.eq("i", samples.before.mode)
       t.eq("n", samples.after.mode)
-      t.eq(S.chat.buf, samples.after.buf)
+      t.eq(S.view.chat.buf, samples.after.buf)
       controller.hide()
     end)
 
@@ -113,7 +115,7 @@ return function(t)
       t.eq("<Nop>", vim.fn.maparg("i", "n", false, true).rhs)
       local result = probe("i").after
       t.eq("n", result.mode)
-      t.eq(S.chat.buf, result.buf)
+      t.eq(S.view.chat.buf, result.buf)
       controller.hide()
     end)
 
@@ -123,13 +125,13 @@ return function(t)
       local editor_buf = vim.api.nvim_create_buf(false, true)
       local editor =
         vim.api.nvim_open_win(editor_buf, true, { relative = "editor", row = 0, col = 0, width = 40, height = 5 })
-      local entered = probe("<Cmd>lua vim.api.nvim_set_current_win(" .. S.input.win .. ")<CR>").after
-      t.eq(S.input.buf, entered.buf)
+      local entered = probe("<Cmd>lua vim.api.nvim_set_current_win(" .. S.view.input.win .. ")<CR>").after
+      t.eq(S.view.input.buf, entered.buf)
       t.eq("i", entered.mode)
       vim.api.nvim_set_current_win(editor)
       local samples = probe(
         "<Cmd>lua vim.api.nvim_set_current_win("
-          .. S.input.win
+          .. S.view.input.win
           .. ")<CR>"
           .. "<Cmd>lua _G._acp_panel_mode_probe('before'); vim.api.nvim_set_current_win("
           .. editor
@@ -149,8 +151,8 @@ return function(t)
       local scratch = vim.api.nvim_create_buf(false, true)
       local win =
         vim.api.nvim_open_win(scratch, true, { relative = "editor", row = 0, col = 0, width = 40, height = 5 })
-      local entered = probe("<Cmd>lua vim.api.nvim_set_current_buf(" .. S.input.buf .. ")<CR>").after
-      t.eq(S.input.buf, entered.buf)
+      local entered = probe("<Cmd>lua vim.api.nvim_set_current_buf(" .. S.view.input.buf .. ")<CR>").after
+      t.eq(S.view.input.buf, entered.buf)
       t.eq("i", entered.mode)
       local samples =
         probe("i<Cmd>lua _G._acp_panel_mode_probe('before'); vim.api.nvim_set_current_buf(" .. scratch .. ")<CR>")
@@ -168,18 +170,18 @@ return function(t)
       controller.focus("chat")
       local entered = 0
       local autocmd = vim.api.nvim_create_autocmd("InsertEnter", {
-        buffer = S.chat.buf,
+        buffer = S.view.chat.buf,
         callback = function()
           entered = entered + 1
         end,
       })
-      vim.bo[S.chat.buf].modifiable = true
+      vim.bo[S.view.chat.buf].modifiable = true
       local result = probe("<Cmd>startinsert<CR>").after
-      vim.bo[S.chat.buf].modifiable = false
+      vim.bo[S.view.chat.buf].modifiable = false
       vim.api.nvim_del_autocmd(autocmd)
       t.eq(1, entered, "test did not exercise InsertEnter")
       t.eq("n", result.mode)
-      t.eq(S.chat.buf, result.buf)
+      t.eq(S.view.chat.buf, result.buf)
       controller.hide()
     end)
 
@@ -188,7 +190,7 @@ return function(t)
       controller.open()
       controller.focus("chat")
       local result = probe("a").after
-      t.eq(S.input.buf, result.buf)
+      t.eq(S.view.input.buf, result.buf)
       t.eq("i", result.mode)
       controller.hide()
     end)
@@ -198,16 +200,16 @@ return function(t)
       controller.open()
       controller.focus("chat")
       local autocmd = vim.api.nvim_create_autocmd("InsertEnter", {
-        buffer = S.chat.buf,
+        buffer = S.view.chat.buf,
         callback = function()
-          vim.api.nvim_set_current_win(S.input.win)
+          vim.api.nvim_set_current_win(S.view.input.win)
         end,
       })
-      vim.bo[S.chat.buf].modifiable = true
+      vim.bo[S.view.chat.buf].modifiable = true
       local result = probe("<Cmd>startinsert<CR>").after
-      vim.bo[S.chat.buf].modifiable = false
+      vim.bo[S.view.chat.buf].modifiable = false
       vim.api.nvim_del_autocmd(autocmd)
-      t.eq(S.input.buf, result.buf)
+      t.eq(S.view.input.buf, result.buf)
       t.eq("i", result.mode)
       controller.hide()
     end)
@@ -216,16 +218,16 @@ return function(t)
       local S = setup()
       controller.open()
       controller.toggle()
-      t.falsy(S.chat:is_visible())
+      t.falsy(S.view.chat:is_visible())
       controller.toggle()
-      t.truthy(S.chat:is_visible())
+      t.truthy(S.view.chat:is_visible())
       controller.hide()
     end)
 
     t.it("hides signs and numbers with a single-space statuscolumn", function()
       local S = setup()
       controller.open()
-      for _, pair in ipairs({ { "chat", S.chat.win }, { "composer", S.input.win } }) do
+      for _, pair in ipairs({ { "chat", S.view.chat.win }, { "composer", S.view.input.win } }) do
         local win = pair[2]
         t.eq(
           " ",
@@ -240,8 +242,8 @@ return function(t)
     t.it("keeps every chrome element local to its window", function()
       local S = setup()
       controller.open()
-      local chat_bar = vim.api.nvim_get_option_value("winbar", { win = S.chat.win })
-      local input_bar = vim.api.nvim_get_option_value("winbar", { win = S.input.win })
+      local chat_bar = vim.api.nvim_get_option_value("winbar", { win = S.view.chat.win })
+      local input_bar = vim.api.nvim_get_option_value("winbar", { win = S.view.input.win })
       t.truthy(#chat_bar > 0)
       t.truthy(#input_bar > 0)
       controller.hide()
@@ -254,7 +256,7 @@ return function(t)
       for _, status in ipairs({ 0, 2, 3 }) do
         vim.o.laststatus = status
         controller.open()
-        t.truthy(S.input:is_visible())
+        t.truthy(S.view.input:is_visible())
       end
       vim.o.laststatus = original
       controller.hide()
@@ -264,13 +266,13 @@ return function(t)
       local S = setup()
       controller.open()
       vim.wait(4000, function()
-        return S.session ~= nil
+        return S.sess.current ~= nil
       end, 20)
-      S.input:add_attachment({ kind = "file", label = "main.lua", path = "/tmp/main.lua" })
-      local bar = vim.api.nvim_get_option_value("winbar", { win = S.input.win })
+      S.view.input:add_attachment({ kind = "file", label = "main.lua", path = "/tmp/main.lua" })
+      local bar = vim.api.nvim_get_option_value("winbar", { win = S.view.input.win })
       local res = vim.api.nvim_eval_statusline(bar, {
-        winid = S.input.win,
-        maxwidth = vim.api.nvim_win_get_width(S.input.win),
+        winid = S.view.input.win,
+        maxwidth = vim.api.nvim_win_get_width(S.view.input.win),
         use_winbar = true,
       })
       t.match("main%.lua", res.str)
@@ -281,11 +283,11 @@ return function(t)
       local S = setup()
       controller.open()
       for _, width in ipairs({ 24, 28, 42, 60 }) do
-        vim.api.nvim_win_set_width(S.input.win, width)
-        local win_width = vim.api.nvim_win_get_width(S.input.win)
-        local bar = vim.api.nvim_get_option_value("winbar", { win = S.input.win })
+        vim.api.nvim_win_set_width(S.view.input.win, width)
+        local win_width = vim.api.nvim_win_get_width(S.view.input.win)
+        local bar = vim.api.nvim_get_option_value("winbar", { win = S.view.input.win })
         local res = vim.api.nvim_eval_statusline(bar, {
-          winid = S.input.win,
+          winid = S.view.input.win,
           maxwidth = win_width,
           use_winbar = true,
         })
@@ -299,10 +301,10 @@ return function(t)
       local S = setup()
       controller.open()
       vim.wait(4000, function()
-        return S.session ~= nil
+        return S.sess.current ~= nil
       end, 20)
       -- The winbar is an expression; inspect what it actually renders.
-      local rendered = controller.composer_bar(S.input.win)
+      local rendered = controller.composer_bar(S.view.input.win)
       t.match("AcpPickModel", rendered)
       t.match("AcpPickMode", rendered)
       t.eq("function", type(_G.AcpPickModel))
@@ -327,12 +329,12 @@ return function(t)
     t.it("keeps the transcript read-only after updates", function()
       local S = setup()
       local session = state.new("s9", "/tmp")
-      S.session = session
-      S.chat:set_session(session)
+      S.sess.current = session
+      S.view.chat:set_session(session)
       session:add_local_user("hello")
-      S.chat:render()
-      t.falsy(vim.bo[S.chat.buf].modifiable)
-      S.session = nil
+      S.view.chat:render()
+      t.falsy(vim.bo[S.view.chat.buf].modifiable)
+      S.sess.current = nil
     end)
   end)
 end

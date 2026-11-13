@@ -21,7 +21,7 @@ return function(t)
     controller.open()
     local S = controller.state()
     vim.wait(8000, function()
-      return S.session ~= nil
+      return S.sess.current ~= nil
     end, 20)
     return S
   end
@@ -48,7 +48,7 @@ return function(t)
 
   local function transcript(S)
     local parts = {}
-    for _, block in ipairs(S.session and S.session.blocks or {}) do
+    for _, block in ipairs(S.sess.current and S.sess.current.blocks or {}) do
       if block.text then
         parts[#parts + 1] = block.text
       end
@@ -60,19 +60,19 @@ return function(t)
     t.it("resumes instead of creating when the agent cannot load history", function()
       local log = tempname("resume")
       local S = setup("resumeonly", { ACP_MOCK_LOG = log })
-      local caps = require("acp.protocol.capabilities").agent(S.client)
+      local caps = require("acp.protocol.capabilities").agent(S.conn.client)
       t.falsy(caps.loadSession, "the resume-only profile must not advertise loadSession")
       t.truthy(caps.sessionCapabilities and caps.sessionCapabilities.resume, "resume must be advertised")
 
-      local original = S.session
+      local original = S.sess.current
       controller.load_session("sess_old")
       vim.wait(6000, function()
-        return S.session and S.session.id == "sess_old"
+        return S.sess.current and S.sess.current.id == "sess_old"
       end, 20)
 
-      t.truthy(S.session, "no session became active")
-      t.eq("sess_old", S.session.id)
-      t.truthy(S.session ~= original, "the previous session object was reused")
+      t.truthy(S.sess.current, "no session became active")
+      t.eq("sess_old", S.sess.current.id)
+      t.truthy(S.sess.current ~= original, "the previous session object was reused")
 
       -- Resume must not replay: the mock's load path sends "old question".
       local text = transcript(S)
@@ -131,11 +131,11 @@ return function(t)
     t.it("closes the previous session when switching away", function()
       local log = tempname("close-switch")
       local S = setup("opencode", { ACP_MOCK_CLOSE_LOG = log })
-      local first = S.session.id
+      local first = S.sess.current.id
 
       controller.load_session("sess_old")
       vim.wait(6000, function()
-        return S.session and S.session.id == "sess_old"
+        return S.sess.current and S.sess.current.id == "sess_old"
       end, 20)
 
       -- The mock records closes in order; switching away must release `first`.
@@ -148,17 +148,17 @@ return function(t)
     t.it("closes a session before deleting it", function()
       local log = tempname("close-delete")
       local S = setup("opencode", { ACP_MOCK_CLOSE_LOG = log })
-      t.truthy(S.session)
+      t.truthy(S.sess.current)
 
       local done
-      local catalog = S.catalog
+      local catalog = S.sess.catalog
       local sessions_service = require("acp.app.sessions")
       t.truthy(catalog)
       t.truthy(sessions_service)
 
       -- Go through the service the controller uses, so the delete flow is the
       -- real one.
-      local service = S.sessions_service
+      local service = S.sess.service
       service:delete("sess_old", function(ok)
         done = ok
       end)
@@ -176,7 +176,7 @@ return function(t)
     t.it("does not close when the agent has no close capability", function()
       local log = tempname("close-none")
       local S = setup("pi", { ACP_MOCK_CLOSE_LOG = log })
-      local service = S.sessions_service
+      local service = S.sess.service
       local done
       service:delete("sess_old", function(ok)
         done = ok
@@ -193,19 +193,19 @@ return function(t)
       local S = setup("opencode", { ACP_MOCK_CLOSE_LOG = log })
       controller.submit("slow", {})
       vim.wait(4000, function()
-        return S.session and S.session.status == "running"
+        return S.sess.current and S.sess.current.status == "running"
       end, 20)
-      t.eq("running", S.session.status, "the turn never started")
-      local running = S.session.id
+      t.eq("running", S.sess.current.status, "the turn never started")
+      local running = S.sess.current.id
 
       controller.load_session("sess_old")
       vim.wait(6000, function()
-        return S.session and S.session.id == "sess_old"
+        return S.sess.current and S.sess.current.id == "sess_old"
       end, 20)
 
       t.eq(0, #lines(log), "switching away from a running session must not close it")
       -- The abandoned turn keeps running in the background.
-      t.eq("running", S.runtime.sessions[running] and S.runtime.sessions[running].status)
+      t.eq("running", S.sess.runtime.sessions[running] and S.sess.runtime.sessions[running].status)
       controller.hide()
     end)
   end)

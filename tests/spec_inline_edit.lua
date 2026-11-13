@@ -261,10 +261,10 @@ return function(t)
     t.it("allows reads and only edits to the copy", function()
       local inline = require("acp.inline")
       local S = require("acp.controller").state()
-      local saved_cfg, saved_client = S.config, S.client
+      local saved_cfg, saved_client = S.config, S.conn.client
       local chosen
       S.config = cfg()
-      S.client = {
+      S.conn.client = {
         resolve_permission = function(_, _, choice)
           chosen = choice
         end,
@@ -304,7 +304,7 @@ return function(t)
       S.config.inline.allow_commands = false
       inline.on_permission(invocation, { options = options, tool_call = { kind = "execute" } })
       t.eq("r", chosen)
-      S.config, S.client = saved_cfg, saved_client
+      S.config, S.conn.client = saved_cfg, saved_client
       copy.remove(path)
       vim.api.nvim_buf_delete(buf, { force = true })
     end)

@@ -15,7 +15,7 @@ return function(t)
     controller.open()
     local S = controller.state()
     vim.wait(8000, function()
-      return S.session ~= nil
+      return S.sess.current ~= nil
     end, 20)
     return S
   end
@@ -24,7 +24,7 @@ return function(t)
   local function run_turn(S, text)
     controller.submit(text, {})
     vim.wait(15000, function()
-      return S.session and S.session.status == "idle"
+      return S.sess.current and S.sess.current.status == "idle"
     end, 20)
   end
 
@@ -43,7 +43,7 @@ return function(t)
   t.describe("session titles", function()
     t.it("starts without a title", function()
       local S = setup()
-      t.eq(nil, S.session.title)
+      t.eq(nil, S.sess.current.title)
       controller.hide()
     end)
 
@@ -51,9 +51,9 @@ return function(t)
       local S = setup()
       run_turn(S, "hello")
       vim.wait(4000, function()
-        return S.session.title ~= nil
+        return S.sess.current.title ~= nil
       end, 20)
-      t.eq("Mock titled session", S.session.title)
+      t.eq("Mock titled session", S.sess.current.title)
       controller.hide()
     end)
 
@@ -61,9 +61,9 @@ return function(t)
       local S = setup()
       run_turn(S, "hello")
       vim.wait(4000, function()
-        return S.session.title ~= nil
+        return S.sess.current.title ~= nil
       end, 20)
-      local bar = controller.chat_bar(S.chat.win)
+      local bar = controller.chat_bar(S.view.chat.win)
       t.match("Mock titled session", bar)
       controller.hide()
     end)
@@ -72,14 +72,14 @@ return function(t)
       local S = setup()
       run_turn(S, "hello")
       vim.wait(4000, function()
-        return S.session.title ~= nil
+        return S.sess.current.title ~= nil
       end, 20)
       for _, width in ipairs({ 20, 30, 45 }) do
-        vim.api.nvim_win_set_width(S.chat.win, width)
-        local win_width = vim.api.nvim_win_get_width(S.chat.win)
-        local bar = vim.api.nvim_get_option_value("winbar", { win = S.chat.win })
+        vim.api.nvim_win_set_width(S.view.chat.win, width)
+        local win_width = vim.api.nvim_win_get_width(S.view.chat.win)
+        local bar = vim.api.nvim_get_option_value("winbar", { win = S.view.chat.win })
         local res = vim.api.nvim_eval_statusline(bar, {
-          winid = S.chat.win,
+          winid = S.view.chat.win,
           maxwidth = win_width,
           use_winbar = true,
         })
@@ -186,13 +186,13 @@ return function(t)
       end
       vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<C-d>", true, false, true), "x", false)
       vim.wait(6000, function()
-        return S.sessions["sess_old"] == nil
+        return S.sess.all["sess_old"] == nil
       end, 20)
       vim.ui.select = original
 
       t.truthy(asked, "no confirmation was shown")
-      t.eq(nil, S.sessions["sess_old"])
-      t.truthy(S.session and S.session.id == "sess_mock", "active session must survive")
+      t.eq(nil, S.sess.all["sess_old"])
+      t.truthy(S.sess.current and S.sess.current.id == "sess_mock", "active session must survive")
 
       -- And the row disappears from the dialog once the callback lands.
       vim.wait(4000, function()
@@ -226,7 +226,7 @@ return function(t)
     t.it("reports when the agent cannot delete", function()
       local S = setup()
       -- Pretend the agent has no delete capability.
-      S.client.has_session_capability = function(_, name)
+      S.conn.client.has_session_capability = function(_, name)
         return name ~= "delete"
       end
       local browser = open_browser(S)
@@ -255,13 +255,13 @@ return function(t)
       local S = setup()
       controller.submit("slow", {})
       vim.wait(4000, function()
-        return S.session.status == "running"
+        return S.sess.current.status == "running"
       end, 20)
       controller.cancel()
-      t.eq("cancelling", S.session.status)
+      t.eq("cancelling", S.sess.current.status)
       controller.cancel()
-      t.eq("idle", S.session.status)
-      t.eq(nil, S.session.prompt_task)
+      t.eq("idle", S.sess.current.status)
+      t.eq(nil, S.sess.current.prompt_task)
       controller.hide()
     end)
   end)

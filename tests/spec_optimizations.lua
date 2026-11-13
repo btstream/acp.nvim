@@ -306,8 +306,8 @@ return function(t)
       local S = controller.state()
       local previous = S.config
       S.config = config.validate(config.merge(config.defaults, {}))
-      S.sessions[s.id] = s
-      S.session = s
+      S.sess.all[s.id] = s
+      S.sess.current = s
 
       s:begin_turn() -- turn 1
       s:finish_turn("end_turn")
@@ -324,8 +324,8 @@ return function(t)
       t.eq("running", s.status, "a stale event settled a running turn")
       t.eq(turn_of_next, s.turn)
 
-      S.sessions[s.id] = nil
-      S.session = nil
+      S.sess.all[s.id] = nil
+      S.sess.current = nil
       S.config = previous
     end)
 
@@ -334,8 +334,8 @@ return function(t)
       local S = controller.state()
       local previous = S.config
       S.config = config.validate(config.merge(config.defaults, {}))
-      S.sessions[s.id] = s
-      S.session = s
+      S.sess.all[s.id] = s
+      S.sess.current = s
 
       local turn = s:begin_turn()
       controller.on_client_event("prompt_finished", {
@@ -346,8 +346,8 @@ return function(t)
       })
       t.eq("idle", s.status)
 
-      S.sessions[s.id] = nil
-      S.session = nil
+      S.sess.all[s.id] = nil
+      S.sess.current = nil
       S.config = previous
     end)
   end)

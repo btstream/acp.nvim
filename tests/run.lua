@@ -74,5 +74,6 @@ require("tests.spec_commit")(t)
 require("tests.spec_tail")(t)
 require("tests.spec_session_management")(t)
 require("tests.spec_session_lifecycle")(t)
+require("tests.spec_architecture")(t)
 
 t.run()
