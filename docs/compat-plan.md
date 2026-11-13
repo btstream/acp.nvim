@@ -16,6 +16,18 @@
 - 测试先行：每个阶段开始前，先在 mock agent 中加入对应 agent 的行为场景。
 - 用户配置向后兼容：旧配置项保留含义；新配置项都有安全的默认值。
 
+## 0.1 探测记录（2026-11-12）
+
+- OpenCode 2.2.7 真实握手：与下表一致。`session/new` 只返回 configOptions：`model`、`effort`（category
+  thought_level：off/low/high/max/default）、`mode`（build/plan）；登录方式为 terminal 类型 `opencode-login`，
+  带 `_meta["terminal-auth"]`（`opencode auth login`）。
+- Claude 与 pi 的报文形态取自上游源码与 claude-agent-acp 录制的协议场景
+  （`src/tests/acp-scenarios/origin-main/plain/*.jsonl`）。尚未用真实 adapter 握手（需要 npx 下载）。
+- ExitPlanMode 的实际形态：`toolCall.kind = "switch_mode"`、`toolCall.name = "ExitPlanMode"`、
+  `toolCall.title = "Approve Plan"`，"Ready to code?" 在 `_meta.permission.title`；选项依次为
+  `exit-plan-default`(allow_once)、`exit-plan-clear-auto`、`exit-plan-auto`、`exit-plan-bypass`(allow_always)、`reject`(reject_once)。
+- Claude 的权限请求标题统一放在 `_meta.permission.title`；工具名同时出现在 `toolCall.name` 与 `_meta.claudeCode.toolName`。
+
 ## 1. 现状摘要（依据：2026-11-12 的三份审计）
 
 | 领域 | 现状 | 影响 |
@@ -38,9 +50,9 @@
 |---|---|---|---|
 | 提问 | elicitation form（客户端不支持时取消提问） | elicitation form（客户端不支持时禁用该工具） | 用权限请求包装：select 选项全是 `allow_once`；confirm 为 yes/no |
 | 计划审批 | 未确认 | 权限请求（ExitPlanMode，"Ready to code?"） | 无 |
-| 模式 | configOptions（build/plan） | `modes` + configOptions（default/acceptEdits/plan/auto/bypassPermissions） | `modes` = 思考级别 |
+| 模式 | configOptions（build/plan） | `modes` + configOptions（default/acceptEdits/plan/auto/bypassPermissions；选项带 `_meta.kind`：standard/plan/auto_review/full_access） | `modes` = 思考级别，**同时**提供 configOptions（model + `thought_level`） |
 | 执行前权限 | 有 | 有（选项顺序有含义） | 无 |
-| 终端输出 | 文本 | 文本；客户端声明 `_meta.terminal_output` 后改用 `_meta` | 未经 `terminal/create` 的伪 terminal content + `_meta` |
+| 终端输出 | 文本 | 文本；客户端声明 `_meta.terminal_output` 后改用 `_meta` | 未经 `terminal/create` 的伪 terminal content；**输出只在 `_meta.terminal_output` 里**，没有文本 |
 | 认证 | terminal（`opencode auth login`） | terminal（claude.ai / console） | terminal（`--terminal-login`） |
 
 ## 2. 阶段总览
@@ -90,6 +102,11 @@
   - 记录收到的客户端请求和回复，供测试断言（例如「权限请求只被回复一次」）。
 - `tests/spec_protocol_conformance.lua`（新增）：对每个 profile 跑一遍
   initialize → new → prompt → cancel → load，断言没有报错、没有丢弃更新、每个请求都只回复一次。
+
+**状态**：已完成。mock 支持 `ACP_MOCK_PROFILE`、`ACP_MOCK_LOG`、`ACP_MOCK_EARLY_UPDATE`、
+`ACP_MOCK_AUTH_REQUIRED`/`ACP_MOCK_AUTH_MARKER`（`--mock-login`）与 `@ask`/`@plan-approve`/`@bash`/`@null`/`@cancel-request`；
+`t.pending` + `ACP_TEST_PENDING=1`；`tests/spec_protocol_conformance.lua` 共 16 项（8 项 pending）。
+`@early-update` 与 `@auth` 的用例需要 controller 级测试，分别在阶段 1、阶段 4 加入。
 
 **验收**：现有 863 项测试不变并全部通过；新的一致性测试对 4 个 profile 运行。
 其中预期失败的项目以 `pending` 标记，在后续阶段逐项转为通过。
@@ -311,8 +328,10 @@ agent 方式会调用 `authenticate`；登录后重试成功。
     extras   = { {id, name, type = "select"|"boolean", current, options} ... },
   }
   ```
-- 有 configOptions 时优先使用（按 category 归类，其余放进 extras）；只有 `modes` 时生成 mode
-  （或者按 profile 归为 thinking），设置时调用 `session/set_mode`。
+- 有 configOptions 时优先使用（按 category 归类，其余放进 extras），**并完全忽略 `modes`**：
+  pi 的 `modes` 只是 `thought_level` 配置项的重复表示。只有 `modes` 时才生成 mode，设置时调用 `session/set_mode`。
+- 模式语义优先读选项的 `_meta.kind`（Claude：plan → 计划模式；full_access/auto_review → 不安全模式），
+  没有时再用 profile 钩子。注意 Claude 的 acceptEdits 的 kind 是 standard，inline 的模式保护仍需 profile 判断。
 - 修正 `state.lua:221`：从 `result.modes.currentModeId` 读取当前模式，`modes` 存的是
   `availableModes`。
 - 处理 `current_mode_update`：同时更新 controls（对应 ExitPlanMode 之后的模式变化）。
