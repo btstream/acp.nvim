@@ -48,6 +48,8 @@ Controller 只保留公开入口、会话选择、服务装配和跨模块协调
 - `app/interactions` 是等待用户回答的唯一状态源。协议层只交出回复回调；策略链（当前 inline
   回合、`auto_allow`）可先行作答，否则由呈现器一次显示一个，其余排队。回答、取消、agent 撤回
   都只结算一次；会话取消、断线和 shutdown 各自按类型回复取消结果。
+- elicitation 表单由 `app/elicitation_schema` 解析为扁平字段并校验，`ui/form` 呈现；不支持
+  的结构回 `decline`。提问型权限与工具权限共用交互中心，但前者跳过自动批准。
 - `session/update` 解码时把 JSON null 归一化为 nil；reducer 用变更日志包围一条更新，
   失败时整体回滚，不留下半更新的 block，也不破坏 UI 持有的 block 身份。
 - 创建会话期间，sessionId 尚未知晓的更新先进入有界缓冲（256 条 / 1 MiB），创建成功后

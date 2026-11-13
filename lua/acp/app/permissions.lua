@@ -81,12 +81,31 @@ function Permissions:present(interaction)
     return false
   end
 
-  local title = tool.title or tool.kind or "tool"
+  local question = self:is_question(interaction)
+  local labels = {
+    execute = "Run command",
+    edit = "Edit file",
+    delete = "Delete file",
+    move = "Move file",
+    read = "Read file",
+    search = "Search",
+    fetch = "Fetch",
+  }
+  local title
+  if question then
+    title = tool.title or "Question"
+  else
+    title = labels[tool.kind] or tool.title or tool.kind or "Permission required"
+    local input = tool.rawInput or {}
+    if tool.kind == "execute" and (input.command or input.cmd) then
+      title = title .. ": " .. tostring(input.command or input.cmd)
+    end
+  end
   local items = {}
   for _, option in ipairs(options) do
     items[#items + 1] = {
       label = option.name or option.optionId,
-      description = option.kind,
+      description = question and option.description or option.kind,
       value = { id = option.optionId, kind = option.kind },
     }
   end

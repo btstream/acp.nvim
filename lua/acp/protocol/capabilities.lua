@@ -10,10 +10,22 @@ local M = {}
 ---@return table
 function M.client(config)
   -- Encode capability objects as JSON objects (vim.empty_dict), not arrays.
+  local caps = vim.empty_dict()
   if config.notices then
-    return { session = { notices = vim.empty_dict() } }
+    caps.session = { notices = vim.empty_dict() }
   end
-  return vim.empty_dict()
+  local switches = config.capabilities or {}
+  local elicitation = switches.elicitation or {}
+  if elicitation.form or elicitation.url then
+    caps.elicitation = vim.empty_dict()
+    if elicitation.form then
+      caps.elicitation.form = vim.empty_dict()
+    end
+    if elicitation.url then
+      caps.elicitation.url = vim.empty_dict()
+    end
+  end
+  return caps
 end
 
 ---Agent capabilities for a client, tolerating lightweight test doubles.

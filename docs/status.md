@@ -615,3 +615,18 @@ native/edgy/reconnect、性能 smoke、tail/spinner 附加 UI 回归通过。
 
 验证：905 项单元/组件测试通过，0 失败，6 项 pending。
 
+## 多 agent 兼容阶段 3（2026-11-12）
+
+提问通道与权限详情：
+
+- 默认声明 `elicitation.form`（配置可关）。`elicitation/create` 经交互中心排队；表单显示
+  `message` 与字段，单选简化为 picker，`_custom` 合并为 Other，schema 支持 required/长度/
+  pattern/数值/format 校验；不支持的结构回复 `decline`。
+- 统一 kind、`switch_mode` 与 pi select/confirm 的权限请求按提问呈现，标题用问题文本，
+  不被 `auto_allow` 回答，关闭时回 `cancelled`。
+- 权限标题按工具 kind 生成，execute 附带命令；`permissions.show_details` 默认开启。
+- 新增 schema 解析、表单呈现器与提问自动批准限制测试；一致性套件的 elicitation
+  用例转为普通测试。
+
+验证：919 项单元/组件测试通过，0 失败，4 项 pending（认证、终端输出、controls）。
+

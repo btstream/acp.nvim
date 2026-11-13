@@ -99,11 +99,15 @@ return function(t)
             return p:auto(interaction)
           end,
         },
-        present = function()
-          shown = shown + 1
-          return true
-        end,
-        dismiss = function() end,
+        presenters = {
+          permission = {
+            present = function()
+              shown = shown + 1
+              return true
+            end,
+            dismiss = function() end,
+          },
+        },
       })
       local function open(request)
         return interactions:open("permission", request, function(response)

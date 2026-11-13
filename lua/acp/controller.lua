@@ -14,6 +14,7 @@ local Tasks = require("acp.tasks")
 local context = require("acp.context")
 local capabilities = require("acp.protocol.capabilities")
 local Permissions = require("acp.app.permissions")
+local Elicitation = require("acp.app.elicitation")
 local Interactions = require("acp.app.interactions")
 local Options = require("acp.app.options")
 local Chrome = require("acp.ui.chrome")
@@ -730,6 +731,16 @@ function M.on_client_event(name, payload)
     return
   end
 
+  if name == "elicitation_request" then
+    local client = S.client
+    S.interactions:open("elicitation", payload.request or {}, function(response)
+      if client then
+        client:resolve_elicitation(payload.key, response)
+      end
+    end, nil, payload.key)
+    return
+  end
+
   if name == "permission_resolved" then
     S.interactions:resolved(payload.key)
     refresh_chrome()
@@ -1219,6 +1230,12 @@ function M.setup(opts, action)
     end,
     notify = notify,
   })
+  S.elicitation = Elicitation.new({
+    answer = function(interaction, response)
+      S.interactions:answer(interaction.id, response)
+    end,
+    notify = notify,
+  })
   S.interactions = Interactions.new({
     policies = {
       -- Only the current inline turn may answer without the user.
@@ -1229,15 +1246,27 @@ function M.setup(opts, action)
         return S.permissions:auto(interaction)
       end,
     },
-    present = function(interaction)
-      if not S.permissions.valid(interaction) then
-        return false
-      end
-      return S.permissions:present(interaction)
-    end,
-    dismiss = function()
-      S.permissions:dismiss_presented()
-    end,
+    presenters = {
+      permission = {
+        present = function(interaction)
+          if not S.permissions.valid(interaction) then
+            return false
+          end
+          return S.permissions:present(interaction)
+        end,
+        dismiss = function()
+          S.permissions:dismiss_presented()
+        end,
+      },
+      elicitation = {
+        present = function(interaction)
+          return S.elicitation:present(interaction)
+        end,
+        dismiss = function()
+          S.elicitation:dismiss()
+        end,
+      },
+    },
     on_changed = refresh_chrome,
     notify = notify,
   })

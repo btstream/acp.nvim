@@ -21,7 +21,7 @@ M.defaults = {
   -- Client capabilities. Each switch exists so a capability can be turned off
   -- while diagnosing an agent, even after the implementation lands.
   capabilities = {
-    elicitation = { form = false, url = false },
+    elicitation = { form = true, url = false },
     auth_terminal = false,
     terminal_output_meta = false,
     fs = false,
@@ -281,6 +281,8 @@ M.defaults = {
     prompt = "select",
     -- option kinds that are selected automatically (use with care)
     auto_allow = {},
+    -- show diff/command details in the permission picker
+    show_details = true,
   },
 
   context = {
@@ -820,6 +822,9 @@ function M.validate(cfg)
 
   if type(cfg.permissions.auto_allow) ~= "table" or not vim.islist(cfg.permissions.auto_allow) then
     fail("permissions.auto_allow must be a list")
+  end
+  if type(cfg.permissions.show_details) ~= "boolean" then
+    fail("permissions.show_details must be a boolean")
   end
   if type(cfg.notices) ~= "boolean" then
     fail("notices must be a boolean, got %s", type(cfg.notices))

@@ -17,14 +17,12 @@ Interactions.__index = Interactions
 ---@field rpc_id any
 
 ---@param opts {policies: fun(interaction: AcpInteraction): table|nil,
----  present: fun(interaction: AcpInteraction): boolean|nil,
----  dismiss: fun(interaction: AcpInteraction)|nil,
+---  presenters: table<string, {present: fun(interaction: AcpInteraction): boolean|nil, dismiss: fun(interaction: AcpInteraction)|nil}>,
 ---  on_changed: fun()|nil, notify: fun(message: string, level: integer|nil)|nil}
 function M.new(opts)
   return setmetatable({
     policies = opts.policies or {},
-    present = opts.present or function() end,
-    dismiss = opts.dismiss or function() end,
+    presenters = opts.presenters or {},
     on_changed = opts.on_changed or function() end,
     notify = opts.notify or function() end,
     items = {},
@@ -101,7 +99,8 @@ function Interactions:show_next()
     return
   end
   self.shown = next_item.id
-  local presented = self.present(next_item)
+  local presenter = self.presenters[next_item.type]
+  local presented = presenter and presenter.present and presenter.present(next_item)
   if presented == false and self.shown == next_item.id then
     self.shown = nil
   end
@@ -115,7 +114,12 @@ function Interactions:show(id)
     return
   end
   self.shown = id
-  if self.present(interaction) == false and self.shown == id then
+  local presenter = self.presenters[interaction.type]
+  if presenter and presenter.present then
+    if presenter.present(interaction) == false and self.shown == id then
+      self.shown = nil
+    end
+  else
     self.shown = nil
   end
 end
@@ -124,7 +128,10 @@ end
 function Interactions:_settle(interaction)
   if self.shown == interaction.id then
     self.shown = nil
-    pcall(self.dismiss, interaction)
+    local presenter = self.presenters[interaction.type]
+    if presenter and presenter.dismiss then
+      pcall(presenter.dismiss, interaction)
+    end
   end
   local respond = interaction.respond
   interaction.respond = nil
@@ -166,6 +173,21 @@ function Interactions:resolved(id)
   return true
 end
 
+---The agent finished an elicitation started elsewhere (URL mode).
+---@param params table|nil
+function Interactions:complete(params)
+  local id = type(params) == "table" and (params.elicitationId or params.id) or nil
+  if not id then
+    return false
+  end
+  for _, interaction in ipairs(self.order) do
+    if interaction.type == "elicitation" and interaction.request.elicitationId == id then
+      return self:resolved(interaction.id)
+    end
+  end
+  return false
+end
+
 ---Cancel a pending request with its protocol-specific cancellation response.
 ---@param id string
 ---@param reason string|nil
@@ -192,7 +214,10 @@ function Interactions:on_remote_cancel(rpc_id)
       interaction.state = "expired"
       if self.shown == interaction.id then
         self.shown = nil
-        pcall(self.dismiss, interaction)
+        local presenter = self.presenters[interaction.type]
+        if presenter and presenter.dismiss then
+          pcall(presenter.dismiss, interaction)
+        end
       end
       interaction.respond = nil
       self.on_changed()

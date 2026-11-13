@@ -60,6 +60,8 @@ function M.new(opts)
     on_event = opts.on_event or function() end,
     permissions = {},
     permission_seq = 0,
+    elicitations = {},
+    elicitation_seq = 0,
     active_requests = {},
     settles = {},
     timeout_extensions = {},
@@ -435,7 +437,20 @@ function Client:install_handlers()
     self:emit("session_update", params)
   end)
   self:on_agent_notification("elicitation/complete", function(params)
+    if self.interactions then
+      self.interactions:complete(params)
+    end
     self:emit("elicitation_complete", params)
+  end)
+  self:on_agent_request("elicitation/create", function(params, respond, respond_error, rpc_id)
+    if self.interactions then
+      self.interactions:open("elicitation", params or {}, respond, rpc_id)
+      return
+    end
+    self.elicitation_seq = self.elicitation_seq + 1
+    local key = "elicit:" .. self.elicitation_seq
+    self.elicitations[key] = { respond = respond, session_id = params and params.sessionId }
+    self:emit("elicitation_request", { key = key, request = params or {} })
   end)
   self:on_agent_request("session/request_permission", function(params, respond, respond_error, rpc_id)
     self:handle_permission(params, respond, respond_error, rpc_id)
@@ -500,6 +515,22 @@ function Client:resolve_permission(key, option_id)
   self:emit("permission_resolved", { key = key, option_id = option_id })
 end
 
+---Answer a pending elicitation (legacy path without an interaction broker).
+---@param key string
+---@param response table
+function Client:resolve_elicitation(key, response)
+  if self.interactions then
+    self.interactions:answer(key, response)
+    return
+  end
+  local entry = self.elicitations[key]
+  if not entry then
+    return
+  end
+  self.elicitations[key] = nil
+  entry.respond(response)
+end
+
 ---Cancel all pending permission requests (used on session cancel).
 ---@param session_id string
 function Client:cancel_permissions(session_id)
@@ -512,6 +543,12 @@ function Client:cancel_permissions(session_id)
     local entry = self.permissions[key]
     if not session_id or entry.session_id == session_id then
       self:resolve_permission(key, nil)
+    end
+  end
+  for key, entry in pairs(self.elicitations) do
+    if not session_id or entry.session_id == session_id then
+      self.elicitations[key] = nil
+      entry.respond({ action = "cancel" })
     end
   end
 end

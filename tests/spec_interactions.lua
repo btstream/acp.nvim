@@ -6,13 +6,26 @@ return function(t)
     local interactions
     interactions = Interactions.new({
       policies = policies,
-      present = function(interaction)
-        shown[#shown + 1] = interaction.id
-        return true
-      end,
-      dismiss = function(interaction)
-        dismissed[#dismissed + 1] = interaction.id
-      end,
+      presenters = {
+        permission = {
+          present = function(interaction)
+            shown[#shown + 1] = interaction.id
+            return true
+          end,
+          dismiss = function(interaction)
+            dismissed[#dismissed + 1] = interaction.id
+          end,
+        },
+        elicitation = {
+          present = function(interaction)
+            shown[#shown + 1] = interaction.id
+            return true
+          end,
+          dismiss = function(interaction)
+            dismissed[#dismissed + 1] = interaction.id
+          end,
+        },
+      },
     })
     local function open(kind, request, rpc_id)
       return interactions:open(kind or "permission", request or { sessionId = "s" }, function(response)

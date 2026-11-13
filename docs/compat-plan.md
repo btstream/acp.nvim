@@ -278,6 +278,13 @@ session 取消和断线时，所有请求各回复一次。现有权限相关测
 **验收（M1）**：用真实的 Claude Code 和 OpenCode 手工验证：AskUserQuestion / question 工具能提问并收到答案；
 ExitPlanMode 能看到计划正文并完成审批。
 
+**状态**：已完成（表单、提问型权限、权限标题与详情；transcript 的「等待回答」标记仍待补）。
+`elicitation.form` 默认开启；schema 解析拒绝嵌套对象并回 `decline`；单字段选择简化为 picker，
+其余进入表单，`_custom` 合并为 Other。`<C-s>` 提交、`q` 取消、`d` 拒绝；取消/断线由交互中心
+统一回 `cancel`。提问型权限（统一 kind、`switch_mode`、pi select/confirm）不再被 `auto_allow`
+回答，标题使用 agent 给出的问题，关闭时回 `cancelled`。权限标题按 kind 生成并带命令摘要。
+一致性套件中用客户端替身自动回 `cancel`，后续可在 controller 测试中补真实表单交互。
+
 ---
 
 ## 阶段 4：认证

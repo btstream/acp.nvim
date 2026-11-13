@@ -89,6 +89,8 @@ return function(t)
         if not applied then
           ctx.reduce_errors[#ctx.reduce_errors + 1] = err
         end
+      elseif name == "elicitation_request" then
+        client:resolve_elicitation(payload.key, { action = "cancel" })
       end
     end
     local prompted, response = run(function()
@@ -169,7 +171,7 @@ return function(t)
 
     -- Client capabilities -----------------------------------------------------
 
-    t.pending("advertises form elicitation", "phase 3: elicitation", function()
+    t.it("advertises form elicitation", function()
       local caps = advertised()
       t.truthy(caps.elicitation and caps.elicitation.form, vim.inspect(caps))
     end)
@@ -194,7 +196,7 @@ return function(t)
       client:shutdown(true)
     end)
 
-    t.pending("answers elicitation/create instead of rejecting it", "phase 3: elicitation", function()
+    t.it("answers elicitation/create instead of rejecting it", function()
       for _, profile in ipairs({ "claude", "opencode" }) do
         local client, ctx = start(profile, { caps = { elicitation = { form = vim.empty_dict() } } })
         local session = prompt(client, ctx, "@ask")
