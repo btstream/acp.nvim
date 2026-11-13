@@ -583,3 +583,21 @@ native/edgy/reconnect、性能 smoke、tail/spinner 附加 UI 回归通过。
 既有集成另行回归。
 边界：未在真实 OpenCode/其它 Agent 上验证工具副作用；权限不是 OS 沙箱。未实现多选区、
 冲突重定位或问题回复浮窗（回复在当前聊天记录）。崩溃孤儿仅按命名、PID 和一天 TTL 尝试清理。
+
+## 多 agent 兼容阶段 1（2026-11-12）
+
+协议地基已落地：
+
+- JSON null 在解码时归一化为 nil；reducer 的每条更新带变更日志，失败时整体回滚。
+- `protocol/capabilities` 统一声明与查询能力；`protocol/client` 不再依赖 `ui/*`，调度器由
+  `app/connection` 注入。
+- agent 请求改走注册表，未注册方法仍为 -32601；回复与 `$/cancel_request` 共用已答标记，
+  每条请求最多回复一次。
+- 创建会话期间的未知 session 更新进入 256 条 / 1 MiB 的有界缓冲，成功后重放，失败丢弃。
+- `initialize` / `session/new` / `session/load` 使用独立超时；load 随回放续期。取消顺序改为
+  先 `session/cancel` 再 `$/cancel_request`，并在本地结算 `cancelled`；第二次取消强制结束回合。
+
+验证：895 项单元/组件测试通过，0 失败，6 项 pending（后续阶段）。新增 null 回滚、
+请求注册表/重复回复、能力查询、创建缓冲、超时续期与取消顺序测试；一致性套件 4 个 profile
+的 null 与撤回请求用例转为普通测试。
+

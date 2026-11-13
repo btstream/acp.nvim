@@ -41,6 +41,16 @@ Controller 只保留公开入口、会话选择、服务装配和跨模块协调
   不复用文件描述符。启动时清理 24 小时以上的残留。`max_pending_bytes = 0` 只关闭积压上限。
 - 大型追加文本使用惰性派发器，直接消费已解码片段，不重编码或重新分片；工具内容数组、
   diff 和 rawOutput 保持原子替换，避免累计前缀的二次方复制。
+- `protocol/capabilities` 是客户端能力声明和 agent 能力查询的唯一入口；能力按配置开关逐项
+  打开，未实现的能力不下发。协议层不再 require `ui/*`，调度器由连接服务注入。
+- agent 请求经 `client:on_agent_request` / `on_agent_notification` 注册表分发；未注册方法
+  保持 -32601。每个 agent 请求只能回复一次，`$/cancel_request` 与迟到回复共用一个已答标记。
+- `session/update` 解码时把 JSON null 归一化为 nil；reducer 用变更日志包围一条更新，
+  失败时整体回滚，不留下半更新的 block，也不破坏 UI 持有的 block 身份。
+- 创建会话期间，sessionId 尚未知晓的更新先进入有界缓冲（256 条 / 1 MiB），创建成功后
+  按序重放，失败或断线丢弃。`initialize`、`session/new`、`session/load` 有独立超时；
+  load 在每条回放更新上续期。取消先发 `session/cancel`，再撤回 prompt RPC，并在本地以
+  `cancelled` 结算等待方。
 - `ui/chat` 监听窗口和编辑器 resize，宽度变化经 100ms 防抖后重排；`ui/viewport` 用
   block/行偏移锚点保留阅读位置。布局刷新不产生新消息标记，流式更新不等待 resize。
 - 跟随输出在提交完成后对齐超过一屏的尾部，保留消息原有尾部空行。短转录从顶部正常显示，

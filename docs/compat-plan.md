@@ -156,6 +156,13 @@ M.supports(agent_caps, "prompt.image" | "prompt.embeddedContext" | "session.list
 **测试**：`@null`、`@early-update` 场景；超时会发出 `session/cancel`；回放较长时 load 不超时。
 **验收**：一致性测试中 null 和提前到达的更新两项转为通过；OpenCode 行为不变。
 
+**状态**：已完成。null 归一化为 nil；reducer 采用回滚日志，失败更新整体丢弃；新增
+`protocol/capabilities` 并移除 `protocol/client` 对 `ui/*` 的依赖（调度器注入）；agent 请求走
+注册表且回复幂等；创建中的 session 更新有界缓冲后重放；按方法配置超时、load 随回放续期；
+取消顺序为 `session/cancel` → `$/cancel_request`，并在本地结算，第二次取消强制结束回合。
+一致性测试的 null 与撤回请求两项已转为普通测试；新增 controller 级提前更新、缓冲上限、
+超时续期与取消顺序测试。
+
 ---
 
 ## 阶段 2：交互中心（行为不变的迁移）
