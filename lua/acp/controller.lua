@@ -168,8 +168,9 @@ end
 ---------------------------------------------------------------------------
 
 ---@param session AcpSessionState|nil
+---@param session AcpSessionState|nil
 local function waiting_permission(session)
-  return session ~= nil and S.interactions:waiting(session.id) or false
+  return S.interactions ~= nil and S.interactions:waiting(session and session.id or nil)
 end
 
 ---Public structured status for statusline components.
@@ -1051,10 +1052,15 @@ end
 
 ---Open the file location on the current transcript line.
 function M.open_location()
+  -- A card waiting for an answer opens its request instead of a file.
+  local block = S.chat and S.chat:block_at_cursor()
+  if block and block.awaiting and block.interaction_id then
+    S.interactions:show(block.interaction_id)
+    return
+  end
   local loc = S.chat and S.chat:location_at_cursor()
   if not loc or not loc.path then
     -- Fall back to the block's first location.
-    local block = S.chat and S.chat:block_at_cursor()
     if block and block.locations and #block.locations > 0 then
       loc = block.locations[1]
     end
@@ -1237,6 +1243,31 @@ function M.setup(opts, action)
     notify = notify,
   })
   S.interactions = Interactions.new({
+    on_open = function(interaction)
+      local session = interaction.session_id and S.sessions[interaction.session_id] or nil
+      local block = session and interaction.tool_call_id and session.tools[interaction.tool_call_id] or nil
+      if not block then
+        return
+      end
+      block.awaiting = interaction.type == "elicitation" and "answer" or "approval"
+      block.interaction_id = interaction.id
+      session:touch(block, false)
+      if session == S.session and S.chat then
+        S.chat:schedule_render()
+      end
+    end,
+    on_settle = function(interaction)
+      local session = interaction.session_id and S.sessions[interaction.session_id] or nil
+      local block = session and interaction.tool_call_id and session.tools[interaction.tool_call_id] or nil
+      if not block then
+        return
+      end
+      block.awaiting, block.interaction_id = nil, nil
+      session:touch(block, false)
+      if session == S.session and S.chat then
+        S.chat:schedule_render()
+      end
+    end,
     policies = {
       -- Only the current inline turn may answer without the user.
       function(interaction)

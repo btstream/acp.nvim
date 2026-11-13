@@ -21,6 +21,8 @@ local memory = require("acp.session.memory")
 ---@field child table|nil
 ---@field entries table[]|nil
 ---@field severity string|nil
+---@field awaiting "approval"|"answer"|nil
+---@field interaction_id string|nil
 
 local counter = 0
 

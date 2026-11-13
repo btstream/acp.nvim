@@ -141,7 +141,8 @@ return function(t)
       t.eq(1, #interactions:pending())
       t.truthy(interactions:waiting("s"))
       t.falsy(interactions:waiting("other"))
-      t.falsy(interactions:waiting(nil))
+      -- nil means "any session", which is what the toolbar and :Acp use.
+      t.truthy(interactions:waiting(nil))
     end)
 
     t.it("auto-approves only configured option kinds", function()

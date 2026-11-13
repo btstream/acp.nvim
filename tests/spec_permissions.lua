@@ -3,6 +3,7 @@ return function(t)
   local config = require("acp.config")
   local state = require("acp.session.state")
   local picker = require("acp.ui.picker")
+  local permissions = require("acp.app.permissions")
 
   local function with_ui_select(stub, fn)
     local original = vim.ui.select
@@ -85,6 +86,92 @@ return function(t)
         t.eq("expired", S.interactions:get("perm9").state)
         t.eq(0, #S.interactions:pending())
         t.falsy(controller.status().waiting_permission)
+      end)
+      picker.select = original
+      if not ok then
+        error(err, 0)
+      end
+    end)
+
+    t.it("does not treat a single-option approval as a question", function()
+      local parsed = permissions.new({
+        config = function()
+          return { permissions = { prompt = "select", auto_allow = { "allow_once" } } }
+        end,
+        valid = function()
+          return true
+        end,
+        answer = function() end,
+        dismiss = function() end,
+        notify = function() end,
+      })
+      local interaction = {
+        type = "permission",
+        request = {
+          toolCall = { kind = "execute", title = "npm test" },
+          options = { { optionId = "a", kind = "allow_once" } },
+        },
+      }
+      t.falsy(parsed:is_question(interaction))
+      t.truthy(parsed:auto(interaction), "auto_allow no longer applies to a plain approval")
+    end)
+
+    t.it("recognises pi select and switch_mode as questions", function()
+      local p = permissions.new({
+        config = function()
+          return { permissions = { prompt = "select", auto_allow = { "allow_once" } } }
+        end,
+        valid = function()
+          return true
+        end,
+        answer = function() end,
+        dismiss = function() end,
+        notify = function() end,
+      })
+      for _, tool in ipairs({
+        { kind = "other", rawInput = { method = "select" } },
+        { kind = "other", rawInput = { method = "confirm" } },
+        { kind = "switch_mode", title = "Approve Plan" },
+      }) do
+        local interaction = {
+          type = "permission",
+          request = {
+            toolCall = tool,
+            options = {
+              { optionId = "a", kind = "allow_once" },
+              { optionId = "b", kind = "allow_once" },
+            },
+          },
+        }
+        t.truthy(p:is_question(interaction), vim.inspect(tool))
+        t.falsy(p:auto(interaction))
+      end
+    end)
+
+    t.it("uses the meta permission title for Claude questions", function()
+      controller.setup({ ui = { picker = "vim" }, permissions = { prompt = "select" } })
+      local S = controller.state()
+      local picker = require("acp.ui.picker")
+      local original, seen = picker.select, nil
+      picker.select = function(opts)
+        seen = opts
+      end
+      local ok, err = pcall(function()
+        S.interactions:open("permission", {
+          sessionId = "s1",
+          _meta = { permission = { title = "Ready to code?" } },
+          toolCall = {
+            kind = "switch_mode",
+            title = "Approve Plan",
+            _meta = { permission = { title = "Ready to code?" } },
+          },
+          options = {
+            { optionId = "a", name = "Yes", kind = "allow_once" },
+            { optionId = "r", name = "No", kind = "reject_once" },
+          },
+        }, function() end, 1, "perm-meta")
+        t.truthy(seen)
+        t.match("Ready to code%?", seen.title)
       end)
       picker.select = original
       if not ok then

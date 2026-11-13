@@ -4,6 +4,7 @@
 -- interaction into a picker and decides which requests may be pre-approved.
 local log = require("acp.log")
 local picker = require("acp.ui.picker")
+local details = require("acp.ui.permission_details")
 
 local Permissions = {}
 Permissions.__index = Permissions
@@ -34,8 +35,14 @@ function Permissions:is_question(interaction)
   if tool.kind == "switch_mode" then
     return true
   end
+  local method = type(tool.rawInput) == "table" and tool.rawInput.method or nil
+  if method == "select" or method == "confirm" then
+    return true
+  end
   local options = request.options or {}
-  if #options == 0 then
+  -- A single option carries no choice: it is an ordinary approval, and
+  -- `auto_allow` must still be able to pre-approve it.
+  if #options < 2 then
     return false
   end
   local kind = options[1].kind
@@ -91,11 +98,17 @@ function Permissions:present(interaction)
     search = "Search",
     fetch = "Fetch",
   }
+  -- Claude puts the human question in `_meta.permission.title` and the tool
+  -- name (`ExitPlanMode`) in `toolCall.title`; the question is what to show.
+  local meta_title = type(request._meta) == "table"
+      and type(request._meta.permission) == "table"
+      and request._meta.permission.title
+    or type(tool._meta) == "table" and type(tool._meta.permission) == "table" and tool._meta.permission.title
   local title
   if question then
-    title = tool.title or "Question"
+    title = meta_title or tool.title or "Question"
   else
-    title = labels[tool.kind] or tool.title or tool.kind or "Permission required"
+    title = labels[tool.kind] or meta_title or tool.title or tool.kind or "Permission required"
     local input = tool.rawInput or {}
     if tool.kind == "execute" and (input.command or input.cmd) then
       title = title .. ": " .. tostring(input.command or input.cmd)
@@ -126,6 +139,13 @@ function Permissions:present(interaction)
     title = title .. "  " .. table.concat(locs, ", ")
   end
 
+  if (self.config().permissions or {}).show_details ~= false then
+    details.open(request, {
+      title = title,
+      cwd = tool.locations and tool.locations[1] and tool.locations[1].path or nil,
+    })
+  end
+
   local handle = picker.select({
     title = "Permission required: " .. title,
     items = items,
@@ -153,6 +173,7 @@ function Permissions:dismiss_presented()
   if handle and handle.close then
     pcall(handle.close)
   end
+  details.close()
 end
 
 return Permissions

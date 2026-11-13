@@ -1,5 +1,5 @@
 return function(t)
-  local schema = require("acp.app.elicitation_schema")
+  local schema = require("acp.elicitation_schema")
 
   local function field_by_key(parsed, key)
     for _, item in ipairs(parsed.fields) do
@@ -85,10 +85,45 @@ return function(t)
       t.eq("text", field_by_key(parsed, "name").kind)
     end)
 
-    t.it("declines nested objects and empty schemas", function()
+    t.it("declines nested objects, non-table properties and empty schemas", function()
       t.falsy(schema.parse({ type = "object", properties = { nested = { type = "object" } } }))
+      t.falsy(schema.parse({ type = "object", properties = { broken = true } }))
+      t.falsy(schema.parse({ type = "object", properties = { broken = "text" } }))
       t.falsy(schema.parse({ type = "object", properties = {} }))
       t.falsy(schema.parse({}))
+    end)
+
+    t.it("keeps agent order instead of sorting by title", function()
+      local parsed = schema.parse({
+        type = "object",
+        properties = {
+          question_2 = { type = "string", enum = { "a" } },
+          question_10 = { type = "string", enum = { "b" } },
+          question_1 = { type = "string", enum = { "c" } },
+        },
+      })
+      local keys = {}
+      for _, field in ipairs(parsed.fields) do
+        keys[#keys + 1] = field.key
+      end
+      t.eq({ "question_1", "question_2", "question_10" }, keys)
+    end)
+
+    t.it("counts characters, not bytes, for length limits", function()
+      local parsed = schema.parse({ type = "object", properties = { name = { type = "string", minLength = 3 } } })
+      local ok, err = schema.validate(parsed.fields, { name = "中文" })
+      t.falsy(ok)
+      t.match("at least 3", err)
+      t.truthy(schema.validate(parsed.fields, { name = "中文字" }))
+    end)
+
+    t.it("tolerates patterns Lua cannot parse", function()
+      -- `[a-z]{2,4}` is valid ECMA-262 but never matches as a Lua pattern; a
+      -- trailing `%` raises. Neither may abort submission.
+      local parsed = schema.parse({ type = "object", properties = { n = { type = "string", pattern = "^%" } } })
+      t.truthy(schema.validate(parsed.fields, { n = "anything" }))
+      local braces = schema.parse({ type = "object", properties = { n = { type = "string", pattern = "[a-z]{2,4}" } } })
+      t.truthy(schema.validate(braces.fields, { n = "abc" }))
     end)
 
     t.it("validates required, length, pattern, number and format", function()
@@ -97,7 +132,7 @@ return function(t)
         properties = {
           mail = { type = "string", format = "email" },
           age = { type = "integer", minimum = 18 },
-          code = { type = "string", pattern = "^%u+$" },
+          code = { type = "string", pattern = "^[A-Z]+$" },
           name = { type = "string", minLength = 3 },
         },
         required = { "name" },
@@ -117,6 +152,53 @@ return function(t)
       ok, err = schema.validate(parsed.fields, { name = "abc", age = "17" })
       t.falsy(ok)
       t.match("at least 18", err)
+    end)
+
+    t.it("accepts Other as the answer for a required choice", function()
+      local parsed = schema.parse({
+        type = "object",
+        properties = {
+          database = { type = "string", oneOf = { { const = "postgres" } } },
+          database_custom = { type = "string" },
+        },
+        required = { "database" },
+      })
+      local ok, content = schema.validate(parsed.fields, { database_custom = "mysql" })
+      t.truthy(ok, tostring(content))
+      t.eq("mysql", content.database)
+    end)
+
+    t.it("sends the chosen option and its note together", function()
+      local parsed = schema.parse({
+        type = "object",
+        properties = {
+          database = { type = "string", oneOf = { { const = "postgres" } } },
+          database_custom = { type = "string" },
+        },
+      })
+      local ok, content = schema.validate(parsed.fields, { database = "postgres", database_custom = "add sqlite" })
+      t.truthy(ok, tostring(content))
+      t.eq("postgres", content.database)
+      t.eq("add sqlite", content.database_custom)
+    end)
+
+    t.it("rejects a choice that is not one of the options", function()
+      local parsed = schema.parse({ type = "object", properties = { db = { type = "string", enum = { "pg" } } } })
+      local ok, err = schema.validate(parsed.fields, { db = "mysql" })
+      t.falsy(ok)
+      t.match("offered options", err)
+    end)
+
+    t.it("keeps a custom answer for a free-text field", function()
+      local parsed = schema.parse({
+        type = "object",
+        properties = { note = { type = "string" }, note_custom = { type = "string" } },
+        required = { "note" },
+      })
+      t.truthy(parsed)
+      local ok, content = schema.validate(parsed.fields, { note = "typed" })
+      t.truthy(ok, tostring(content))
+      t.eq("typed", content.note)
     end)
 
     t.it("converts numbers and merges the custom answer", function()

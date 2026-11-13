@@ -28,6 +28,9 @@ local function one_of(entries)
 end
 
 local function parse_field(key, property, required)
+  if type(property) ~= "table" then
+    return nil
+  end
   local field = {
     key = key,
     title = property.title or key,
@@ -35,9 +38,6 @@ local function parse_field(key, property, required)
     default = property.default,
     required = required,
   }
-  if type(property) ~= "table" then
-    return nil
-  end
   local kind = property.type
   if property.enum then
     field.kind, field.options = "choice", enum_options(property.enum)
@@ -75,8 +75,24 @@ local function parse_field(key, property, required)
   return field
 end
 
+---Order fields by key, numerically where the key ends in digits.
+---
+---Claude numbers its questions `question_0`, `question_1`, … and that numbering
+---is the display order; lexicographic sorting would put `question_10` first.
+---@param a string
+---@param b string
+---@return boolean
+local function key_before(a, b)
+  local a_head, a_num = a:match("^(.-)(%d+)$")
+  local b_head, b_num = b:match("^(.-)(%d+)$")
+  if a_head and b_head and a_head == b_head then
+    return tonumber(a_num) < tonumber(b_num)
+  end
+  return a < b
+end
+
 ---@param schema table
----@return {fields: table[], message: string|nil}|nil
+---@return {fields: table[]}|nil
 function M.parse(schema)
   if type(schema) ~= "table" or schema.type ~= "object" or type(schema.properties) ~= "table" then
     return nil
@@ -89,7 +105,7 @@ function M.parse(schema)
   local by_key = {}
   for key, property in pairs(schema.properties) do
     if type(key) == "string" and not key:match("_custom$") then
-      if property and property.type == "object" then
+      if type(property) == "table" and property.type == "object" then
         return nil
       end
       local field = parse_field(key, property, required[key])
@@ -109,7 +125,7 @@ function M.parse(schema)
     end
   end
   table.sort(fields, function(a, b)
-    return tostring(a.title) < tostring(b.title)
+    return key_before(a.key, b.key)
   end)
   if #fields == 0 then
     return nil
@@ -117,15 +133,46 @@ function M.parse(schema)
   return { fields = fields }
 end
 
+---JSON Schema patterns are ECMA-262 regexes, not Lua patterns. Translating
+---between the two is out of scope, so validate only the subset where both
+---dialects agree. `%`, `{}` and `\` mean different things (or raise), and a
+---silent wrong answer is worse than no check.
+---@param field table
+---@param value string
+---@return string|nil problem
+local function check_pattern(field, value)
+  local pattern = field.pattern
+  if pattern:find("[%%{}%\\]") then
+    require("acp.log").debug("skipping non-portable elicitation pattern for %s: %s", field.key, pattern)
+    return nil
+  end
+  local ok, matched = pcall(string.match, value, pattern)
+  if not ok then
+    require("acp.log").debug("unsupported elicitation pattern for %s: %s", field.key, pattern)
+    return nil
+  end
+  if not matched then
+    return string.format("%s does not match the required pattern", field.title)
+  end
+  return nil
+end
+
+---@param field table
+---@param value string
+---@return string|nil problem
 local function check_text(field, value)
-  if field.min_length and #value < field.min_length then
+  local length = vim.fn.strchars(value)
+  if field.min_length and length < field.min_length then
     return string.format("%s must be at least %d characters", field.title, field.min_length)
   end
-  if field.max_length and #value > field.max_length then
+  if field.max_length and length > field.max_length then
     return string.format("%s must be at most %d characters", field.title, field.max_length)
   end
-  if field.pattern and not value:match(field.pattern) then
-    return string.format("%s does not match the required pattern", field.title)
+  if field.pattern then
+    local problem = check_pattern(field, value)
+    if problem then
+      return problem
+    end
   end
   local format = field.format
   if format == "email" and not value:match("^[^@%s]+@[^@%s]+%.[^@%s]+$") then
@@ -151,9 +198,9 @@ function M.validate(fields, values)
       custom = nil
     end
     if field.kind == "multi" then
-      local list = type(value) == "table" and value or {}
+      local list = type(value) == "table" and vim.deepcopy(value) or {}
       if custom then
-        list = vim.list_extend(vim.deepcopy(list), { custom })
+        list[#list + 1] = custom
       end
       if #list == 0 and field.required then
         return false, field.title .. " is required"
@@ -172,11 +219,30 @@ function M.validate(fields, values)
       if chosen == "" then
         chosen = nil
       end
-      if not chosen and field.required then
+      -- `<key>_custom` doubles as "Other" and as a note on the chosen option.
+      -- With no option picked the custom text is the answer; otherwise both
+      -- travel so the agent can keep the note.
+      local answer = chosen or custom
+      if not answer and field.required then
         return false, field.title .. " is required"
       end
-      if chosen then
-        content[field.key] = chosen
+      if chosen and #field.options > 0 then
+        local known = false
+        for _, option in ipairs(field.options) do
+          if option.value == chosen then
+            known = true
+            break
+          end
+        end
+        if not known then
+          return false, string.format("%s must be one of the offered options", field.title)
+        end
+      end
+      if answer then
+        content[field.key] = answer
+      end
+      if chosen and custom then
+        content[field.custom_key] = custom
       end
     elseif field.kind == "boolean" then
       if value ~= nil then
@@ -207,7 +273,7 @@ function M.validate(fields, values)
       end
     else
       local text = type(value) == "string" and value or nil
-      if (not text or text == "") and field.required then
+      if (not text or text == "") and not custom and field.required then
         return false, field.title .. " is required"
       end
       if text and text ~= "" then
@@ -216,10 +282,9 @@ function M.validate(fields, values)
           return false, problem
         end
         content[field.key] = text
+      elseif custom then
+        content[field.key] = custom
       end
-    end
-    if custom and content[field.key] == nil then
-      content[field.key] = custom
     end
   end
   return true, content

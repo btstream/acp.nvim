@@ -16,17 +16,27 @@ Interactions.__index = Interactions
 ---@field created integer
 ---@field rpc_id any
 
+-- Settled interactions stay queryable briefly (the controller and tests read
+-- them right after answering), but the list is bounded: a long session must not
+-- retain every tool-call payload it ever showed.
+local RECENT_LIMIT = 32
+
 ---@param opts {policies: fun(interaction: AcpInteraction): table|nil,
 ---  presenters: table<string, {present: fun(interaction: AcpInteraction): boolean|nil, dismiss: fun(interaction: AcpInteraction)|nil}>,
+---  on_open: fun(interaction: AcpInteraction)|nil,
+---  on_settle: fun(interaction: AcpInteraction, response: table|nil)|nil,
 ---  on_changed: fun()|nil, notify: fun(message: string, level: integer|nil)|nil}
 function M.new(opts)
   return setmetatable({
     policies = opts.policies or {},
     presenters = opts.presenters or {},
+    on_open = opts.on_open or function() end,
+    on_settle = opts.on_settle or function() end,
     on_changed = opts.on_changed or function() end,
     notify = opts.notify or function() end,
     items = {},
     order = {},
+    recent = {},
     sequence = 0,
     shown = nil,
   }, Interactions)
@@ -42,7 +52,15 @@ end
 ---@param id string
 ---@return AcpInteraction|nil
 function Interactions:get(id)
-  return self.items[id]
+  local interaction = self.items[id]
+  if interaction then
+    return interaction
+  end
+  for _, settled in ipairs(self.recent) do
+    if settled.id == id then
+      return settled
+    end
+  end
 end
 
 ---Register a request. Policies run synchronously; a non-nil response answers
@@ -68,6 +86,13 @@ function Interactions:open(kind, request, respond, rpc_id, id)
   }
   self.items[id] = interaction
   self.order[#self.order + 1] = interaction
+  -- Legacy callers pass the client's own key; make sure a retired entry with
+  -- the same id cannot shadow this one in `get()`.
+  for index = #self.recent, 1, -1 do
+    if self.recent[index].id == id then
+      table.remove(self.recent, index)
+    end
+  end
 
   for _, policy in ipairs(self.policies) do
     local response = policy(interaction)
@@ -77,9 +102,38 @@ function Interactions:open(kind, request, respond, rpc_id, id)
     end
   end
 
+  pcall(self.on_open, interaction)
   self.on_changed()
   self:show_next()
   return interaction
+end
+
+---@param interaction AcpInteraction
+---@return boolean shown
+function Interactions:_present(interaction)
+  local presenter = self.presenters[interaction.type]
+  if not presenter or not presenter.present then
+    -- No surface for this kind: settle it now so it cannot block the queue.
+    self.notify("unsupported agent request: " .. tostring(interaction.type), vim.log.levels.ERROR)
+    if interaction.type == "elicitation" then
+      self:answer(interaction.id, { action = "decline" })
+    else
+      self:cancel(interaction.id, "no presenter")
+    end
+    return false
+  end
+  local ok, shown = pcall(presenter.present, interaction)
+  if not ok then
+    -- A presenter that throws must not leave a permanently pending request.
+    self.notify("unable to show the agent request: " .. tostring(shown), vim.log.levels.ERROR)
+    if interaction.type == "elicitation" then
+      self:answer(interaction.id, { action = "decline" })
+    else
+      self:cancel(interaction.id, "presenter failed")
+    end
+    return false
+  end
+  return shown ~= false
 end
 
 ---Show the oldest request that is still pending and not already on screen.
@@ -99,9 +153,7 @@ function Interactions:show_next()
     return
   end
   self.shown = next_item.id
-  local presenter = self.presenters[next_item.type]
-  local presented = presenter and presenter.present and presenter.present(next_item)
-  if presented == false and self.shown == next_item.id then
+  if self:_present(next_item) == false and self.shown == next_item.id then
     self.shown = nil
   end
 end
@@ -114,13 +166,24 @@ function Interactions:show(id)
     return
   end
   self.shown = id
-  local presenter = self.presenters[interaction.type]
-  if presenter and presenter.present then
-    if presenter.present(interaction) == false and self.shown == id then
-      self.shown = nil
-    end
-  else
+  if self:_present(interaction) == false and self.shown == id then
     self.shown = nil
+  end
+end
+
+---Record a settled interaction, evicting the oldest beyond the cap.
+---@param interaction AcpInteraction
+function Interactions:_retire(interaction)
+  self.items[interaction.id] = nil
+  for index, candidate in ipairs(self.order) do
+    if candidate == interaction then
+      table.remove(self.order, index)
+      break
+    end
+  end
+  self.recent[#self.recent + 1] = interaction
+  while #self.recent > RECENT_LIMIT do
+    table.remove(self.recent, 1)
   end
 end
 
@@ -138,6 +201,8 @@ function Interactions:_settle(interaction)
   if respond then
     pcall(respond, interaction.response)
   end
+  pcall(self.on_settle, interaction, interaction.response)
+  self:_retire(interaction)
   self.on_changed()
   -- Defer opening the next picker until the previous one has closed.
   vim.schedule(function()
@@ -173,7 +238,7 @@ function Interactions:resolved(id)
   return true
 end
 
----The agent finished an elicitation started elsewhere (URL mode).
+---Complete an elicitation started earlier (URL mode).
 ---@param params table|nil
 function Interactions:complete(params)
   local id = type(params) == "table" and (params.elicitationId or params.id) or nil
@@ -209,8 +274,11 @@ end
 ---@param rpc_id any
 ---@return boolean
 function Interactions:on_remote_cancel(rpc_id)
+  if rpc_id == nil then
+    return false
+  end
   for _, interaction in ipairs(self.order) do
-    if interaction.state == "pending" and interaction.rpc_id == rpc_id then
+    if interaction.rpc_id == rpc_id then
       interaction.state = "expired"
       if self.shown == interaction.id then
         self.shown = nil
@@ -220,6 +288,7 @@ function Interactions:on_remote_cancel(rpc_id)
         end
       end
       interaction.respond = nil
+      self:_retire(interaction)
       self.on_changed()
       vim.schedule(function()
         self:show_next()
@@ -242,12 +311,9 @@ function Interactions:pending(session_id)
   return out
 end
 
----@param session_id string|nil
+---@param session_id string|nil nil asks about every session
 ---@return boolean
 function Interactions:waiting(session_id)
-  if not session_id then
-    return false
-  end
   return #self:pending(session_id) > 0
 end
 

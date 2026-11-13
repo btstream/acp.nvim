@@ -624,9 +624,13 @@ native/edgy/reconnect、性能 smoke、tail/spinner 附加 UI 回归通过。
   pattern/数值/format 校验；不支持的结构回复 `decline`。
 - 统一 kind、`switch_mode` 与 pi select/confirm 的权限请求按提问呈现，标题用问题文本，
   不被 `auto_allow` 回答，关闭时回 `cancelled`。
-- 权限标题按工具 kind 生成，execute 附带命令；`permissions.show_details` 默认开启。
-- 新增 schema 解析、表单呈现器与提问自动批准限制测试；一致性套件的 elicitation
-  用例转为普通测试。
+- 权限标题按工具 kind 生成，execute 附带命令；提问型请求优先使用
+  `_meta.permission.title`（Claude 的 "Ready to code?"）。
+- 权限详情为独立只读浮窗：execute 显示完整命令与 cwd，edit 复用 `ui/diff`，其它显示
+  `content` 或格式化后的 `rawInput`；`permissions.show_details = false` 可关闭。
+- 等待回答/批准的 tool card 显示对应状态，`<CR>` 在卡片上重新打开该请求。
+- 新增测试覆盖多字段表单里无 `_custom` 的选择字段、非 table 的 schema 属性、Other-only 与
+  「选项 + 备注」、字段顺序、字符长度、不可移植的 pattern、关闭表单窗口、撤回后的迟到回调、
+  交互回收上限与 presenter 异常。
 
-验证：919 项单元/组件测试通过，0 失败，4 项 pending（认证、终端输出、controls）。
-
+验证：943 项单元/组件测试通过，0 失败，4 项 pending（认证、终端输出、controls）。

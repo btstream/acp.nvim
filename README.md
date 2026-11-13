@@ -693,6 +693,8 @@ require("acp").setup({
     prompt = "select",
     -- 谨慎使用：自动放行的 option kind
     auto_allow = {},
+    -- 权限窗口旁的只读详情（命令、diff、rawInput）
+    show_details = true,
   },
 
   context = {
@@ -1164,12 +1166,27 @@ require("acp").setup({ ui = { picker = "internal" } })
 
 ### 权限请求
 
-Agent 请求权限时弹出选择器：
+Agent 请求权限时弹出选择器，并在旁边打开一个只读详情浮窗：
 
 - `Esc` / `q` 关闭视为拒绝，优先选择 `reject_*` 选项；
   若 Agent 没有提供拒绝项，则返回 `cancelled`。
 - 关闭面板不会让权限请求永久挂起。
+- 详情浮窗按工具类型显示：`execute` 显示完整命令和工作目录，`edit` 显示 diff，
+  其它显示 `content` 或格式化后的 `rawInput`。`permissions.show_details = false` 可关闭。
+- 等待回答或批准的 tool card 会显示对应状态，在卡片上按 `<CR>` 可重新打开该请求。
 - 可用 `permissions.auto_allow = { "allow_always" }` 显式放开某类请求。
+  提问型的权限请求（pi 的 select/confirm、Claude 的 ExitPlanMode）不会被自动回答。
+
+### 提问
+
+Agent 通过 elicitation 提问时（Claude 的 AskUserQuestion、OpenCode 的 question 工具），
+acp.nvim 显示表单：
+
+- 只有一个单选字段时直接弹出选择器；多个字段时打开表单，`<CR>` 编辑当前字段，
+  `<C-s>` 提交，`q` 取消，`d` 拒绝。
+- 选项旁的 `<key>_custom` 字段会成为 "Other"，也可以在选择选项后作为备注一起提交。
+- 不支持的结构（嵌套对象等）会回复 `decline` 并提示。
+- 需要浏览器时（URL 模式）弹确认后交给 `vim.ui.open`。
 
 ## 已知限制
 

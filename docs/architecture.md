@@ -50,6 +50,9 @@ Controller 只保留公开入口、会话选择、服务装配和跨模块协调
   都只结算一次；会话取消、断线和 shutdown 各自按类型回复取消结果。
 - elicitation 表单由 `app/elicitation_schema` 解析为扁平字段并校验，`ui/form` 呈现；不支持
   的结构回 `decline`。提问型权限与工具权限共用交互中心，但前者跳过自动批准。
+- 权限详情由 `ui/permission_details` 渲染成独立只读浮窗（execute 显示命令与 cwd，edit 复用
+  `ui/diff`），与 picker 后端无关；`permissions.show_details = false` 可关闭。等待回答或批准的
+  tool card 带 `awaiting` 标记，`<CR>` 在卡片上重新打开对应请求。
 - `session/update` 解码时把 JSON null 归一化为 nil；reducer 用变更日志包围一条更新，
   失败时整体回滚，不留下半更新的 block，也不破坏 UI 持有的 block 身份。
 - 创建会话期间，sessionId 尚未知晓的更新先进入有界缓冲（256 条 / 1 MiB），创建成功后

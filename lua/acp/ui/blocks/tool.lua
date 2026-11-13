@@ -9,7 +9,12 @@ local one_line = text_layout.one_line
 local render_text = text_layout.render_text
 local truncate_width = text_layout.truncate_width
 
-local function tool_status_label(status)
+local function tool_status_label(status, awaiting)
+  if awaiting == "approval" then
+    return "waiting for approval"
+  elseif awaiting == "answer" then
+    return "waiting for an answer"
+  end
   if status == "completed" then
     return "done"
   elseif status == "failed" then
@@ -170,7 +175,7 @@ function M.render_tool(block, ctx)
   local caret = block.expanded and ic.chevron_down or ic.chevron_right
   local tag = tool_label(block)
   local title = tool_title(block)
-  local status = tool_status_label(block.status)
+  local status = tool_status_label(block.status, block.awaiting)
   -- `Run Command · grep ... · done`. A title that merely repeats the label is
   -- dropped, and a title that starts with it keeps only the remainder, so
   -- `Read` + `Read src/auth.lua` reads as `Read · src/auth.lua` rather than

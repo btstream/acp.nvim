@@ -3,10 +3,26 @@
 -- One choice-only field is simplified to a plain picker; everything else gets
 -- the form so constraints and multiple fields remain visible together.
 local picker = require("acp.ui.picker")
-local schema_parser = require("acp.app.elicitation_schema")
+local schema_parser = require("acp.elicitation_schema")
 
 local M = {}
 local current
+-- A picker or input box opened from a form is part of the form's surface; the
+-- form must be able to close it when the request is withdrawn.
+local active_picker
+
+local function pick(opts)
+  active_picker = picker.select(opts)
+  return active_picker
+end
+
+local function close_picker()
+  local handle = active_picker
+  active_picker = nil
+  if handle and handle.close then
+    pcall(handle.close)
+  end
+end
 
 ---Close the open form, if any.
 function M.dismiss()
@@ -15,6 +31,7 @@ function M.dismiss()
   if handle then
     handle.close()
   end
+  close_picker()
 end
 
 local function label_for(field, values)
@@ -34,7 +51,7 @@ local function label_for(field, values)
   return tostring(value)
 end
 
-local function pick_choice(field, values, on_done)
+local function pick_choice(field, values, on_done, alive)
   local items = {}
   for _, option in ipairs(field.options) do
     items[#items + 1] = { label = option.label, description = option.description, value = option.value }
@@ -42,12 +59,18 @@ local function pick_choice(field, values, on_done)
   if field.custom_key then
     items[#items + 1] = { label = field.custom_title or "Other", value = "\0custom" }
   end
-  picker.select({
+  pick({
     title = field.title,
     items = items,
     on_choice = function(value)
+      if not alive() then
+        return
+      end
       if value == "\0custom" then
         vim.ui.input({ prompt = (field.custom_title or "Other") .. ": " }, function(text)
+          if not alive() then
+            return
+          end
           values[field.custom_key] = text or ""
           if text and text ~= "" then
             values[field.key] = nil
@@ -57,16 +80,20 @@ local function pick_choice(field, values, on_done)
         return
       end
       values[field.key] = value
-      values[field.custom_key] = nil
+      if field.custom_key then
+        values[field.custom_key] = nil
+      end
       on_done()
     end,
     on_cancel = function()
-      on_done()
+      if alive() then
+        on_done()
+      end
     end,
   })
 end
 
-local function pick_multi(field, values, on_done)
+local function pick_multi(field, values, on_done, alive)
   local selected = {}
   for _, value in ipairs(values[field.key] or {}) do
     selected[value] = true
@@ -79,11 +106,14 @@ local function pick_multi(field, values, on_done)
       value = option.value,
     }
   end
-  picker.select({
+  pick({
     title = field.title .. " (toggle, <Esc> done)",
     items = items,
     filter = false,
-    on_choice = function(value, _)
+    on_choice = function(value)
+      if not alive() then
+        return
+      end
       selected[value] = not selected[value] or nil
       local list = {}
       for _, option in ipairs(field.options) do
@@ -95,27 +125,35 @@ local function pick_multi(field, values, on_done)
       -- Re-open to keep toggling. Picker callbacks are already settled, so the
       -- next selection replaces this window after a tick.
       vim.schedule(function()
-        pick_multi(field, values, on_done)
+        if alive() then
+          pick_multi(field, values, on_done, alive)
+        end
       end)
     end,
-    on_cancel = on_done,
+    on_cancel = function()
+      if alive() then
+        on_done()
+      end
+    end,
   })
 end
 
-local function edit_field(field, values, on_done)
+local function edit_field(field, values, on_done, alive)
   if field.kind == "choice" then
-    pick_choice(field, values, on_done)
+    pick_choice(field, values, on_done, alive)
   elseif field.kind == "multi" then
-    pick_multi(field, values, on_done)
+    pick_multi(field, values, on_done, alive)
   elseif field.kind == "boolean" then
     values[field.key] = not values[field.key]
     on_done()
   else
     vim.ui.input({ prompt = field.title .. ": ", default = label_for(field, values) }, function(text)
-      if text ~= nil then
+      if text ~= nil and alive() then
         values[field.key] = text
       end
-      on_done()
+      if alive() then
+        on_done()
+      end
     end)
   end
 end
@@ -142,7 +180,8 @@ function M.open(request, opts)
 
   local only = fields[1]
   if #fields == 1 and only.kind == "choice" and not only.custom_key then
-    picker.select({
+    local handle
+    handle = pick({
       title = request.message or only.title,
       items = (function()
         local items = {}
@@ -152,10 +191,20 @@ function M.open(request, opts)
         return items
       end)(),
       on_choice = function(value)
+        if current == handle then
+          current = nil
+        end
         opts.on_submit({ [only.key] = value })
       end,
-      on_cancel = opts.on_cancel,
+      on_cancel = function()
+        if current == handle then
+          current = nil
+        end
+        opts.on_cancel()
+      end,
     })
+    -- Track the picker so a withdrawal or teardown can close it as well.
+    current = handle or { close = function() end }
     return true
   end
 
@@ -163,6 +212,8 @@ function M.open(request, opts)
   vim.bo[buf].buftype = "nofile"
   vim.bo[buf].bufhidden = "wipe"
   vim.bo[buf].swapfile = false
+  -- Marker for tests and for anything that needs to find the form window.
+  vim.b[buf].acp_form = true
   local ns = vim.api.nvim_create_namespace("acp_elicitation")
   local width = math.min(90, math.max(50, vim.o.columns - 20))
   local message = request.message or (request.requestedSchema and request.requestedSchema.title) or "Agent question"
@@ -181,11 +232,17 @@ function M.open(request, opts)
   })
 
   local closed = false
+  local alive = function()
+    return not closed
+  end
   local function close()
     if closed then
       return
     end
     closed = true
+    -- A nested picker or input box may be on screen; closing the form must
+    -- settle the request instead of leaving it pending behind a hidden window.
+    close_picker()
     if current and current.close == close then
       current = nil
     end
@@ -193,6 +250,34 @@ function M.open(request, opts)
       vim.api.nvim_win_close(win, true)
     end
   end
+  -- Closing the window by any other route (`:close`, `<C-w>c`, a focus change)
+  -- has to behave like `q`; otherwise the turn waits forever.
+  vim.api.nvim_create_autocmd("WinClosed", {
+    pattern = tostring(win),
+    once = true,
+    callback = function()
+      vim.schedule(function()
+        if not closed then
+          close()
+          opts.on_cancel()
+        end
+      end)
+    end,
+  })
+  vim.api.nvim_create_autocmd("BufWipeout", {
+    buffer = buf,
+    once = true,
+    callback = function()
+      -- `WinClosed` already covers the normal path; this catches a buffer that
+      -- is wiped from under the window (for example by a session teardown).
+      vim.schedule(function()
+        if not closed then
+          close()
+          opts.on_cancel()
+        end
+      end)
+    end,
+  })
 
   local rows = {}
   local function render()
@@ -253,7 +338,7 @@ function M.open(request, opts)
   map("<CR>", function()
     local field = row_field()
     if field then
-      edit_field(field, values, render)
+      edit_field(field, values, render, alive)
     end
   end)
   map("<C-s>", submit)

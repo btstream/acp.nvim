@@ -262,7 +262,7 @@ picker、会话浏览器等自绘浮窗内部的按键不在 keymaps 管辖范�
           scroll_top = "gg",
         },
       },
-      permissions = { prompt = "select" },
+      permissions = { prompt = "select", show_details = true },
       notices = true,
       memory = {
         max_block_bytes = 1024 * 1024,

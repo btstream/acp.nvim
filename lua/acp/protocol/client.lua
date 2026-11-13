@@ -425,6 +425,13 @@ function Client:on_agent_notification(method, handler)
   self.rpc:on_notification(method, handler)
 end
 
+---Whether the client advertised a capability subtree at initialize time.
+---@param path string dotted path, e.g. "elicitation"
+---@return boolean
+function Client:declares(path)
+  return capabilities.supports(self.client_capabilities, path)
+end
+
 function Client:install_handlers()
   if self.rpc then
     self.rpc.on_cancel_request = function(rpc_id)
@@ -443,6 +450,10 @@ function Client:install_handlers()
     self:emit("elicitation_complete", params)
   end)
   self:on_agent_request("elicitation/create", function(params, respond, respond_error, rpc_id)
+    if not self:declares("elicitation") then
+      respond_error(-32601, "elicitation is not supported by this client")
+      return
+    end
     if self.interactions then
       self.interactions:open("elicitation", params or {}, respond, rpc_id)
       return
@@ -497,7 +508,11 @@ end
 ---@param option_id string|nil nil means cancelled
 function Client:resolve_permission(key, option_id)
   if self.interactions then
-    if self.interactions:answer(key, { outcome = { outcome = "selected", optionId = option_id or nil } }) then
+    -- nil is the documented "cancelled" form. Emitting `selected` without an
+    -- optionId is an invalid permission outcome.
+    local response = option_id and { outcome = { outcome = "selected", optionId = option_id } }
+      or { outcome = { outcome = "cancelled" } }
+    if self.interactions:answer(key, response) then
       self:emit("permission_resolved", { key = key, option_id = option_id })
     end
     return
