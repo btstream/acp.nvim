@@ -673,9 +673,11 @@ function M.on_client_event(name, payload)
 
   if name == "session_update" then
     local update = payload.update or {}
-    local session, changed = S.runtime:apply(payload.sessionId, update)
+    local session, changed, buffered = S.runtime:apply(payload.sessionId, update)
     if not session then
-      log.debug("dropping update for unknown session %s", tostring(payload.sessionId))
+      if not buffered then
+        log.debug("dropping update for unknown session %s", tostring(payload.sessionId))
+      end
       return
     end
     if changed then

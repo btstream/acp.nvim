@@ -6,6 +6,12 @@ local reducer = require("acp.session.reducer")
 local M, Runtime = {}, {}
 Runtime.__index = Runtime
 
+-- Updates for a session id that is still being created. Real agents may stream
+-- before the session/new response arrives; drop the batch only if creation
+-- fails. Bounded so a wedged creation cannot grow without limit.
+local MAX_CREATE_UPDATES = 256
+local MAX_CREATE_BYTES = 1024 * 1024
+
 function Runtime:outbox(session)
   if not session.outbox or session.outbox.messages ~= session.queue then
     session.outbox = { messages = session.queue, bytes = session.queue_bytes or 0 }
@@ -51,6 +57,56 @@ end
 function Runtime:owns(session)
   local replay = self.replays[session.id]
   return self.sessions[session.id] == session or (replay and replay.session == session) or false
+end
+
+---Register a session id placeholder while `session/new` is in flight.
+---@return integer token
+function Runtime:expect_create()
+  self.creation_seq = (self.creation_seq or 0) + 1
+  self.creating = { token = self.creation_seq, updates = {}, bytes = 0, dropped = 0 }
+  return self.creation_seq
+end
+
+---Finish a creation and replay any updates buffered for it.
+---@param token integer
+---@param id string
+---@param cwd string
+---@param result table
+---@return table|nil session, integer applied
+function Runtime:commit_create(token, id, cwd, result)
+  local pending = self.creating
+  if not pending or pending.token ~= token then
+    return nil, 0
+  end
+  self.creating = nil
+  local session = self:create(id, cwd, result)
+  local applied = 0
+  for _, update in ipairs(pending.updates) do
+    if reducer.apply(session, update) then
+      applied = applied + 1
+    end
+  end
+  return session, applied
+end
+
+---Abandon a creation and its buffered updates.
+---@param token integer
+function Runtime:drop_create(token)
+  if self.creating and self.creating.token == token then
+    self.creating = nil
+  end
+end
+
+local function buffer_create(runtime, update)
+  local pending = runtime.creating
+  local size = memory.size(update)
+  pending.bytes = pending.bytes + size
+  pending.updates[#pending.updates + 1] = update
+  while #pending.updates > MAX_CREATE_UPDATES or pending.bytes > MAX_CREATE_BYTES do
+    local dropped = table.remove(pending.updates, 1)
+    pending.bytes = pending.bytes - memory.size(dropped)
+    pending.dropped = pending.dropped + 1
+  end
 end
 
 function Runtime:intend()
@@ -110,9 +166,13 @@ function Runtime:apply(id, update)
   local replay = self.replays[id]
   local session = replay and replay.session or self.sessions[id]
   if not session then
-    return nil, false
+    if self.creating then
+      buffer_create(self, update)
+      return nil, false, true
+    end
+    return nil, false, false
   end
-  return session, reducer.apply(session, update)
+  return session, reducer.apply(session, update), false
 end
 
 function Runtime:enqueue(session, text, attachments)
@@ -181,6 +241,7 @@ end
 
 function Runtime:connection_lost()
   self.replays = {}
+  self.creating = nil
   for _, session in pairs(self.sessions) do
     session.needs_load = true
     if session.status ~= "idle" then

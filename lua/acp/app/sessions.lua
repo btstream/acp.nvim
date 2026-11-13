@@ -71,19 +71,30 @@ function Sessions:create(on_missing)
   self.on_creating(true)
   local runtime, client = self.get_runtime(), self.get_client()
   local intent = runtime:intend()
+  local token = runtime:expect_create()
   self.run("create", client, nil, function(task)
     local ok, result = task:call("new_session", cwd)
     if not ok then
       task.status = "failed"
+      runtime:drop_create(token)
       local message = type(result) == "table" and (result.message or vim.inspect(result)) or tostring(result)
       self.notify("unable to create a session: " .. message, vim.log.levels.ERROR)
       return
     end
     if type(result) ~= "table" or type(result.sessionId) ~= "string" or result.sessionId == "" then
+      runtime:drop_create(token)
       error("invalid session/new response")
     end
-    local session = self.new_local(result.sessionId, cwd, result)
+    local session, replayed = runtime:commit_create(token, result.sessionId, cwd, result)
+    if not session then
+      runtime:drop_create(token)
+      session = self.new_local(result.sessionId, cwd, result)
+      replayed = 0
+    end
     self.catalog:cwds()[session.id] = cwd
+    if replayed > 0 then
+      self.on_changed()
+    end
     if runtime.selection == intent then
       self.activate(session)
       self.render()
@@ -91,11 +102,14 @@ function Sessions:create(on_missing)
     self.notify("Session started", vim.log.levels.INFO)
     self.catalog:refresh_title(session)
   end, function(err)
+    runtime:drop_create(token)
     self.notify("unable to create a session: " .. tostring(err), vim.log.levels.ERROR)
   end, function(_, owned)
     if owned then
       self.creating = false
       self.on_creating(false)
+    else
+      runtime:drop_create(token)
     end
   end)
 end

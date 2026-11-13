@@ -66,6 +66,12 @@ end
 function M.attach(buf, opts)
   if M.installed then
     M.followers[buf] = opts
+    -- Another plugin (or a test double) may have replaced `vim.paste` after our
+    -- wrapper was installed; re-wrap so this follower is actually reachable.
+    if vim.paste ~= M.paste then
+      M.original = vim.paste
+      vim.paste = M.paste
+    end
     return
   end
   M.followers = { [buf] = opts }
@@ -74,29 +80,37 @@ function M.attach(buf, opts)
   local original = vim.paste
   M.original = original
 
+  local function delegate(lines, phase)
+    local target = M.original
+    if not target or target == M.paste then
+      target = original
+    end
+    return target(lines, phase)
+  end
+
   M.paste = function(lines, phase)
     -- Neovim may stream a large paste across several phases. Only the final
     -- phase carries the whole text, so everything else is forwarded untouched.
     local owner = followers[vim.api.nvim_get_current_buf()]
     if not owner or not owner.is_active() then
-      return original(lines, phase)
+      return delegate(lines, phase)
     end
     -- A single-line clipboard path arrives as one complete paste; a streaming
     -- phase or a multi-line paste is ordinary text and must be inserted as-is.
     if phase ~= -1 or #lines ~= 1 then
-      return original(lines, phase)
+      return delegate(lines, phase)
     end
     local text = join(lines)
     local path = M.path_of(text)
     if not path then
-      return original(lines, phase)
+      return delegate(lines, phase)
     end
     local images = owner.config().context.images
     if images.enabled == false or not M.is_image(path, images.max_bytes) then
-      return original(lines, phase)
+      return delegate(lines, phase)
     end
     if not owner.on_image(path) then
-      return original(lines, phase)
+      return delegate(lines, phase)
     end
     return true
   end
