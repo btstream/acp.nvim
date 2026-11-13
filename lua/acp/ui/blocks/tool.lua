@@ -192,6 +192,32 @@ local function shell_command(block)
   return nil
 end
 
+---Number of text lines a collapsed card is hiding.
+---
+---A collapsed card that hides output looks exactly like one with no output at
+---all, so the header says how much is inside. Shell commands in particular are
+---never auto-expanded (`execute` is not a file edit), which used to make their
+---output completely invisible until the user thought to open them.
+---@param block AcpBlock
+---@return integer|nil lines
+local function hidden_lines(block)
+  if block.expanded then
+    return nil
+  end
+  local text
+  if type(block.terminal_output) == "string" and block.terminal_output ~= "" then
+    text = block.terminal_output
+  elseif type(block.detail) == "string" and block.detail ~= "" then
+    text = block.detail
+  elseif type(block.raw_output) == "string" and can_show_raw_output(block) then
+    text = block.raw_output
+  end
+  if not text then
+    return nil
+  end
+  return select(2, text:gsub("\n", "")) + 1
+end
+
 function M.render_tool(block, ctx)
   local ic = ctx.icons
   local glyph, glyph_hl = tool_icon(block, ic)
@@ -199,6 +225,7 @@ function M.render_tool(block, ctx)
   local tag = tool_label(block)
   local title = tool_title(block)
   local status = tool_status_label(block.status, block.awaiting)
+  local hidden = hidden_lines(block)
   -- `Run Command · grep ... · done`. A title that merely repeats the label is
   -- dropped, and a title that starts with it keeps only the remainder, so
   -- `Read` + `Read src/auth.lua` reads as `Read · src/auth.lua` rather than
@@ -232,6 +259,14 @@ function M.render_tool(block, ctx)
     end
     if status ~= "" then
       meta[#meta + 1] = status
+    end
+    -- Tell the user there is something inside, and whether it succeeded. A
+    -- collapsed card with hidden output otherwise reads as an empty call.
+    if hidden then
+      meta[#meta + 1] = string.format("%d line%s", hidden, hidden == 1 and "" or "s")
+      if block.terminal_exit ~= nil and block.terminal_exit ~= 0 then
+        meta[#meta + 1] = string.format("exit %d", block.terminal_exit)
+      end
     end
     return #meta > 0 and ("  " .. table.concat(meta, " · ")) or ""
   end

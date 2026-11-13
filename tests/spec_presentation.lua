@@ -126,6 +126,119 @@ return function(t)
       t.eq(nil, s.tools.t1.detail)
     end)
 
+    t.it("hints at hidden output on a collapsed card", function()
+      local s = tool_session("pi")
+      reducer.apply(s, {
+        sessionUpdate = "tool_call",
+        toolCallId = "t1",
+        kind = "execute",
+        title = "ls",
+        status = "completed",
+        _meta = { terminal_output = { terminal_id = "t1", data = "a.ts\nb.ts" } },
+      })
+      local header = blocks.render_block(s.tools.t1, ctx())[1].text
+      t.match("2 lines", header)
+      t.falsy(s.tools.t1.expanded, "an execute card must not auto-expand")
+      -- Expanding replaces the count with the output itself.
+      s.tools.t1.expanded = true
+      local expanded_header = blocks.render_block(s.tools.t1, ctx())[1].text
+      t.falsy(expanded_header:find("2 lines", 1, true), "the hint survived expansion")
+    end)
+
+    t.it("singularises a one-line hint", function()
+      local s = tool_session("pi")
+      reducer.apply(s, {
+        sessionUpdate = "tool_call",
+        toolCallId = "t1",
+        kind = "execute",
+        title = "pwd",
+        status = "completed",
+        _meta = { terminal_output = { terminal_id = "t1", data = "/proj" } },
+      })
+      local header = blocks.render_block(s.tools.t1, ctx())[1].text
+      t.match("1 line", header)
+      t.falsy(header:find("1 lines", 1, true))
+    end)
+
+    t.it("adds the exit code for a collapsed failure", function()
+      local s = tool_session("pi")
+      reducer.apply(s, {
+        sessionUpdate = "tool_call",
+        toolCallId = "t1",
+        kind = "execute",
+        title = "false",
+        status = "failed",
+        _meta = {
+          terminal_output = { terminal_id = "t1", data = "boom" },
+          terminal_exit = { terminal_id = "t1", exit_code = 2 },
+        },
+      })
+      local header = blocks.render_block(s.tools.t1, ctx())[1].text
+      t.match("exit 2", header)
+    end)
+
+    t.it("keeps the hint inside a narrow panel", function()
+      local s = tool_session("pi")
+      reducer.apply(s, {
+        sessionUpdate = "tool_call",
+        toolCallId = "t1",
+        kind = "execute",
+        title = "grep -rn something --include=*.lua .",
+        status = "completed",
+        _meta = { terminal_output = { terminal_id = "t1", data = "x\ny\nz" } },
+      })
+      for _, width in ipairs({ 80, 40, 22 }) do
+        local header = blocks.render_block(s.tools.t1, ctx({ width = width }))[1].text
+        t.truthy(vim.api.nvim_strwidth(header) <= width, string.format("header overflowed %d: %s", width, header))
+      end
+    end)
+
+    t.it("adds no hint when the card has nothing to show", function()
+      local s = tool_session()
+      reducer.apply(s, {
+        sessionUpdate = "tool_call",
+        toolCallId = "t1",
+        kind = "read",
+        title = "Read a.lua",
+        status = "completed",
+      })
+      local header = blocks.render_block(s.tools.t1, ctx())[1].text
+      t.falsy(header:find("line", 1, true), "a payload-less card claimed to hide lines")
+    end)
+
+    t.it("does not hint on a diff card the user collapsed", function()
+      local s = tool_session("claude")
+      reducer.apply(s, {
+        sessionUpdate = "tool_call",
+        toolCallId = "t1",
+        kind = "edit",
+        title = "Edit a.lua",
+        status = "completed",
+        content = { { type = "diff", path = "/proj/a.lua", oldText = "a\nb", newText = "a\nc" } },
+      })
+      -- A diff has no text summary, so `detail` is nil. It is still content:
+      -- the card must auto-expand, and a hand-collapsed one must not claim to
+      -- be hiding body lines it would not have shown differently.
+      t.truthy(s.tools.t1.expanded, "a diff card stopped auto-expanding")
+      local header = blocks.render_block(s.tools.t1, ctx())[1].text
+      t.falsy(header:find("line", 1, true), "a diff card grew a line hint")
+    end)
+
+    t.it("still auto-expands a diff and hides the hint", function()
+      local s = tool_session()
+      reducer.apply(s, {
+        sessionUpdate = "tool_call",
+        toolCallId = "t1",
+        kind = "write",
+        title = "Write a.lua",
+        status = "completed",
+        rawInput = { path = "a.lua", content = "local a = 1\n" },
+      })
+      t.truthy(s.tools.t1.expanded)
+      local header = blocks.render_block(s.tools.t1, ctx())[1].text
+      t.falsy(header:find("line", 1, true))
+    end)
+
     t.it("falls back to rawOutput when the only content is a terminal", function()
       local s = tool_session()
       reducer.apply(s, {

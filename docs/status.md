@@ -704,6 +704,9 @@ agent profile 与规范化 controls：
   `rawInput.edits[]` 每个 hunk 都还原为 diff（此前只看第一个）。
   「是否有可渲染文本」以 `detail` 是否为 nil 判定，而不是 content 条目数：`terminal` 条目
   自身不带文本，按条目数判断会让 `rawOutput` 被跳过、卡片留空。
+- 折叠卡片在 header 后缀里提示隐藏内容：`done · 2 lines`，终端非零退出再补 `exit 2`。
+  `execute` 卡片不会自动展开，此前输出完全不可见；展开后提示消失。diff 卡片不受影响
+  （它们本来就会自动展开，且没有文本摘要）。
 - plan：以 turn 号为界复用同一块，agent 文本不再打断查找；`priority = high` 显示标记；
   回放提交后清掉回放块的 turn 标记，避免首个 live plan 被折进历史。
 - 停止原因：`max_tokens`、`max_turn_requests`、`refusal` 在回合末尾追加一条 notice，
@@ -712,4 +715,4 @@ agent profile 与规范化 controls：
   记录 `session_info_update.updatedAt`；音频 content 显示为 `[audio]`；`notice` 的块 id
   改为单调计数器（此前用 `#blocks`，裁剪后会重用）。
 
-验证：1033 项单元/组件测试通过，0 失败，0 项 pending。
+验证：1040 项单元/组件测试通过，0 失败，0 项 pending。

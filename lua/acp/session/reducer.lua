@@ -118,12 +118,23 @@ end
 ---@param block AcpBlock
 ---@return boolean
 local function has_payload(block)
-  -- `detail` is nil exactly when no content item carried renderable text (a
-  -- `terminal` the client renders itself, or a bare diff), and non-nil
-  -- otherwise. Expanding on a payload-less card would open an empty card, so
-  -- the content count is not consulted.
-  if block.detail ~= nil then
-    return block.detail ~= ""
+  if block.detail ~= nil and block.detail ~= "" then
+    return true
+  end
+  -- `detail` only holds the text summary, so it cannot decide alone: a diff,
+  -- a client-rendered terminal buffer and `rawOutput` are all content with no
+  -- summary. A content item that carries nothing at all (a bare `terminal` id)
+  -- must not count, which is what this loop checks.
+  for _, item in ipairs(block.content or {}) do
+    if type(item) == "table" and item.type ~= "terminal" then
+      return true
+    end
+  end
+  if block.terminal_output and block.terminal_output ~= "" then
+    return true
+  end
+  if block.raw_output ~= nil then
+    return true
   end
   local input = block.raw_input
   if type(input) == "table" then
