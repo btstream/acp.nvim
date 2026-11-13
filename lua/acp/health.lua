@@ -36,7 +36,18 @@ function M.check()
         health.ok("agent executable found: " .. vim.fn.exepath(agent.command))
       else
         health.error("agent executable not found: " .. agent.command)
-        health.info("Install OpenCode: https://opencode.ai/docs/ then run `opencode auth login`")
+        health.info("Install the agent, then run `:Acp login` (the agent offers its own login method)")
+      end
+      local client = st.client
+      local methods = client and client.auth_methods or {}
+      if type(methods) == "table" and #methods > 0 then
+        local names = {}
+        for _, method in ipairs(methods) do
+          names[#names + 1] = method.name or method.id
+        end
+        health.info("login methods: " .. table.concat(names, ", ") .. " (use :Acp login)")
+      elseif client then
+        health.info("the agent reported no login method; see its documentation")
       end
       health.info("layout backend: " .. cfg.layout.backend)
     end

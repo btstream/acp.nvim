@@ -15,6 +15,7 @@ local context = require("acp.context")
 local capabilities = require("acp.protocol.capabilities")
 local Permissions = require("acp.app.permissions")
 local Elicitation = require("acp.app.elicitation")
+local Auth = require("acp.app.auth")
 local Interactions = require("acp.app.interactions")
 local Options = require("acp.app.options")
 local Chrome = require("acp.ui.chrome")
@@ -556,6 +557,80 @@ function M.reload_session(session_id)
     return
   end
   S.sessions_service:restore(session_id)
+end
+
+---Send a message that was waiting for the session to come back after a login.
+---
+---The message is kept until it is actually accepted: after a terminal login the
+---session is replayed first, and sending during a replay is refused.
+---@return boolean sent
+function M.flush_auth_retry()
+  local pending = S.pending_auth_retry
+  if not pending then
+    return false
+  end
+  local runtime = S.runtime
+  local session = runtime and runtime.sessions[pending.session_id]
+  if
+    not S.prompts
+    or not session
+    or session.needs_load
+    or session.status ~= "idle"
+    or session.prompt_task
+    or #session.queue > 0
+    or (runtime and runtime.replays[pending.session_id])
+  then
+    if pending.deadline and vim.uv.now() > pending.deadline then
+      S.pending_auth_retry = nil
+      notify("logged in; send the message again", vim.log.levels.INFO)
+    end
+    return false
+  end
+  if S.prompts:send(session, pending.text, pending.attachments) then
+    S.pending_auth_retry = nil
+    return true
+  end
+  return false
+end
+
+---Poll for a session that can accept the parked message.
+function M.schedule_auth_retry()
+  if not S.pending_auth_retry or S.auth_retry_timer then
+    return
+  end
+  S.auth_retry_timer = vim.defer_fn(function()
+    S.auth_retry_timer = nil
+    local pending = S.pending_auth_retry
+    if not pending then
+      return
+    end
+    if M.flush_auth_retry() then
+      return
+    end
+    if vim.uv.now() > (pending.deadline or 0) then
+      S.pending_auth_retry = nil
+      notify("logged in; send the message again", vim.log.levels.INFO)
+      return
+    end
+    M.schedule_auth_retry()
+  end, 200)
+end
+
+---Log in with the agent's offered method.
+function M.login()
+  if not S.auth then
+    return
+  end
+  S.auth:login(nil, function()
+    M.connect()
+  end)
+end
+
+---Log out, when the agent declares `auth.logout`.
+function M.logout()
+  if S.auth then
+    S.auth:logout()
+  end
 end
 
 ---Create a new session with the current agent.
@@ -1367,11 +1442,17 @@ function M.setup(opts, action)
       if S.client and S.client.mark_phase then
         S.client:mark_phase(value and "replay" or nil)
       end
+      if not value then
+        M.flush_auth_retry()
+      end
     end,
     on_creating = function(value)
       S.creating_session = value
     end,
     prune = prune_sessions,
+    auth = function()
+      return S.auth
+    end,
     notify = notify,
   })
   S.prompts = Prompts.new({
@@ -1387,6 +1468,22 @@ function M.setup(opts, action)
     end,
     run = function(key, client, session, fn, on_error, on_finally)
       return operations:run(key, client, session, fn, on_error, on_finally)
+    end,
+    auth = function()
+      return S.auth
+    end,
+    retry = function(session_id, text, attachments)
+      -- Never send from inside the failed turn: the client may be about to be
+      -- replaced (a terminal login reconnects) and the captured session is
+      -- stale. Park the message and flush it as soon as the session is usable.
+      S.pending_auth_retry = {
+        session_id = session_id,
+        text = text,
+        attachments = attachments,
+        deadline = vim.uv.now() + 30000,
+      }
+      M.schedule_auth_retry()
+      return true
     end,
     selected = function(session)
       return S.session == session
@@ -1414,6 +1511,27 @@ function M.setup(opts, action)
     refresh_title = refresh_session_title,
     notify = notify,
   })
+  S.auth = Auth.new({
+    config = cfg,
+    client = function()
+      return S.client
+    end,
+    notify = notify,
+    reconnect = function()
+      M.reconnect()
+    end,
+    after_ready = function(fn)
+      -- The reconnect may already have finished by the time the login terminal
+      -- exits (a fast agent, or a synchronous start); run immediately then.
+      if S.connection == "ready" and S.client and S.client:is_ready() then
+        pcall(fn)
+        return
+      end
+      S.auth_after_ready = S.auth_after_ready or {}
+      S.auth_after_ready[#S.auth_after_ready + 1] = fn
+    end,
+    on_changed = refresh_chrome,
+  })
   S.connection_service = Connection.new({
     config = cfg,
     resolve_cwd = resolve_cwd,
@@ -1438,17 +1556,23 @@ function M.setup(opts, action)
       elseif not S.session then
         M.new_session()
       end
+      local queued = S.auth_after_ready
+      S.auth_after_ready = nil
+      for _, fn in ipairs(queued or {}) do
+        pcall(fn)
+      end
+      M.flush_auth_retry()
     end,
     on_start_failed = function(err)
-      local message = type(err) == "table" and (err.message or vim.inspect(err)) or tostring(err)
-      if message:match("auth") then
-        notify(
-          "OpenCode requires authentication. Run `opencode auth login` in a terminal, then reconnect.",
-          vim.log.levels.WARN
-        )
-      else
-        notify("failed to start agent: " .. message, vim.log.levels.ERROR)
+      if S.auth and S.auth:require(err, {
+        retry = function()
+          M.connect()
+        end,
+      }) then
+        return
       end
+      local message = type(err) == "table" and (err.message or vim.inspect(err)) or tostring(err)
+      notify("failed to start agent: " .. message, vim.log.levels.ERROR)
     end,
     runtime_lost = function()
       S.runtime:connection_lost()

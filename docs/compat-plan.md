@@ -308,6 +308,14 @@ tool card 显示等待状态，`<CR>` 可直接重开请求。一致性套件中
 agent 方式会调用 `authenticate`；登录后重试成功。
 **验收**：首次使用 Claude Code 和 pi 时，可以在 Neovim 里完成登录。
 
+**状态**：已完成。默认声明 `auth.terminal` 与 `_meta["terminal-auth"]`；新增 `app/auth`，
+按错误码 -32000 识别需要登录，`session/new` / `session/load` / `session/prompt` 失败都会进入
+登录并在成功后重试。单一方式直接执行，多个用 picker；terminal 类型在新 `:terminal` 分屏运行
+命令，退出后重连、恢复会话并重发失败的消息；agent 类型调用 `authenticate`。新增
+`:Acp login` / `:Acp logout`（后者仅在 agent 声明 `auth.logout` 时可用）。删除写死的 OpenCode
+提示，无登录方式时提示查看 agent 文档；`health` 列出登录方式。顺带修复创建会话的 `creating`
+守卫在任务被取消后永久卡住的问题。mock 增加 `@auth` 场景与 `logout`。
+
 ---
 
 ## 阶段 5：agent profile 与规范化 controls（里程碑 M2）

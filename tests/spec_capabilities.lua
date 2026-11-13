@@ -12,22 +12,36 @@ return function(t)
   end)
 
   t.describe("client capabilities", function()
-    t.it("advertises notices and form elicitation by default", function()
+    t.it("advertises notices, form elicitation and terminal auth by default", function()
       local caps = connection.client_capabilities(config.merge(config.defaults, {}))
-      t.eq({ session = { notices = {} }, elicitation = { form = {} } }, caps)
+      t.eq({
+        session = { notices = {} },
+        elicitation = { form = {} },
+        auth = { terminal = true },
+        _meta = { ["terminal-auth"] = true },
+      }, caps)
     end)
 
     t.it("omits notices when disabled", function()
       local caps = connection.client_capabilities(config.merge(config.defaults, { notices = false }))
-      t.eq({ elicitation = { form = {} } }, caps)
+      t.falsy(capabilities.supports(caps, "session.notices"))
+      t.truthy(capabilities.supports(caps, "elicitation.form"))
     end)
 
     t.it("leaves unimplemented capabilities out", function()
       local caps = connection.client_capabilities(config.merge(config.defaults, {}))
       t.truthy(capabilities.supports(caps, "elicitation.form"))
       t.falsy(capabilities.supports(caps, "elicitation.url"))
-      t.falsy(capabilities.supports(caps, "auth.terminal"))
+      t.truthy(capabilities.supports(caps, "auth.terminal"))
+      t.truthy(capabilities.supports(caps, "_meta.terminal-auth"))
       t.falsy(capabilities.supports(caps, "_meta.terminal_output"))
+    end)
+
+    t.it("honours the auth switch", function()
+      local caps =
+        connection.client_capabilities(config.merge(config.defaults, { capabilities = { auth_terminal = false } }))
+      t.falsy(capabilities.supports(caps, "auth.terminal"))
+      t.falsy(capabilities.supports(caps, "_meta.terminal-auth"))
     end)
 
     t.it("resolves dotted capability paths", function()

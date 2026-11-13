@@ -20,7 +20,7 @@ Sessions.__index = Sessions
 ---  current: fun(): table|nil, activate: fun(session: table|nil), render: fun(),
 ---  dispatch_queued: fun(session: table), on_changed: fun(),
 ---  on_replaying: fun(value: boolean), on_creating: fun(value: boolean),
----  prune: fun(),
+---  prune: fun(), auth: fun(): table|nil,
 ---  notify: fun(message: string, level: integer|nil)}
 function Sessions.new(opts)
   return setmetatable({
@@ -38,6 +38,7 @@ function Sessions.new(opts)
     activate = opts.activate,
     render = opts.render,
     dispatch_queued = opts.dispatch_queued,
+    get_auth = opts.auth,
     on_changed = opts.on_changed,
     on_replaying = opts.on_replaying,
     on_creating = opts.on_creating,
@@ -68,6 +69,8 @@ function Sessions:create(on_missing)
     return
   end
   self.creating = true
+  self.creation_seq = (self.creation_seq or 0) + 1
+  local creation = self.creation_seq
   self.on_creating(true)
   local runtime, client = self.get_runtime(), self.get_client()
   local intent = runtime:intend()
@@ -77,6 +80,14 @@ function Sessions:create(on_missing)
     if not ok then
       task.status = "failed"
       runtime:drop_create(token)
+      local auth = self.get_auth and self.get_auth()
+      if auth and auth:require(result, {
+        retry = function()
+          self:create()
+        end,
+      }) then
+        return
+      end
       local message = type(result) == "table" and (result.message or vim.inspect(result)) or tostring(result)
       self.notify("unable to create a session: " .. message, vim.log.levels.ERROR)
       return
@@ -105,10 +116,14 @@ function Sessions:create(on_missing)
     runtime:drop_create(token)
     self.notify("unable to create a session: " .. tostring(err), vim.log.levels.ERROR)
   end, function(_, owned)
-    if owned then
+    -- Even an abandoned creation must release the guard: a reconnect cancels
+    -- the scoped task, and leaving `creating` set wedged every later
+    -- `session/new` (for example after logging in).
+    if self.creation_seq == creation then
       self.creating = false
       self.on_creating(false)
-    else
+    end
+    if not owned then
       runtime:drop_create(token)
     end
   end)
@@ -133,6 +148,17 @@ function Sessions:replay(session_id, opts)
     if not ok then
       task.status = "failed"
       runtime:rollback(entry)
+      local auth = self.get_auth and self.get_auth()
+      if
+        auth
+        and auth:require(result, {
+          retry = function()
+            self:replay(session_id, opts)
+          end,
+        })
+      then
+        return
+      end
       local message = type(result) == "table" and (result.message or vim.inspect(result)) or tostring(result)
       if opts.kind == "restore" and tostring(message):lower():match("shutdown") then
         -- Expected during teardown; do not alarm the user.

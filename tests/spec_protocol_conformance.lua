@@ -176,7 +176,7 @@ return function(t)
       t.truthy(caps.elicitation and caps.elicitation.form, vim.inspect(caps))
     end)
 
-    t.pending("advertises terminal authentication", "phase 4: auth", function()
+    t.it("advertises terminal authentication", function()
       local caps = advertised()
       t.truthy(caps.auth and caps.auth.terminal, vim.inspect(caps))
       t.truthy(caps._meta and caps._meta["terminal-auth"], vim.inspect(caps))
@@ -187,7 +187,40 @@ return function(t)
       t.truthy(caps._meta and caps._meta.terminal_output, vim.inspect(caps))
     end)
 
-    -- Questions ---------------------------------------------------------------
+    -- Authentication ---------------------------------------------------------
+
+    t.it("surfaces the agent's login methods once terminal auth is advertised", function()
+      for _, profile in ipairs({ "opencode", "claude", "pi" }) do
+        local client = start(profile)
+        local methods = client.auth_methods
+        t.eq(1, #methods, profile)
+        t.eq("terminal", methods[1].type, profile)
+        t.truthy(methods[1]._meta and methods[1]._meta["terminal-auth"], profile)
+        client:shutdown(true)
+      end
+    end)
+
+    t.it("offers no login method when the client does not advertise auth", function()
+      local client = start("opencode", { caps = vim.empty_dict() })
+      t.eq(0, #client.auth_methods)
+      client:shutdown(true)
+    end)
+
+    t.it("reports auth_required with the methods the agent knows", function()
+      local client = start("opencode", {
+        env = { ACP_MOCK_AUTH_REQUIRED = "1", ACP_MOCK_AUTH_MARKER = "/tmp/opencode/never-conformance" },
+      })
+      vim.fn.delete("/tmp/opencode/never-conformance")
+      local ok, err = run(function()
+        return client:new_session(root)
+      end)
+      t.falsy(ok)
+      t.eq(-32000, type(err) == "table" and err.code or nil)
+      local methods = type(err) == "table" and err.data and err.data.authMethods or {}
+      t.eq(1, #methods)
+      t.eq("opencode-login", methods[1].id)
+      client:shutdown(true)
+    end)
 
     t.it("claude asks in plain text when form elicitation is not advertised", function()
       local client, ctx = start("claude", { caps = vim.empty_dict() })

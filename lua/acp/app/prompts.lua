@@ -11,6 +11,8 @@ Prompts.__index = Prompts
 
 ---@param opts {config: fun(): table, runtime: fun(): table,
 ---  client: fun(): table|nil, connection: fun(): string,
+---  auth: fun(): table|nil,
+---  retry: fun(session_id: string, text: string, attachments: table[]|nil): boolean,
 ---  run: fun(key: string, client: table|nil, session: table|nil,
 ---  fn: fun(task: table), on_error: fun(err: any, task: table)|nil,
 ---  on_finally: fun(task: table, owned: boolean)|nil): table,
@@ -27,6 +29,8 @@ function Prompts.new(opts)
     get_runtime = opts.runtime,
     get_client = opts.client,
     connection = opts.connection,
+    get_auth = opts.auth,
+    retry = opts.retry,
     run = opts.run,
     selected = opts.selected,
     on_turn_start = opts.on_turn_start,
@@ -152,8 +156,22 @@ function Prompts:send(session, text, attachments, hooks)
       task.status = "failed"
       local raw = type(result) == "table" and (result.message or vim.inspect(result)) or tostring(result)
       local lowered = tostring(raw):lower()
-      if lowered:match("auth") then
-        add_error("OpenCode requires authentication. Run `opencode auth login` in a terminal, then reconnect.")
+      local auth = self.get_auth and self.get_auth()
+      local handled = auth
+        and auth:require(result, {
+          retry = function()
+            -- A terminal login reconnects, so the session object captured by
+            -- this turn is stale. Ask the owner to resolve it by id (and to
+            -- queue the message if a replay is still in flight).
+            local retried = self.retry and self.retry(session.id, text, attachments)
+            if retried == false then
+              self.notify("logged in; send the message again", vim.log.levels.INFO)
+            end
+          end,
+        })
+      if handled then
+        -- The login flow owns the user-facing message and the retry; the
+        -- transcript should not also grow an error block.
       elseif lowered:match("already has an active") then
         -- The agent still has a turn running that this client does not know
         -- about (for example another editor sharing the session). Do not

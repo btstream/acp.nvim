@@ -53,6 +53,9 @@ Controller 只保留公开入口、会话选择、服务装配和跨模块协调
 - 权限详情由 `ui/permission_details` 渲染成独立只读浮窗（execute 显示命令与 cwd，edit 复用
   `ui/diff`），与 picker 后端无关；`permissions.show_details = false` 可关闭。等待回答或批准的
   tool card 带 `awaiting` 标记，`<CR>` 在卡片上重新打开对应请求。
+- 认证由 `app/auth` 统一处理：只按错误码 -32000 判定，terminal 类型登录在 `:terminal` 中运行
+  agent 给出的命令并在重连后重试，agent 类型调用 `authenticate`。插件自身不含任何 agent 专属
+  登录命令。
 - `session/update` 解码时把 JSON null 归一化为 nil；reducer 用变更日志包围一条更新，
   失败时整体回滚，不留下半更新的 block，也不破坏 UI 持有的 block 身份。
 - 创建会话期间，sessionId 尚未知晓的更新先进入有界缓冲（256 条 / 1 MiB），创建成功后

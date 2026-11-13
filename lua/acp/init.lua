@@ -41,6 +41,16 @@ function M.new_session()
   ensure().new_session()
 end
 
+---Log in with whatever method the agent offered.
+function M.login()
+  ensure().login()
+end
+
+---Log out, when the agent supports it.
+function M.logout()
+  ensure().logout()
+end
+
 function M.cancel()
   ensure().cancel()
 end
@@ -66,8 +76,7 @@ function M.paste_image(opts)
   return ensure().paste_image(opts)
 end
 
----Start an inline edit at the cursor or visual selection.
----@param opts {review?: "diff"|"write"}|nil
+---Start an inline edit at the cursor or visual selection.---@param opts {review?: "diff"|"write"}|nil
 function M.inline(opts)
   ensure()
   return require("acp.inline").open(opts)

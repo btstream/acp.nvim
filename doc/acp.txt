@@ -9,8 +9,8 @@ acp.nvim 是一个 Neovim 原生的 Agent Client Protocol 客户端。
 
 默认连接 OpenCode：
 
-    :!opencode auth login
     :Acp
+    :Acp login     " 首次使用；执行 Agent 自己提供的登录方式
 
 默认布局为原生左右分屏；edgy.nvim 是可选依赖，使用时显式配置 external。
 需要 Neovim 0.10+，推荐 0.12+。代码块语法高亮需对应语言的 Tree-sitter parser
@@ -30,6 +30,8 @@ acp.nvim 是一个 Neovim 原生的 Agent Client Protocol 客户端。
     model        切换模型
     mode         切换模式
     reconnect    重连并恢复当前会话
+    login        按 Agent 提供的登录方式登录（终端或 authenticate）
+    logout       退出登录；仅当 Agent 声明支持时可用
     disconnect   停止 Agent 进程
     permission   重新打开待确认的权限请求
     file         把当前文件附加到输入区
@@ -264,6 +266,13 @@ picker、会话浏览器等自绘浮窗内部的按键不在 keymaps 管辖范�
       },
       permissions = { prompt = "select", show_details = true },
       notices = true,
+      capabilities = {
+        elicitation = { form = true, url = false },
+        auth_terminal = true,
+        terminal_output_meta = false,
+        fs = false,
+        terminal = false,
+      },
       memory = {
         max_block_bytes = 1024 * 1024,
         max_session_bytes = 16 * 1024 * 1024,

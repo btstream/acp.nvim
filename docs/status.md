@@ -633,4 +633,23 @@ native/edgy/reconnect、性能 smoke、tail/spinner 附加 UI 回归通过。
   「选项 + 备注」、字段顺序、字符长度、不可移植的 pattern、关闭表单窗口、撤回后的迟到回调、
   交互回收上限与 presenter 异常。
 
-验证：943 项单元/组件测试通过，0 失败，4 项 pending（认证、终端输出、controls）。
+## 多 agent 兼容阶段 4（2026-11-12）
+
+认证：
+
+- 默认声明 `auth.terminal` 与 `_meta["terminal-auth"]`（`capabilities.auth_terminal` 可关）。
+  声明关闭时 agent 不再提供登录方式，`elicitation/create` 等未声明请求回 -32601。
+- 新增 `app/auth`：按错误码 -32000 识别 `auth_required`，不匹配消息文本；`session/new`、
+  `session/load`、`session/prompt` 失败都会进入登录流程并在成功后重试。
+- 单一登录方式直接执行，多个用 picker。`terminal` 类型或带 `_meta["terminal-auth"]` 时在
+  新 `:terminal` 分屏运行命令，退出后重连并重试；`agent` 类型调用 `authenticate` 后直接重试。
+  重试消息会等会话可用后再发，终端登录会重连、恢复会话。
+- 新增 `:Acp login` 与 `:Acp logout`（后者仅当 agent 声明 `auth.logout`）。
+- 删除 `prompts.lua`、`controller.lua` 里写死的 OpenCode 提示；没有登录方式时提示查看 agent
+  文档。`health` 报告当前登录方式。
+- 修复 `Sessions:create` 的 `creating` 守卫：创建任务被重连取消后不再永久卡住后续创建。
+- 新增 auth 单元测试（错误码、命令构造、引用、单选/多选流程、退出码、logout）、controller
+  级登录全流程测试与一致性套件的登录方式用例；mock 增加 `@auth` 场景、`logout` 处理，
+  并修正 `@auth` 失败后未释放 active prompt 的问题。
+
+验证：966 项单元/组件测试通过，0 失败，3 项 pending（终端输出 ×2、controls）。

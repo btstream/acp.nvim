@@ -28,6 +28,7 @@ Scenario triggers (prompt text starts with):
                 content whose output only travels in _meta
   @null         updates carrying JSON null in optional fields
   @cancel-request  a permission request the agent withdraws via $/cancel_request
+  @auth         the prompt fails with auth_required until a login happened
 
 Each scenario ends with an agent message "RESULT:<json>" describing what the
 client answered, so tests can assert it from the transcript.
@@ -515,12 +516,30 @@ def response_body(msg):
     return msg.get("result")
 
 
+def scenario_auth(msg_id):
+    """A prompt that fails with auth_required until the client logs in.
+
+    The auth methods only appear when the client declared terminal support, so
+    the same scenario exercises "offered" and "not offered" clients.
+    """
+    if not logged_in():
+        send({"jsonrpc": "2.0", "id": msg_id, "error": {
+            "code": -32000, "message": "Authentication required",
+            "data": {"authMethods": auth_methods()}}})
+        with permissions_lock:
+            active_prompts.pop(msg_id, None)
+        return
+    report(msg_id, {"ok": True})
+    return finish(msg_id)
+
+
 SCENARIOS = {
     "@ask": scenario_ask,
     "@plan-approve": scenario_plan_approve,
     "@bash": scenario_bash,
     "@null": scenario_null,
     "@cancel-request": scenario_cancel_request,
+    "@auth": scenario_auth,
 }
 SESSION_CWD_REF = [None]
 
@@ -772,6 +791,11 @@ def handle(msg):
         result(msg_id, initialize_result())
     elif method == "authenticate":
         authenticated[0] = True
+        result(msg_id, {})
+    elif method == "logout":
+        authenticated[0] = False
+        if AUTH_MARKER and os.path.exists(AUTH_MARKER):
+            os.remove(AUTH_MARKER)
         result(msg_id, {})
     elif method == "session/new":
         if os.environ.get("ACP_MOCK_AUTH_REQUIRED") == "1" and not logged_in():

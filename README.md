@@ -49,10 +49,11 @@ Neovim 原生的 [Agent Client Protocol](https://agentclientprotocol.com) 客户
 
 - Neovim 0.10 或更新（推荐 0.12+；0.10/0.11 使用兼容高亮语法）
 - 代码块语法高亮可选依赖对应语言的 Tree-sitter parser 与 highlights query；缺失时显示纯文本，不影响对话。
-- 一个已登录的 ACP Agent。默认是 OpenCode：
+- 一个已登录的 ACP Agent。默认是 OpenCode；首次使用可以打开 `:Acp` 后运行 `:Acp login`，
+  插件会执行 Agent 自己提供的登录方式：
 
 ```bash
-opencode auth login
+opencode auth login      # 也可以在终端里手动完成
 ```
 
 ## 安装
@@ -704,6 +705,15 @@ require("acp").setup({
 
   notices = true,         -- 显示 Agent 的时间线通知
 
+  capabilities = {
+    -- 声明给 Agent 的客户端能力；不能用的能力不要打开
+    elicitation = { form = true, url = false },
+    auth_terminal = true,      -- 终端登录（:Acp login）
+    terminal_output_meta = false,
+    fs = false,
+    terminal = false,
+  },
+
   transport = {
     -- 单条 JSON 消息的字节上限；超过会断开连接。日志会给出实际大小
     max_line_bytes = 32 * 1024 * 1024,
@@ -1164,6 +1174,18 @@ require("acp").setup({ ui = { picker = "internal" } })
 
 > 不要使用 `<C-m>`：在终端里它与 `<CR>` 是同一个键。
 
+### 登录
+
+Agent 在 `initialize` 里声明登录方式时，`:Acp login` 会使用它：
+
+- 只有一个方式时直接执行；多个时用选择器挑选（显示名称和说明）。
+- `terminal` 类型（或带 `_meta["terminal-auth"]`）会在新的 `:terminal` 分屏里运行 Agent 给的命令；
+  命令退出后自动重连并重试刚才失败的操作。
+- `agent` 类型（或没有 type）调用 `authenticate(methodId)`，成功后直接重试。
+- `session/new`、`session/load`、`session/prompt` 返回 `auth_required`（-32000）时也会进入同一流程；
+  Agent 完全没有提供登录方式时只提示查看它的文档。
+- `:Acp logout` 仅在 Agent 声明 `auth.logout` 时可用。
+
 ### 权限请求
 
 Agent 请求权限时弹出选择器，并在旁边打开一个只读详情浮窗：
@@ -1192,6 +1214,7 @@ acp.nvim 显示表单：
 
 - 未实现客户端侧的文件读写与终端能力（`fs/read_text_file`、`terminal/*`），
   这些功能由 Agent 自行完成。
+- 登录方式由 Agent 提供；插件不内置任何 Agent 专属的登录命令或凭据处理。
 - 修改审阅（逐块接受 / 拒绝）尚未提供：可以展开工具调用查看完整 diff，但不能在
   插件里应用或回滚某一块改动。
 - 会话历史来自 Agent（`session/list`），acp.nvim 不额外保存一份对话库。

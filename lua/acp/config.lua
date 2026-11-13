@@ -22,7 +22,7 @@ M.defaults = {
   -- while diagnosing an agent, even after the implementation lands.
   capabilities = {
     elicitation = { form = true, url = false },
-    auth_terminal = false,
+    auth_terminal = true,
     terminal_output_meta = false,
     fs = false,
     terminal = false,

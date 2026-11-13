@@ -6,8 +6,8 @@ return function(t)
 
   local root = vim.fn.fnamemodify(vim.fn.getcwd(), ":p")
 
-  local function setup(env)
-    acp.setup({
+  local function setup(env, overrides)
+    acp.setup(vim.tbl_deep_extend("force", {
       agent = "opencode",
       agents = {
         opencode = {
@@ -17,7 +17,7 @@ return function(t)
         },
       },
       permissions = { prompt = "native" },
-    })
+    }, overrides or {}))
     controller.open()
     return controller.state()
   end
@@ -41,7 +41,11 @@ return function(t)
     end)
 
     t.it("drops the buffer when creation fails", function()
-      local S = setup({ ACP_MOCK_AUTH_REQUIRED = "1", ACP_MOCK_AUTH_MARKER = "/tmp/opencode/never-created" })
+      -- Auth is exercised separately; disabling it here keeps the plain
+      -- failure path (and keeps the suite from starting a login terminal).
+      local S = setup({ ACP_MOCK_AUTH_REQUIRED = "1", ACP_MOCK_AUTH_MARKER = "/tmp/opencode/never-created" }, {
+        capabilities = { auth_terminal = false },
+      })
       vim.wait(8000, function()
         return S.runtime.creating == nil
       end, 20)

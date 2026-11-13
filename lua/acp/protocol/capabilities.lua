@@ -25,6 +25,10 @@ function M.client(config)
       caps.elicitation.url = vim.empty_dict()
     end
   end
+  if switches.auth_terminal then
+    caps.auth = { terminal = true }
+    caps._meta = { ["terminal-auth"] = true }
+  end
   return caps
 end
 

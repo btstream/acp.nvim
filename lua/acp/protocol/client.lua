@@ -713,6 +713,12 @@ function Client:authenticate(method_id)
   return self:request("authenticate", { methodId = method_id }, request_timeout(self, "", REQUEST_TIMEOUT))
 end
 
+---Log out. Only call when the agent declared `auth.logout`.
+---@return boolean ok, any value
+function Client:logout()
+  return self:request("logout", vim.empty_dict(), request_timeout(self, "", REQUEST_TIMEOUT))
+end
+
 function Client:handle_exit(code, stderr, generation)
   if generation ~= self.generation then
     return
