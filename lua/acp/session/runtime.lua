@@ -28,11 +28,12 @@ function Runtime:sync_outbox(session)
   end
 end
 
-function M.new(limits, sessions, thoughts)
+function M.new(limits, sessions, thoughts, profile)
   return setmetatable({
     limits = limits,
     sessions = sessions or {},
     thoughts = thoughts,
+    profile = profile,
     replays = {},
     clock = 0,
     selection = 0,
@@ -48,6 +49,7 @@ function Runtime:create(id, cwd, result)
   end
   local session = State.new(id, cwd, self.limits)
   session.thoughts = self.thoughts or session.thoughts
+  session.profile = self.profile
   session:track_changes()
   session:configure(result or {})
   self.sessions[id] = session
@@ -125,6 +127,7 @@ function Runtime:stage(id, cwd)
   local previous = self.sessions[id]
   local session = State.new(id, cwd, self.limits)
   session.thoughts = self.thoughts or session.thoughts
+  session.profile = self.profile
   session:track_changes()
   -- A replayed session is history: its tool cards stay collapsed so reading an
   -- old conversation does not unfold every diff at once.

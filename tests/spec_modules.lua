@@ -13,14 +13,16 @@ return function(t)
   t.describe("presenter", function()
     t.it("reports toolbar labels from config options", function()
       local s = state.new("s", "/tmp")
-      s.config_options = {
-        {
-          id = "model",
-          category = "model",
-          currentValue = "provider/model-x",
-          options = { { value = "provider/model-x", name = "provider/Model X" } },
+      s:configure({
+        configOptions = {
+          {
+            id = "model",
+            category = "model",
+            currentValue = "provider/model-x",
+            options = { { value = "provider/model-x", name = "provider/Model X" } },
+          },
         },
-      }
+      })
       local model, mode = presenter.toolbar_labels(s)
       t.eq("Model X", model)
       t.eq(nil, mode)
@@ -28,9 +30,11 @@ return function(t)
 
     t.it("reuses the memoised labels until the option changes", function()
       local s = state.new("s", "/tmp")
-      s.config_options = {
-        { id = "model", category = "model", currentValue = "a", options = { { value = "a", name = "A" } } },
-      }
+      s:configure({
+        configOptions = {
+          { id = "model", category = "model", currentValue = "a", options = { { value = "a", name = "A" } } },
+        },
+      })
       presenter.toolbar_labels(s)
       local cached = s._toolbar_labels
       presenter.toolbar_labels(s)

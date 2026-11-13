@@ -1,10 +1,12 @@
--- Session config option pickers: model, mode and other agent options.
+-- Session control pickers: mode, model, thinking level and extra options.
 --
--- Asynchronous writes still go through the controller's task scope, so the
--- identity fences and cancellation semantics stay in one place.
+-- Every choice is driven by `session.controls` (session/controls.lua), so the
+-- picker never has to guess which agent reported what. Changing a control uses
+-- the method that produced it: `session/set_mode` for legacy `modes`, and
+-- `session/set_config_option` for config options.
 local Icons = require("acp.ui.icons")
 local picker = require("acp.ui.picker")
-local state = require("acp.session.state")
+local controls_mod = require("acp.session.controls")
 
 local Options = {}
 Options.__index = Options
@@ -27,58 +29,129 @@ function Options.new(opts)
   }, Options)
 end
 
----@param category string
----@param title string
-function Options:pick(category, title)
-  local session = self.current()
-  if not session then
+---Whether a captured session is still the right target for a write.
+---@param client table|nil
+---@param generation integer
+---@param session table
+---@return boolean
+function Options:still_current(client, generation, session)
+  return self.ui_current(client, generation, session) and self.current() == session
+end
+
+---Apply one control value.
+---@param control table
+---@param value any
+---@param client table|nil
+---@param generation integer
+---@param session table
+function Options:apply(control, value, client, generation, session)
+  if not self:still_current(client, generation, session) then
     return
   end
-  local option = session:option_by_category(category)
-  local client, generation = self.get_client(), self.generation()
-  if not option then
-    self.notify("this agent does not offer a " .. category .. " option", vim.log.levels.INFO)
+  self.run("control:" .. session.id .. ":" .. control.id, client, session, function(task)
+    local ok, result
+    if control.source == "modes" then
+      ok, result = task:call("set_mode", session.id, value)
+    else
+      ok, result = task:call("set_config_option", session.id, control.id, value)
+    end
+    if not ok then
+      task.status = "failed"
+      local message = type(result) == "table" and (result.message or vim.inspect(result)) or tostring(result)
+      self.notify("unable to change " .. (control.name or control.id) .. ": " .. message, vim.log.levels.ERROR)
+      return
+    end
+    if control.source == "modes" then
+      session.current_mode = value
+      session:refresh_controls()
+    elseif result and type(result) == "table" and result.configOptions then
+      session:configure(result)
+    else
+      -- The agent acknowledged without a new option list. Record the value on
+      -- the option itself: controls are derived from it on every refresh, so
+      -- writing only `control.current` would be overwritten immediately.
+      control.current = value
+      if control.option then
+        control.option.currentValue = value
+      end
+      session:refresh_controls()
+    end
+    session._toolbar_labels = nil
+    self.on_changed()
+  end, function(err)
+    self.notify("unable to change " .. (control.name or control.id) .. ": " .. tostring(err), vim.log.levels.ERROR)
+  end)
+end
+
+---Toggle a boolean control.
+---@param control table
+---@param client table|nil
+---@param generation integer
+---@param session table
+function Options:toggle(control, client, generation, session)
+  local next_value = not control.current
+  if control.source == "modes" then
+    -- A boolean never comes from `modes`; guard anyway.
     return
   end
-  local items = {}
+  self:apply(control, next_value, client, generation, session)
+end
+
+---Picker for a select control.
+---@param control table
+---@param title string|nil
+---@param client table|nil
+---@param generation integer
+---@param session table
+function Options:pick_control(control, title, client, generation, session)
   local ic = Icons.get(self.config().ui.icons)
-  for _, entry in ipairs(state.select_values(option)) do
-    local marked = entry.value == option.currentValue and (ic.check_circle .. " ") or (ic.tool_pending .. " ")
+  local items = {}
+  for _, entry in ipairs(control.options or {}) do
+    local marked = entry.value == control.current and (ic.check_circle .. " ") or (ic.tool_pending .. " ")
     items[#items + 1] = {
       label = marked .. (entry.name or tostring(entry.value)),
       description = entry.description,
       value = entry.value,
     }
   end
+  if #items == 0 then
+    self.notify("this option has no values", vim.log.levels.INFO)
+    return
+  end
   picker.select({
-    title = title .. " · " .. option.name,
+    title = (title or control.name or control.id) .. " · " .. (control.name or control.id),
     items = items,
     on_choice = function(value)
-      -- The agent may have gone away (crash, explicit disconnect) while the
-      -- picker was open.
-      if not self.ui_current(client, generation, session) then
-        return
-      end
-      -- The session may also have been switched; do not apply the choice to a
-      -- stale object.
-      if self.current() ~= session then
-        return
-      end
-      self.run("option:" .. session.id .. ":" .. option.id, client, session, function(task)
-        local ok, result = task:call("set_config_option", session.id, option.id, value)
-        if not ok then
-          task.status = "failed"
-          local message = type(result) == "table" and (result.message or vim.inspect(result)) or tostring(result)
-          self.notify("unable to change option: " .. message, vim.log.levels.ERROR)
-          return
-        end
-        session:set_option(option, value, result)
-        self.on_changed()
-      end, function(err)
-        self.notify("unable to change option: " .. tostring(err), vim.log.levels.ERROR)
-      end)
+      self:apply(control, value, client, generation, session)
     end,
   })
+end
+
+---Select by control key ("mode" | "model" | "thinking") or control id.
+---@param key string
+---@param title string
+function Options:pick(key, title)
+  local session = self.current()
+  if not session then
+    return
+  end
+  if not session.controls then
+    session:refresh_controls()
+  end
+  local client, generation = self.get_client(), self.generation()
+  local control = session.controls[key]
+  if not control then
+    control = controls_mod.by_id(session.controls, key)
+  end
+  if not control then
+    self.notify("this agent does not offer " .. key .. " selection", vim.log.levels.INFO)
+    return
+  end
+  if control.kind == "boolean" then
+    self:toggle(control, client, generation, session)
+    return
+  end
+  self:pick_control(control, title, client, generation, session)
 end
 
 function Options:pick_model()
@@ -89,42 +162,53 @@ function Options:pick_mode()
   self:pick("mode", "Mode")
 end
 
+function Options:pick_thinking()
+  self:pick("thinking", "Thinking")
+end
+
+---One picker for every control the agent offers.
 function Options:pick_config()
   local session = self.current()
   if not session then
     return
   end
+  if not session.controls then
+    session:refresh_controls()
+  end
   local client, generation = self.get_client(), self.generation()
   local items = {}
-  for _, option in ipairs(session.config_options or {}) do
-    if option.category ~= "model" and option.category ~= "mode" then
-      local label = state.option_label(option, option.currentValue) or tostring(option.currentValue)
+  for _, key in ipairs({ "mode", "model", "thinking" }) do
+    local control = session.controls[key]
+    if control then
       items[#items + 1] = {
-        label = string.format("%s: %s", option.name, label),
-        description = option.description,
-        value = option.id,
+        label = string.format("%s: %s", control.name or control.id, controls_mod.label(control) or "?"),
+        description = control.description,
+        value = { control = control, title = control.name },
       }
     end
   end
+  for _, control in ipairs(session.controls.extras or {}) do
+    items[#items + 1] = {
+      label = string.format("%s: %s", control.name or control.id, controls_mod.label(control) or "?"),
+      description = control.description,
+      value = { control = control, title = control.name },
+    }
+  end
   if #items == 0 then
-    self.notify("no additional session options", vim.log.levels.INFO)
+    self.notify("this agent offers no session options", vim.log.levels.INFO)
     return
   end
   picker.select({
     title = "Configure",
     items = items,
-    on_choice = function(id)
-      if not self.ui_current(client, generation, session) then
+    on_choice = function(choice)
+      if not self:still_current(client, generation, session) then
         return
       end
-      local option = nil
-      for _, opt in ipairs(session.config_options) do
-        if opt.id == id then
-          option = opt
-        end
-      end
-      if option then
-        self:pick(option.category or "", option.name)
+      if choice.control.kind == "boolean" then
+        self:toggle(choice.control, client, generation, session)
+      else
+        self:pick_control(choice.control, choice.title, client, generation, session)
       end
     end,
   })

@@ -57,6 +57,9 @@ Controller 只保留公开入口、会话选择、服务装配和跨模块协调
   断线被当成登录请求），terminal 类型登录在 `:terminal` 中运行客户端自己配置的 agent 命令并
   追加方法给出的 args/env，退出 0 后强制重启进程再重试，agent 类型调用 `authenticate`。
   插件自身不含任何 agent 专属登录命令。
+- `agents` 模块承载每个 agent 的专属知识（模式语义、工具名、`_meta` 扩展、提问识别），
+  `generic` 不做任何推断。`session/controls` 把 configOptions、`modes` 与 profile 归类成
+  统一的 mode/model/thinking/extras，UI 只读这一份派生状态。
 - `session/update` 解码时把 JSON null 归一化为 nil；reducer 用变更日志包围一条更新，
   失败时整体回滚，不留下半更新的 block，也不破坏 UI 持有的 block 身份。
 - 创建会话期间，sessionId 尚未知晓的更新先进入有界缓冲（256 条 / 1 MiB），创建成功后

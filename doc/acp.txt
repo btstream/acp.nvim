@@ -29,6 +29,8 @@ acp.nvim 是一个 Neovim 原生的 Agent Client Protocol 客户端。
     delete       同 sessions，在浏览器内用 <C-d> 删除
     model        切换模型
     mode         切换模式
+    config       汇总切换全部会话选项（含布尔开关与思考级别）
+    agent        切换 Agent；带名称时直接切换
     reconnect    重连并恢复当前会话
     login        按 Agent 提供的登录方式登录（终端或 authenticate）
     logout       退出登录；仅当 Agent 声明支持时可用

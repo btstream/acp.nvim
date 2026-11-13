@@ -267,15 +267,30 @@ return function(t)
       end)
     end)
 
-    t.it("clears metadata when setup creates a new runtime", function()
+    t.it("keeps titles and cwds per agent across setup calls", function()
       fixture(function(s)
         s.titles.old, s.session_cwds.old = "old title", "/tmp/opencode/old-project"
         local old_titles, old_cwds = s.titles, s.session_cwds
         controller.setup({ cwd = "/tmp/opencode/new-project" })
-        t.eq(nil, s.catalog:title("old"))
-        t.eq(nil, s.catalog:cwd("old"))
-        t.falsy(s.titles == old_titles)
-        t.falsy(s.session_cwds == old_cwds)
+        -- Same agent: the cache is kept, so switching back does not refetch.
+        t.eq("old title", s.catalog:title("old"))
+        t.eq("/tmp/opencode/old-project", s.catalog:cwd("old"))
+        t.truthy(s.titles == old_titles)
+        t.truthy(s.session_cwds == old_cwds)
+      end)
+    end)
+
+    t.it("does not leak one agent's session metadata into another", function()
+      fixture(function(s)
+        s.titles.old = "opencode title"
+        controller.setup({
+          agent = "claude",
+          agents = { claude = { command = "claude-agent-acp", args = {} } },
+        })
+        t.eq(nil, s.catalog:title("old"), "another agent saw a foreign title")
+        s.titles.old = "claude title"
+        controller.setup({ agent = "opencode", agents = { opencode = { command = "opencode", args = { "acp" } } } })
+        t.eq("opencode title", s.catalog:title("old"), "switching back lost the cached title")
       end)
     end)
   end)

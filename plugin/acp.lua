@@ -45,6 +45,10 @@ local function setup()
         acp.login()
       elseif sub == "logout" then
         acp.logout()
+      elseif sub == "agent" then
+        acp.pick_agent(rest ~= "" and rest or nil)
+      elseif sub == "config" then
+        acp.pick_config()
       elseif sub == "disconnect" then
         acp.disconnect()
       elseif sub == "permission" then
@@ -84,7 +88,7 @@ local function setup()
         vim.notify("acp.nvim: unknown subcommand " .. sub, vim.log.levels.WARN)
       end
     end,
-    "open|hide|toggle|new|stop|reconnect|login|logout|disconnect|permission|sessions|delete|model|mode|file|files|image|inline|inline-stop|inline-reset|diagnostics",
+    "open|hide|toggle|new|stop|reconnect|login|logout|agent|config|disconnect|permission|sessions|delete|model|mode|file|files|image|inline|inline-stop|inline-reset|diagnostics",
     true
   )
 

@@ -3,7 +3,6 @@
 -- Nothing here sends RPC, touches windows or mutates session semantics; these
 -- helpers exist so the controller and the winbar can ask for display labels
 -- without reaching into the update reducer.
-local state = require("acp.session.state")
 
 local M = {}
 
@@ -33,42 +32,29 @@ end
 ---Extract the model and mode labels used by the composer toolbar.
 ---
 ---Called from the winbar, which Vim evaluates on every redraw (cursor moves,
----scrolls, resizes). The labels only change when the session's config options
----or current values change, so the result is memoised per option table.
+---scrolls, resizes). The labels only change when the derived controls change,
+---so the result is memoised per control object.
 ---@param session AcpSessionState
 ---@return string|nil model_label
 ---@return string|nil mode_label
+---@return string|nil thinking_label
 function M.toolbar_labels(session)
   local cached = session._toolbar_labels
-  local opts = session.config_options
-  local model = session:option_by_category("model")
-  local mode = session:option_by_category("mode")
-  local model_value = model and model.currentValue or nil
-  local mode_value = mode and mode.currentValue or nil
-  if
-    cached
-    and cached.options == opts
-    and cached.model == model
-    and cached.mode == mode
-    and cached.model_value == model_value
-    and cached.mode_value == mode_value
-  then
-    return cached.model_label, cached.mode_label
+  local controls = session.controls
+  if cached and cached.controls == controls then
+    return cached.model_label, cached.mode_label, cached.thinking_label
   end
-
-  local model_label = model and state.option_label(model, model.currentValue) or nil
-  model_label = M.short_model_name(model_label)
-  local mode_label = mode and state.option_label(mode, mode.currentValue) or nil
+  local controls_mod = require("acp.session.controls")
+  local model_label = M.short_model_name(controls_mod.label(controls and controls.model))
+  local mode_label = controls_mod.label(controls and controls.mode)
+  local thinking_label = controls_mod.label(controls and controls.thinking)
   session._toolbar_labels = {
-    options = opts,
-    model = model,
-    mode = mode,
-    model_value = model_value,
-    mode_value = mode_value,
+    controls = controls,
     model_label = model_label,
     mode_label = mode_label,
+    thinking_label = thinking_label,
   }
-  return model_label, mode_label
+  return model_label, mode_label, thinking_label
 end
 
 return M

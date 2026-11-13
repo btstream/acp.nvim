@@ -76,6 +76,17 @@ function M.paste_image(opts)
   return ensure().paste_image(opts)
 end
 
+---Switch to another configured agent, or pick one.
+---@param name string|nil
+function M.pick_agent(name)
+  ensure().pick_agent(name)
+end
+
+---Open the picker for the agent's session controls.
+function M.pick_config()
+  ensure().pick_config()
+end
+
 ---Start an inline edit at the cursor or visual selection.---@param opts {review?: "diff"|"write"}|nil
 function M.inline(opts)
   ensure()

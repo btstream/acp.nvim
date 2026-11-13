@@ -38,6 +38,7 @@ return function(t)
   t.describe("subagent turns", function()
     t.it("labels a tool call with the subagent that ran it", function()
       local s = state.new("s", "/proj")
+      s.profile = require("acp.agents").get({ profile = "opencode" })
       reducer.apply(s, {
         sessionUpdate = "tool_call",
         toolCallId = "t1",
@@ -52,6 +53,7 @@ return function(t)
 
     t.it("leaves a tool call without subagent metadata unlabelled", function()
       local s = state.new("s", "/proj")
+      s.profile = require("acp.agents").get({ profile = "opencode" })
       reducer.apply(s, {
         sessionUpdate = "tool_call",
         toolCallId = "t1",
@@ -65,6 +67,7 @@ return function(t)
 
     t.it("renders a subagent's answer as ordinary agent text", function()
       local s = state.new("s", "/proj")
+      s.profile = require("acp.agents").get({ profile = "opencode" })
       reducer.apply(s, {
         sessionUpdate = "agent_message_chunk",
         messageId = "m1",
@@ -82,6 +85,7 @@ return function(t)
       -- Two different speakers must not share a block: appending would hide who
       -- said what behind a single header.
       local s = state.new("s", "/proj")
+      s.profile = require("acp.agents").get({ profile = "opencode" })
       reducer.apply(s, {
         sessionUpdate = "agent_message_chunk",
         messageId = "m1",
@@ -110,6 +114,7 @@ return function(t)
       -- wrapped and broke the transcript's alignment.
       for _, width in ipairs({ 40, 60, 80, 120 }) do
         local s = state.new("s", "/proj")
+        s.profile = require("acp.agents").get({ profile = "opencode" })
         s:append({
           id = "t",
           kind = "tool",
@@ -128,6 +133,7 @@ return function(t)
 
     t.it("keeps a short subagent title without truncating the call", function()
       local s = state.new("s", "/proj")
+      s.profile = require("acp.agents").get({ profile = "opencode" })
       s:append({
         id = "t",
         kind = "tool",
@@ -148,6 +154,7 @@ return function(t)
       local config = require("acp.config")
       t.truthy(chat and config)
       local s = state.new("s", "/proj")
+      s.profile = require("acp.agents").get({ profile = "opencode" })
       s:append({ id = "t", kind = "tool", tool_kind = "read", title = "Read", status = "completed" })
       local before = blocks.render_block(s.blocks[1], ctx())
       t.falsy(text_of(before):find("subagent", 1, true))

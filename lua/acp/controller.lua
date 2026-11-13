@@ -648,6 +648,63 @@ function M.logout()
   end
 end
 
+---Switch the agent, reusing the current configuration for everything else.
+---@param name string|nil
+function M.pick_agent(name)
+  if not S.config then
+    return
+  end
+  local names = vim.tbl_keys(S.config.agents)
+  table.sort(names)
+  local function switch(target)
+    if target == S.config.agent then
+      notify("already using " .. target, vim.log.levels.INFO)
+      return
+    end
+    local opts = vim.deepcopy(S.config)
+    opts.agent = target
+    pcall(function()
+      require("acp.inline").stop()
+    end)
+    M.setup(opts, { discard_queued = true })
+    notify("Switched to " .. target, vim.log.levels.INFO)
+    M.open()
+  end
+  if name and name ~= "" then
+    if not S.config.agents[name] then
+      notify("unknown agent " .. name .. "; configured: " .. table.concat(names, ", "), vim.log.levels.WARN)
+      return
+    end
+    switch(name)
+    return
+  end
+  if #names == 1 then
+    switch(names[1])
+    return
+  end
+  local items = {}
+  for _, candidate in ipairs(names) do
+    local cfg = S.config.agents[candidate]
+    items[#items + 1] = {
+      label = candidate .. (candidate == S.config.agent and " (current)" or ""),
+      description = table.concat(vim.list_extend({ cfg.command or "" }, cfg.args or {}), " "),
+      value = candidate,
+    }
+  end
+  require("acp.ui.picker").select({
+    title = "Agent",
+    items = items,
+    on_choice = switch,
+  })
+end
+
+---Open the picker for every session control the agent offers.
+function M.pick_config()
+  if S.options then
+    S.options:pick_config()
+  end
+end
+
 ---Create a new session with the current agent.
 function M.new_session()
   if S.sessions_service then
@@ -1292,8 +1349,23 @@ function M.setup(opts, action)
   end
   S.session = nil
   S.sessions = {}
-  S.runtime = Runtime.new(merged.memory, S.sessions, merged.ui.thoughts)
+  S.runtime = Runtime.new(
+    merged.memory,
+    S.sessions,
+    merged.ui.thoughts,
+    require("acp.agents").get(merged.agents[merged.agent], merged.agent)
+  )
   S.titles, S.session_cwds = {}, {}
+  -- Titles and cwds are cached per agent: switching agents must not show one
+  -- agent's session titles for another's sessions, and switching back restores
+  -- what was already learned.
+  S.agent_store = S.agent_store or {}
+  local store = S.agent_store[merged.agent]
+  if not store then
+    store = { titles = {}, cwds = {} }
+    S.agent_store[merged.agent] = store
+  end
+  S.titles, S.session_cwds = store.titles, store.cwds
   S.catalog = Catalog.new({
     titles = function()
       return S.titles

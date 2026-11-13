@@ -125,9 +125,9 @@ function Chrome:composer_bar(win)
   self.last_eval_at = self.clock()
   self.stats.last_bar_status = waiting and "waiting" or (session and session.status or "idle")
   self.stats.last_evaluated_frame = self.stats.last_bar_status == "running" and self.frame or nil
-  local model, mode
+  local model, mode, thinking
   if session then
-    model, mode = presenter.toolbar_labels(session)
+    model, mode, thinking = presenter.toolbar_labels(session)
   end
 
   local input = self.get_input()
@@ -144,6 +144,7 @@ function Chrome:composer_bar(win)
     icons = cfg.ui.icons,
     mode = mode,
     model = model,
+    thinking = thinking,
     status = session and session.status or "idle",
     waiting = waiting,
     queued = session and #session.queue or 0,

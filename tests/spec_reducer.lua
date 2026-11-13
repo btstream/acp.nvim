@@ -296,22 +296,24 @@ return function(t)
 
     t.it("resolves toolbar labels from config options", function()
       local s = state.new("s1", "/tmp")
-      s.config_options = {
-        {
-          id = "model",
-          category = "model",
-          type = "select",
-          currentValue = "m2",
-          options = { { value = "m1", name = "One" }, { value = "m2", name = "Two" } },
+      s:configure({
+        configOptions = {
+          {
+            id = "model",
+            category = "model",
+            type = "select",
+            currentValue = "m2",
+            options = { { value = "m1", name = "One" }, { value = "m2", name = "Two" } },
+          },
+          {
+            id = "mode",
+            category = "mode",
+            type = "select",
+            currentValue = "code",
+            options = { { value = "code", name = "Code" } },
+          },
         },
-        {
-          id = "mode",
-          category = "mode",
-          type = "select",
-          currentValue = "code",
-          options = { { value = "code", name = "Code" } },
-        },
-      }
+      })
       local model, mode = presenter.toolbar_labels(s)
       t.eq("Two", model)
       t.eq("Code", mode)
@@ -319,32 +321,36 @@ return function(t)
 
     t.it("drops the provider prefix from the toolbar model", function()
       local s = state.new("s", "/tmp")
-      s.config_options = {
-        {
-          id = "model",
-          category = "model",
-          type = "select",
-          currentValue = "commandcode/deepseek-v4.1-flash",
-          options = {
-            { value = "commandcode/deepseek-v4.1-flash", name = "commandcode/DeepSeek V4.1 Flash" },
+      s:configure({
+        configOptions = {
+          {
+            id = "model",
+            category = "model",
+            type = "select",
+            currentValue = "commandcode/deepseek-v4.1-flash",
+            options = {
+              { value = "commandcode/deepseek-v4.1-flash", name = "commandcode/DeepSeek V4.1 Flash" },
+            },
           },
         },
-      }
+      })
       local model = presenter.toolbar_labels(s)
       t.eq("DeepSeek V4.1 Flash", model)
     end)
 
     t.it("keeps a name that has no provider prefix", function()
       local s = state.new("s", "/tmp")
-      s.config_options = {
-        {
-          id = "model",
-          category = "model",
-          type = "select",
-          currentValue = "openai/gpt-5",
-          options = { { value = "openai/gpt-5", name = "GPT-5" } },
+      s:configure({
+        configOptions = {
+          {
+            id = "model",
+            category = "model",
+            type = "select",
+            currentValue = "openai/gpt-5",
+            options = { { value = "openai/gpt-5", name = "GPT-5" } },
+          },
         },
-      }
+      })
       local model = presenter.toolbar_labels(s)
       t.eq("GPT-5", model)
     end)

@@ -320,7 +320,7 @@ return function(t)
 
     -- Modes and terminal output -----------------------------------------------
 
-    t.pending("reads the current legacy mode", "phase 5: controls", function()
+    t.it("reads the current legacy mode", function()
       local client, ctx = start("claude")
       local _, _, _, created = prompt(client, ctx, "hello")
       local session = state.new(created.sessionId, root)

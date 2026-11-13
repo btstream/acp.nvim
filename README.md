@@ -592,8 +592,11 @@ require("acp").setup({
 require("acp").setup({
   agent = "opencode",
   agents = {
-    opencode = { command = "opencode", args = { "acp" } },
-    -- 任何 ACP Agent 都可以这样接入
+    -- 内置预设；只覆盖你想改的字段
+    opencode = { command = "opencode", args = { "acp" }, profile = "opencode" },
+    claude = { command = "claude-agent-acp", args = {}, profile = "claude" },
+    pi = { command = "npx", args = { "-y", "pi-acp" }, profile = "pi" },
+    -- 任何 ACP Agent 都可以这样接入；profile 省略时按名称推断，否则用 generic
     other = { command = "my-agent", args = { "--acp" } },
   },
 
@@ -1162,6 +1165,14 @@ Agent 崩溃或退出时，正在运行的工具会被标记为失败，并提�
    > 不需要改为 `a`；`mouse = ""` 会关闭鼠标支持。终端也须正确转发鼠标事件。
 2. 输入时按 `<M-m>` 切换模型、`<M-b>` 切换模式。
 3. 普通模式按 `M` / `m`，或执行 `:Acp model` / `:Acp mode`。
+
+`:Acp config` 把 Agent 提供的所有会话选项（模式、模型、思考级别、布尔开关及其它配置）放在
+一个选择器里；布尔选项选中即翻转，不再弹第二层选择器。工具栏上模式是左侧徽标，思考级别是
+它旁边的小标记。
+
+切换 Agent 用 `:Acp agent`（或 `:Acp agent claude` 直接指定）。每个 Agent 的会话标题与工作
+目录分开缓存，切换回来时不会串台。内置 `opencode`、`claude`、`pi` 三个预设，只覆盖你要改的
+字段即可。
 
 普通选择器（模型、模式、权限确认）默认走 **`vim.ui.select`**，因此
 telescope、fzf-lua、snacks.nvim、dressing 等插件会自动接管，无需额外配置。

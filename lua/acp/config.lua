@@ -15,6 +15,19 @@ M.defaults = {
     opencode = {
       command = "opencode",
       args = { "acp" },
+      profile = "opencode",
+    },
+    -- The two other agents the compatibility work targets. A user config
+    -- merged over these keeps the preset and can override any field.
+    claude = {
+      command = "claude-agent-acp",
+      args = {},
+      profile = "claude",
+    },
+    pi = {
+      command = "npx",
+      args = { "-y", "pi-acp" },
+      profile = "pi",
     },
   },
 
@@ -858,6 +871,9 @@ function M.validate(cfg)
   agent.args = agent.args or {}
   if not vim.islist(agent.args) then
     fail("agents.%s.args must be a list", cfg.agent)
+  end
+  if agent.profile ~= nil and type(agent.profile) ~= "string" then
+    fail("agents.%s.profile must be a string", cfg.agent)
   end
   if agent.env ~= nil then
     if type(agent.env) ~= "table" then

@@ -115,6 +115,19 @@ local function maybe_auto_expand(session, block)
   end
 end
 
+---Ask the agent profile what an update carries beyond the protocol core.
+---@param session table
+---@param update table
+---@return table|nil
+local function profile_meta(session, update)
+  local profile = session.profile
+  if not profile or not profile.update_meta then
+    return nil
+  end
+  local seen = profile.update_meta(update, session)
+  return type(seen) == "table" and seen or nil
+end
+
 local function merge_list(current, incoming)
   if incoming == nil then
     return current
@@ -256,7 +269,8 @@ local function reduce(session, update, tx)
       return false
     end
     local block = session:append_text("agent", text, update.messageId, tx)
-    tx:set(block, "child", update._meta and update._meta["opencode/child-session"] or nil)
+    local seen = profile_meta(session, update)
+    tx:set(block, "child", seen and seen.child or nil)
     return true
   end
 
@@ -290,7 +304,10 @@ local function reduce(session, update, tx)
         raw_input = update.rawInput,
         raw_output = update.rawOutput,
         expanded = false,
-        child = update._meta and update._meta["opencode/child-session"] or nil,
+        child = (function()
+          local seen = profile_meta(session, update)
+          return seen and seen.child or nil
+        end)(),
       }, tx)
       tx:set(session.tools, id, block)
     end
@@ -395,6 +412,16 @@ local function reduce(session, update, tx)
       return false
     end
     tx:set(session, "current_mode", update.currentModeId)
+    -- Config options are authoritative, so a mode change must also update the
+    -- value the controls were derived from. ExitPlanMode relies on this: the
+    -- agent announces the new mode without a set_mode response.
+    for _, option in ipairs(session.config_options or {}) do
+      if option.category == "mode" then
+        tx:block(nil)
+        tx:set(option, "currentValue", update.currentModeId)
+      end
+    end
+    session:refresh_controls(tx)
     return true
   end
 
@@ -404,6 +431,7 @@ local function reduce(session, update, tx)
       return false
     end
     tx:set(session, "config_options", options)
+    session:refresh_controls(tx)
     return true
   end
 
@@ -411,13 +439,16 @@ local function reduce(session, update, tx)
     if update.title then
       tx:set(session, "title", update.title)
     end
-    local meta = update._meta or {}
-    if meta["opencode/retry"] ~= nil then
-      tx:set(session, "retry", meta["opencode/retry"])
+    -- Agent-specific metadata is read by the profile: the reducer knows what
+    -- to do with a retry marker or a compaction marker, not where an agent
+    -- happens to store them.
+    local meta_seen = profile_meta(session, update)
+    if type(meta_seen) == "table" and meta_seen.retry ~= nil then
+      tx:set(session, "retry", meta_seen.retry)
       return true
     end
-    if meta["opencode/compaction"] then
-      local marker = meta["opencode/compaction"]
+    local marker = type(meta_seen) == "table" and meta_seen.compaction or nil
+    if marker then
       tx:set(session, "compaction", marker)
       if marker.status == "started" then
         session:append({
@@ -569,7 +600,9 @@ function M.apply(session, update)
         break
       end
     end
-  elseif kind == "session_info_update" and update._meta and update._meta["opencode/compaction"] then
+  elseif kind == "session_info_update" and session.compaction ~= nil then
+    -- A compaction marker was accepted for this update; repaint the card so a
+    -- changed status is visible even when no block was appended.
     for _, block in ipairs(session.blocks) do
       if block.kind == "compaction" then
         session:touch(block, false)

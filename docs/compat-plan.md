@@ -378,6 +378,15 @@ agent 类型调用 `authenticate`。连续失败最多重试 2 次后停止；`:
 `current_mode_update` 后徽章更新；boolean 配置项可以切换。
 **验收（M2）**：用 pi 手工验证：模型和思考级别可以切换，提问可以回答，bash 输出可读（依赖阶段 6.1）。
 
+**状态**：已完成（bash 输出仍依赖阶段 6.1）。内置 `claude` / `pi` 预设并按 agent 名称推断
+profile；新增 `agents` 模块承载模式语义、工具名、`_meta` 解析与提问识别，OpenCode 的
+`retry`/`compaction`/`child-session` 从 reducer 移出。新增 `session/controls`：configOptions
+优先并忽略重复的 `modes`，只有 `modes` 时按 profile 分出工作模式与思考级别，模式语义先读
+`_meta.kind`。修正 `modes.currentModeId` 层级与 `current_mode_update` 的 controls 刷新。
+`app/options` 按 control id 切换，boolean 直接翻转，`set_mode` 与 `set_config_option` 各走
+其源；新增 `:Acp config` 与 `:Acp agent [name]`，后者按 agent 分开保存会话标题与 cwd。工具栏
+增加思考级别标记。
+
 ---
 
 ## 阶段 6：呈现补全

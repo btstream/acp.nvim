@@ -662,3 +662,24 @@ native/edgy/reconnect、性能 smoke、tail/spinner 附加 UI 回归通过。
   场景与 `logout`，并把非认证失败从 `-32000` 改为 `-32099`。
 
 验证：977 项单元/组件测试通过，0 失败，3 项 pending（终端输出 ×2、controls）。
+
+## 多 agent 兼容阶段 5（2026-11-12）
+
+agent profile 与规范化 controls：
+
+- 内置 `claude` 与 `pi` 预设；用户配置按字段合并，不会替换掉预设。`profile` 省略时按 agent
+  名称推断，未知 agent 用 `generic`。
+- 新增 `lua/acp/agents/init.lua`：`plan_mode`、`unsafe_edit_mode`、`tool_name`、
+  `update_meta`、`is_question`、`classify_mode`、`install_hint`，全部有 generic 默认值。
+  OpenCode 的 `retry` / `compaction` / `child-session` 解析从 reducer 移入 profile。
+- 新增 `lua/acp/session/controls.lua`：有 configOptions 时忽略 `modes`（pi 两者重复）；
+  只有 `modes` 时按 profile 分类为工作模式或思考级别；模式语义优先读选项 `_meta.kind`。
+  修正 `state.lua` 从 `result.modes.currentModeId` 读取当前模式；`current_mode_update` 同时
+  更新 controls 和 configOptions。
+- `app/options` 按 control id 选择，boolean 直接切换，`session/set_mode` 与
+  `session/set_config_option` 各走其源；新增 `:Acp config` 汇总全部 controls。
+- 工具栏只读 controls：徽章按 `plan` 判定，思考级别单独显示小幅标记。
+- 新增 `:Acp agent [name]`：切换 agent 时关闭当前连接、保留各自会话元数据。
+- 新增 profile、controls 推导、切换方法、boolean 切换、曲面切换的单元与 controller 级测试。
+
+验证：999 项单元/组件测试通过，0 失败，2 项 pending（终端输出 ×2）。

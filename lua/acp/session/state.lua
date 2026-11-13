@@ -113,6 +113,8 @@ end
 ---@field config_options table[]
 ---@field modes table[]|nil
 ---@field current_mode string|nil
+---@field controls table|nil derived, see session/controls.lua
+---@field profile table|nil agent profile, set once at creation
 ---@field commands table[]
 ---@field usage table|nil
 ---@field queue table[]
@@ -140,6 +142,8 @@ function M.new(id, cwd, limits)
     config_options = {},
     modes = nil,
     current_mode = nil,
+    controls = nil,
+    profile = nil,
     commands = {},
     usage = nil,
     queue = queue,
@@ -240,8 +244,24 @@ function Session:configure(result)
     self.config_options = result.configOptions
   end
   if result.modes then
-    self.modes, self.current_mode = result.modes, result.currentModeId
+    -- `modes` carries a nested state object: the current id lives inside it,
+    -- not on the response. Reading `result.currentModeId` silently produced
+    -- nil and the plan badge never matched.
+    self.modes = result.modes
+    self.current_mode = result.modes.currentModeId or self.current_mode
+  elseif result.currentModeId then
+    self.current_mode = result.currentModeId
   end
+  self:refresh_controls()
+end
+
+---Recompute derived controls after any mode/config change.
+---@param tx table|nil transaction journal, so a rolled-back update also
+---  restores the previous controls
+function Session:refresh_controls(tx)
+  local agent = require("acp.agents")
+  local profile = self.profile or agent.get(nil, self.agent_name)
+  set(tx, self, "controls", require("acp.session.controls").build(self, profile))
 end
 
 function Session:set_option(option, value, result)

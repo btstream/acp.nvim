@@ -172,7 +172,7 @@ function M.status_text(status, ic, spinner)
 end
 
 ---Build the composer toolbar.
----@param info {mode: string|nil, model: string|nil, status: string, waiting: boolean|nil, queued: integer|nil, usage: table|nil, spinner: string|nil, show_usage: boolean|nil, chips: string[]|nil}
+---@param info {mode: string|nil, model: string|nil, thinking: string|nil, status: string, waiting: boolean|nil, queued: integer|nil, usage: table|nil, spinner: string|nil, show_usage: boolean|nil, chips: string[]|nil}
 ---@param width integer available cells (the whole window width)
 ---@return string
 function M.render(info, width)
@@ -250,6 +250,11 @@ function M.render(info, width)
 
   if info.model and info.model ~= "" then
     push_left(info.model, "AcpToolbarAccent", "AcpPickModel")
+  end
+  -- Thinking level is orthogonal to the work mode, so it gets its own small
+  -- marker instead of sharing the mode badge.
+  if info.thinking and info.thinking ~= "" then
+    push_left(M.truncate(info.thinking, 12), "AcpMuted")
   end
   if info.show_usage and info.usage and info.usage.size and info.usage.size > 0 then
     local pct = math.floor((info.usage.used or 0) / info.usage.size * 100 + 0.5)
