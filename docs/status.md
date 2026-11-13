@@ -702,10 +702,14 @@ agent profile 与规范化 controls：
 - tool card：`rawOutput` 在没有其它 content 时显示（不再只在 failed 时）；content 里的
   `resource` / `resource_link` 显示为 URI 摘要；标题两侧反引号被去掉；Claude 的
   `rawInput.edits[]` 每个 hunk 都还原为 diff（此前只看第一个）。
-- plan：以 turn 号为界复用同一块，agent 文本不再打断查找；`priority = high` 显示标记。
+  「是否有可渲染文本」以 `detail` 是否为 nil 判定，而不是 content 条目数：`terminal` 条目
+  自身不带文本，按条目数判断会让 `rawOutput` 被跳过、卡片留空。
+- plan：以 turn 号为界复用同一块，agent 文本不再打断查找；`priority = high` 显示标记；
+  回放提交后清掉回放块的 turn 标记，避免首个 live plan 被折进历史。
 - 停止原因：`max_tokens`、`max_turn_requests`、`refusal` 在回合末尾追加一条 notice，
-  同一回合重复结算不会重复插入。
-- 其它：工具栏显示 usage 的 `cost`；记录 `session_info_update.updatedAt`；音频 content 显示
-  为 `[audio]`；`notice` 的块 id 改为单调计数器（此前用 `#blocks`，裁剪后会重用）。
+  按 turn 号去重（迟到更新插在两次结算之间也不会重复）。
+- 其它：工具栏显示 usage 的 `cost`（小于 0.0001 时用科学计数，避免显示成 0.0000）；
+  记录 `session_info_update.updatedAt`；音频 content 显示为 `[audio]`；`notice` 的块 id
+  改为单调计数器（此前用 `#blocks`，裁剪后会重用）。
 
-验证：1027 项单元/组件测试通过，0 失败，0 项 pending。
+验证：1033 项单元/组件测试通过，0 失败，0 项 pending。

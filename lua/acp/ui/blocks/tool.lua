@@ -123,6 +123,22 @@ local function tool_label(block)
   return "Tool"
 end
 
+---Whether `rawOutput` is the only thing the card can show.
+---
+---A content item can carry no text at all (a `terminal` the client renders
+---itself, or a diff). Counting items therefore said "there is content" while
+---the body stayed empty. The rendered summary and the terminal buffer are the
+---real signals.
+---@param block AcpBlock
+---@return boolean
+local function can_show_raw_output(block)
+  if block.terminal_output and block.terminal_output ~= "" then
+    return false
+  end
+  local detail = block.detail
+  return detail == nil or detail == ""
+end
+
 ---Secondary descriptor shown after the label: the agent's own summary of what
 ---the call does, which is usually more specific than the kind.
 ---@param block AcpBlock
@@ -347,9 +363,11 @@ function M.render_tool(block, ctx)
     for _, line in ipairs(render_text(dump, "AcpToolError", ctx.width - 4)) do
       body_lines[#body_lines + 1] = line
     end
-  elseif block.raw_output and block.detail == "" and (block.content == nil or #block.content == 0) then
-    -- An agent that reports only structured output (no text content) would
-    -- otherwise show an empty card. `failed` keeps its error styling above.
+  elseif block.raw_output and can_show_raw_output(block) then
+    -- An agent that reports only structured output (no renderable text) would
+    -- otherwise show an empty card. Checking the rendered text rather than the
+    -- number of content items matters: a `terminal` item carries no text, and
+    -- counting it used to hide the output that was actually there.
     local dump = type(block.raw_output) == "string" and block.raw_output or vim.inspect(block.raw_output)
     if dump ~= "" then
       for _, line in ipairs(render_text("```\n" .. dump .. "\n```", nil, ctx.width - 4)) do

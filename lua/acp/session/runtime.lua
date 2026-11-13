@@ -151,6 +151,14 @@ function Runtime:commit(session)
   -- Blocks replayed so far stay collapsed (they carry explicit `expanded`),
   -- while new work after this point is live and follows the live defaults.
   session.historical = false
+  -- Replayed plans were recorded at turn 0 because no turn was running. Clear
+  -- the marker so the first live plan starts its own block instead of being
+  -- folded into history.
+  for _, block in ipairs(session.blocks) do
+    if block.kind == "plan" then
+      block.turn = nil
+    end
+  end
   return true
 end
 

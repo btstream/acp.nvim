@@ -22,8 +22,9 @@ function M.render_plan(block, ctx)
       mark, hl = ic.tool_pending, "AcpPlanPending"
     end
     local text = "  " .. mark .. " " .. one_line(entry.content or "")
-    -- `priority` is advisory, but "high" is worth showing: it is the agent
-    -- saying what it will do first.
+    -- `priority` only gets a marker for "high". Every entry carries a priority
+    -- in practice, so rendering all of them would add noise to each line
+    -- without telling the reader which step the agent considers urgent.
     if entry.priority == "high" then
       text = text .. "  (high)"
     end

@@ -122,7 +122,43 @@ return function(t)
         status = "completed",
         content = { { type = "terminal", terminalId = "t1" } },
       })
-      t.falsy((s.tools.t1.detail or ""):find("terminal:", 1, true))
+      -- nil, not "": the card uses nil to mean "nothing renderable here".
+      t.eq(nil, s.tools.t1.detail)
+    end)
+
+    t.it("falls back to rawOutput when the only content is a terminal", function()
+      local s = tool_session()
+      reducer.apply(s, {
+        sessionUpdate = "tool_call",
+        toolCallId = "t1",
+        kind = "read",
+        title = "Read",
+        status = "completed",
+        content = { { type = "terminal", terminalId = "x" } },
+        rawOutput = "OUT",
+      })
+      local block = s.tools.t1
+      block.expanded = true
+      local rendered = text_of(blocks.render_block(block, ctx()))
+      t.match("OUT", rendered)
+    end)
+
+    t.it("prefers terminal output over rawOutput", function()
+      local s = tool_session("pi")
+      reducer.apply(s, {
+        sessionUpdate = "tool_call",
+        toolCallId = "t1",
+        kind = "execute",
+        title = "ls",
+        status = "completed",
+        rawOutput = "RAW",
+        _meta = { terminal_output = { terminal_id = "t1", data = "TERM" } },
+      })
+      local block = s.tools.t1
+      block.expanded = true
+      local rendered = text_of(blocks.render_block(block, ctx()))
+      t.match("TERM", rendered)
+      t.falsy(rendered:find("RAW", 1, true), "rawOutput duplicated the terminal output")
     end)
   end)
 
@@ -176,6 +212,21 @@ return function(t)
       local detail = s.tools.t1.detail or ""
       t.match("file:///a%.lua", detail)
       t.match("%[b%.lua%]", detail)
+    end)
+
+    t.it("does not render an empty pair of backticks for a resource without a uri", function()
+      local s = tool_session()
+      reducer.apply(s, {
+        sessionUpdate = "tool_call",
+        toolCallId = "t1",
+        kind = "read",
+        title = "Read",
+        status = "completed",
+        content = { { type = "resource", resource = { text = "hello" } } },
+      })
+      local detail = s.tools.t1.detail or ""
+      t.falsy(detail:find("``", 1, true), "rendered empty backticks")
+      t.match("%[resource%]", detail)
     end)
 
     t.it("strips backticks from a tool title", function()
@@ -284,6 +335,25 @@ return function(t)
       local rendered = text_of(blocks.render_block(s.blocks[1], ctx()))
       t.match("%(high%)", rendered)
     end)
+
+    t.it("starts a fresh plan after a replay is committed", function()
+      local Runtime = require("acp.session.runtime")
+      local runtime = Runtime.new(require("acp.config").defaults.memory, {}, nil)
+      local staged = runtime:stage("s", "/proj")
+      reducer.apply(staged, { sessionUpdate = "plan", entries = { { content = "replayed" } } })
+      t.eq(0, staged.blocks[1].turn)
+      runtime:commit(staged)
+      -- A live plan must not be folded into the replayed one, even before a
+      -- turn counter is bumped.
+      reducer.apply(staged, { sessionUpdate = "plan", entries = { { content = "live" } } })
+      local plans = 0
+      for _, block in ipairs(staged.blocks) do
+        if block.kind == "plan" then
+          plans = plans + 1
+        end
+      end
+      t.eq(2, plans)
+    end)
   end)
 
   t.describe("stop reasons", function()
@@ -316,6 +386,39 @@ return function(t)
         end
       end
       t.eq(1, notices)
+    end)
+
+    t.it("does not repeat the notice when a late update lands between settlements", function()
+      local s = tool_session()
+      s:begin_turn()
+      s:finish_turn("max_tokens")
+      -- ACP allows final updates after session/cancel, so a block can arrive
+      -- between the two finish_turn calls. Deduplicating by "last block" would
+      -- then append a second notice for the same turn.
+      reducer.apply(s, { sessionUpdate = "agent_message_chunk", content = { type = "text", text = "late" } })
+      s:finish_turn("max_tokens")
+      local notices = 0
+      for _, block in ipairs(s.blocks) do
+        if block.kind == "notice" then
+          notices = notices + 1
+        end
+      end
+      t.eq(1, notices)
+    end)
+
+    t.it("shows a new notice for a later truncated turn", function()
+      local s = tool_session()
+      s:begin_turn()
+      s:finish_turn("max_tokens")
+      s:begin_turn()
+      s:finish_turn("refusal")
+      local notices = 0
+      for _, block in ipairs(s.blocks) do
+        if block.kind == "notice" then
+          notices = notices + 1
+        end
+      end
+      t.eq(2, notices)
     end)
 
     t.it("stays silent for a normal turn", function()

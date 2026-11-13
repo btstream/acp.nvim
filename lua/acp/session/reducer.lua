@@ -36,42 +36,57 @@ end
 ---@param resource table
 ---@return string
 local function resource_summary(resource)
-  local uri = resource.uri or ""
-  if type(resource.text) == "string" then
-    return string.format("`%s` (%d lines)", uri, select(2, resource.text:gsub("\n", "")) + 1)
+  local uri = type(resource.uri) == "string" and resource.uri or ""
+  local lines = type(resource.text) == "string" and (select(2, resource.text:gsub("\n", "")) + 1) or nil
+  if uri == "" then
+    -- The protocol requires a URI, but a malformed resource must not render as
+    -- an empty pair of backticks.
+    return lines and string.format("[resource] (%d lines)", lines) or "[resource]"
   end
-  return uri ~= "" and string.format("`%s`", uri) or "[resource]"
+  if lines then
+    return string.format("`%s` (%d lines)", uri, lines)
+  end
+  return string.format("`%s`", uri)
 end
 
 local function tool_content_text(content)
   local parts = {}
   for _, item in ipairs(content or {}) do
-    if item.type == "content" then
-      local inner = item.content or {}
-      if inner.type == "text" then
-        parts[#parts + 1] = inner.text or ""
-      elseif inner.type == "image" then
-        parts[#parts + 1] = "[image]"
-      elseif inner.type == "audio" then
-        parts[#parts + 1] = "[audio]"
+    -- A terminal the client created is rendered from its own buffer. Agents
+    -- that never called `terminal/create` (pi) only send an id and put the
+    -- output in `_meta`, so a bare id contributes no text. Pushing an empty
+    -- string here made `detail` `""` instead of nil, which then looked like
+    -- content when the card decided whether to fall back to `rawOutput`.
+    if item.type ~= "terminal" then
+      if item.type == "content" then
+        local inner = item.content or {}
+        if inner.type == "text" then
+          parts[#parts + 1] = inner.text or ""
+        elseif inner.type == "image" then
+          parts[#parts + 1] = "[image]"
+        elseif inner.type == "audio" then
+          parts[#parts + 1] = "[audio]"
+        end
+      elseif item.type == "diff" then
+        -- A diff with text is rendered as a diff; only the path-only form has
+        -- to fall back to a summary line. Keeping it out of `detail` also
+        -- means the collapsed preview shows the agent's own summary instead
+        -- of a path.
+        if item.oldText == nil and item.newText == nil and item.path then
+          parts[#parts + 1] = string.format("diff: %s", item.path)
+        end
+      elseif item.type == "resource" and type(item.resource) == "table" then
+        parts[#parts + 1] = resource_summary(item.resource)
+      elseif item.type == "resource_link" then
+        parts[#parts + 1] = string.format("[%s](%s)", item.name or item.uri or "", item.uri or "")
       end
-    elseif item.type == "diff" then
-      -- A diff with text is rendered as a diff; only the path-only form has to
-      -- fall back to a summary line. Keeping it out of `detail` also means the
-      -- collapsed preview shows the agent's own summary instead of a path.
-      if item.oldText == nil and item.newText == nil and item.path then
-        parts[#parts + 1] = string.format("diff: %s", item.path)
-      end
-    elseif item.type == "terminal" then
-      -- A terminal the client created is rendered from its own buffer. Agents
-      -- that never called `terminal/create` (pi) only send an id and put the
-      -- output in `_meta`, so a bare id is not worth a line.
-      parts[#parts + 1] = item.terminalId and "" or ""
-    elseif item.type == "resource" and type(item.resource) == "table" then
-      parts[#parts + 1] = resource_summary(item.resource)
-    elseif item.type == "resource_link" then
-      parts[#parts + 1] = string.format("[%s](%s)", item.name or item.uri or "", item.uri or "")
     end
+  end
+  -- Empty means "nothing renderable", not "an empty summary". Callers use nil
+  -- to decide whether a fallback (terminal output, rawOutput) is needed, and
+  -- `""` would look like content that renders to nothing.
+  if #parts == 0 then
+    return nil
   end
   return table.concat(parts, "\n")
 end
@@ -103,11 +118,12 @@ end
 ---@param block AcpBlock
 ---@return boolean
 local function has_payload(block)
-  if block.detail ~= nil and block.detail ~= "" then
-    return true
-  end
-  if #(block.content or {}) > 0 then
-    return true
+  -- `detail` is nil exactly when no content item carried renderable text (a
+  -- `terminal` the client renders itself, or a bare diff), and non-nil
+  -- otherwise. Expanding on a payload-less card would open an empty card, so
+  -- the content count is not consulted.
+  if block.detail ~= nil then
+    return block.detail ~= ""
   end
   local input = block.raw_input
   if type(input) == "table" then

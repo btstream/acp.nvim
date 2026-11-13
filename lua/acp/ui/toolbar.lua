@@ -291,7 +291,12 @@ function M.render(info, width)
     local amount = info.usage.cost.amount
     local currency = info.usage.cost.currency or ""
     if type(amount) == "number" and amount > 0 then
-      local text = currency ~= "" and string.format("%.4f %s", amount, currency) or string.format("%.4f", amount)
+      -- Four decimals reads well for cents but rounds a sub-cent turn to
+      -- "0.0000", which looks like "free". Fall back to significant digits.
+      local text = amount < 0.0001 and string.format("%.2e", amount) or string.format("%.4f", amount)
+      if currency ~= "" then
+        text = text .. " " .. currency
+      end
       push_left(text, "AcpMuted")
     end
   end

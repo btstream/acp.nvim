@@ -131,6 +131,7 @@ end
 ---@field config_options table[]
 ---@field modes table[]|nil
 ---@field current_mode string|nil
+---@field stop_notice_turn integer|nil turn whose truncation notice was already shown
 ---@field controls table|nil derived, see session/controls.lua
 ---@field profile table|nil agent profile, set once at creation
 ---@field commands table[]
@@ -515,15 +516,16 @@ function Session:finish_turn(stop_reason)
     end
   end
   -- A turn that stopped early leaves the answer incomplete; say why instead of
-  -- ending the transcript on a half-finished tool card. `finish_turn` may run
-  -- more than once for one turn (settlement plus the task's finalizer), so the
-  -- last block is consulted before appending.
+  -- ending the transcript on a half-finished tool card.
+  --
+  -- Deduplicated by turn, not by the last block: `finish_turn` runs more than
+  -- once per turn (settlement plus the task finalizer), and ACP allows the agent
+  -- to send final updates after `session/cancel`, which puts a block between
+  -- those two calls.
   local notice = M.stop_reason_notice(stop_reason)
-  if notice then
-    local last = self.blocks[#self.blocks]
-    if not (last and last.kind == "notice" and last.text == notice) then
-      self:append({ id = next_id("stop"), kind = "notice", text = notice, severity = "warning" })
-    end
+  if notice and self.stop_notice_turn ~= self.turn then
+    self.stop_notice_turn = self.turn
+    self:append({ id = next_id("stop"), kind = "notice", text = notice, severity = "warning", turn = self.turn })
   end
   self.status = "idle"
   self.pending_user = nil
