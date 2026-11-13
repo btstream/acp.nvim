@@ -735,5 +735,9 @@ inline 安全与提问：
 - **transcript 噪音**：inline 的生成 prompt 折叠为一行摘要（`inline: <请求>`），展开后
   才显示完整说明；`user` 块新增 `display_text` 字段承载摘要。
 - 保留同目录隐藏副本作为默认 `inline.copy_dir`（用户确认），state 目录仍可配置。
+- 新增 `tests/integration_inline_safety.lua`：直接写入被检出并可用「从磁盘重新加载」恢复、
+  `delete` 在 `allow_commands = true` 下仍被拒绝、inline 回合中的提问送达呈现器。
 
-验证：1056 项单元/组件测试通过，0 失败，0 项 pending。
+验证：1064 项单元/组件测试通过，0 失败，0 项 pending；inline 安全集成脚本 3 项通过。
+已知：`tests/integration_inline.lua`（阶段 7 之前就存在）依赖交互式权限选择，在 headless
+下会在权限提示处停顿，通过项数在 7–10 之间浮动，不作为门禁使用。

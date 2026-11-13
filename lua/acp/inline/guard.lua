@@ -87,15 +87,38 @@ function M.changed(snapshot)
 end
 
 ---Read the file's current lines, for the "show the diff" action.
+---
+---Text is required: a binary file would be loaded as a single garbled line, and
+---inserting that into the buffer would corrupt it.
 ---@param path string
 ---@return string[]|nil
 function M.read_lines(path)
   if vim.fn.filereadable(path) ~= 1 then
     return nil
   end
-  local ok, lines = pcall(vim.fn.readfile, path)
+  local fd = vim.uv.fs_open(path, "r", 0)
+  if not fd then
+    return nil
+  end
+  local st = vim.uv.fs_fstat(fd)
+  local limit = 32 * 1024 * 1024
+  if not st or st.type ~= "file" or st.size > limit then
+    vim.uv.fs_close(fd)
+    return nil
+  end
+  local data = st.size > 0 and vim.uv.fs_read(fd, st.size, 0) or ""
+  vim.uv.fs_close(fd)
+  if type(data) ~= "string" or data:find("\0", 1, true) then
+    return nil
+  end
+  local ok, lines = pcall(vim.split, data:gsub("\r\n", "\n"), "\n", { plain = true })
   if not ok then
     return nil
+  end
+  -- `vim.split` keeps a trailing empty element for a final newline; strip it so
+  -- the buffer does not gain a blank last line.
+  if lines[#lines] == "" and data:sub(-1) == "\n" then
+    lines[#lines] = nil
   end
   return lines
 end

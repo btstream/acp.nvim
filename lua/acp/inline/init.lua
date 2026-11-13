@@ -282,19 +282,20 @@ function M.guard_unsafe_mode(inv)
   local label = mode_id or "the current mode"
   if config.guard_mode == "switch" then
     -- Pick a mode the agent reports as safe. There is no protocol name for
-    -- "default", so the safest available mode is the first entry the profile
-    -- does not consider unsafe or plan-only.
+    -- "default", so prefer an entry that is neither auto-approving nor
+    -- plan-only: switching into plan mode would change what the agent is
+    -- willing to do, which is not what this guard is for.
     local control = inv.session.controls.mode
     local target
     for _, entry in ipairs(control.options or {}) do
-      if not profile.unsafe_edit_mode(entry.value) then
+      if not profile.unsafe_edit_mode(entry.value) and not profile.plan_mode(entry.value) then
         target = entry.value
         break
       end
     end
     if not target then
       notify(
-        string.format("%s edits without asking and no safer mode is available; continuing", label),
+        string.format("%s edits without asking and no neutral mode is available; continuing without switching", label),
         vim.log.levels.WARN
       )
       return true
@@ -612,6 +613,12 @@ end
 ---@return string|nil option_id
 M._decide_for_test = function(inv, request)
   return decide(inv, request)
+end
+
+---Exposed for tests: the open inline turn, if any.
+---@return table|nil
+M._current = function()
+  return current
 end
 
 return M

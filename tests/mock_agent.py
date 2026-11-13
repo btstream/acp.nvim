@@ -556,6 +556,34 @@ def run_prompt(msg_id, text):
     if text.startswith("INLINE_BUFFER_EDIT:"):
         import re
 
+        # An irreversible tool kind: `inline.allow_commands` must not cover it,
+        # so the client should answer "reject". Handled before the ordinary
+        # copy/permission probe below, which would otherwise decide for it.
+        if "INLINE_DELETE" in text:
+            copy_path = re.search(r"`([^`]*acp-inline-[^`]*)`", text)
+            target = copy_path.group(1) if copy_path else "/tmp"
+            pending = PendingPermission(msg_id)
+            with permissions_lock:
+                permissions[9002] = pending
+            send({"jsonrpc": "2.0", "id": 9002, "method": "session/request_permission", "params": {
+                "sessionId": SESSION_ID,
+                "toolCall": {"toolCallId": "inline_delete", "kind": "delete",
+                             "locations": [{"path": target}]},
+                "options": [{"kind": "allow_once", "optionId": "allow"},
+                            {"kind": "reject_once", "optionId": "reject"}],
+            }})
+            pending.event.wait(timeout=5)
+            report(msg_id, {"inline_delete": pending.option})
+            with permissions_lock:
+                permissions.pop(9002, None)
+            if pending.option != "reject":
+                error(msg_id, -32099, "a delete was allowed: " + repr(pending.option))
+                with permissions_lock:
+                    active_prompts.pop(msg_id, None)
+                return
+            finish(msg_id)
+            return
+
         # The scope instruction depends on how the request was opened. Visual
         # mode gets a byte range; normal mode must not be described as an
         # insert-only point.
@@ -617,22 +645,6 @@ def run_prompt(msg_id, text):
                                     {"optionId": "spaces", "name": "Spaces", "kind": "allow_once"}],
                     })
                 report(msg_id, {"inline_ask": response_body(response)})
-            if "INLINE_DELETE" in text:
-                # A delete is not a command: `inline.allow_commands` must not cover it.
-                pending = PendingPermission(msg_id)
-                with permissions_lock:
-                    permissions[9002] = pending
-                send({"jsonrpc": "2.0", "id": 9002, "method": "session/request_permission", "params": {
-                    "sessionId": SESSION_ID,
-                    "toolCall": {"toolCallId": "inline_delete", "kind": "delete",
-                                 "locations": [{"path": path}]},
-                    "options": [{"kind": "allow_once", "optionId": "allow"},
-                                {"kind": "reject_once", "optionId": "reject"}],
-                }})
-                pending.event.wait(timeout=5)
-                report(msg_id, {"inline_delete": pending.option})
-                with permissions_lock:
-                    permissions.pop(9002, None)
             if "INLINE_SLOW" in text:
                 for _ in range(300):
                     if cancel_event.is_set():

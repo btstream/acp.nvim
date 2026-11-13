@@ -486,6 +486,10 @@ function Session:user_chunk(text, message_id, tx)
     pending.text = text
     pending.message_id = message_id
     pending.status = "streaming"
+    -- The replay is the agent's own copy of the message, so the local summary
+    -- no longer applies. Keeping it would hide the real text behind
+    -- "inline: <request>" forever.
+    pending.display_text = nil
     self:touch(pending, nil, tx)
     return pending
   end

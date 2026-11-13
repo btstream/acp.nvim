@@ -57,6 +57,21 @@ return function(t)
       t.eq({ "one", "two" }, guard.read_lines(path))
       t.eq(nil, guard.read_lines(dir .. "/nope.txt"))
     end)
+
+    t.it("refuses to read a binary file", function()
+      local path = dir .. "/binary.dat"
+      local fd = vim.uv.fs_open(path, "w", 420)
+      vim.uv.fs_write(fd, "\0\1\2binary", 0)
+      vim.uv.fs_close(fd)
+      -- Garbled lines would be inserted into the buffer by the reload action.
+      t.eq(nil, guard.read_lines(path))
+    end)
+
+    t.it("does not add a trailing blank line for a final newline", function()
+      local path = dir .. "/eol.txt"
+      vim.fn.writefile({ "a", "b" }, path)
+      t.eq({ "a", "b" }, guard.read_lines(path))
+    end)
   end)
 
   t.describe("inline mode guard", function()
@@ -166,6 +181,96 @@ return function(t)
       local inv = { session = s, config = { inline = { guard_mode = "ask" } } }
       t.truthy(inline.guard_unsafe_mode(inv))
       vim.notify = original
+    end)
+
+    t.it("never switches into plan mode", function()
+      -- Only plan and an auto-approving mode exist: switching into plan would
+      -- change what the agent is willing to do, so the guard must decline.
+      local s = session_with_mode("claude", "bypassPermissions", {
+        { value = "plan", name = "Plan" },
+        { value = "bypassPermissions", name = "Bypass" },
+      })
+      local notified = {}
+      local original = vim.notify
+      vim.notify = function(message)
+        notified[#notified + 1] = tostring(message)
+      end
+      local inv = { session = s, config = { inline = { guard_mode = "switch" } } }
+      t.truthy(inline.guard_unsafe_mode(inv))
+      vim.notify = original
+      t.eq("bypassPermissions", s.controls.mode.current, "the guard entered plan mode")
+      t.eq(nil, inv.previous_mode)
+      t.match("no neutral mode", notified[#notified])
+    end)
+
+    t.it("prefers a neutral mode over a plan mode", function()
+      local s = session_with_mode("claude", "auto", {
+        { value = "plan", name = "Plan" },
+        { value = "default", name = "Manual" },
+        { value = "auto", name = "Auto" },
+      })
+      local original = vim.notify
+      vim.notify = function() end
+      local inv = { session = s, config = { inline = { guard_mode = "switch" } } }
+      t.truthy(inline.guard_unsafe_mode(inv))
+      vim.notify = original
+      t.eq("default", s.controls.mode.current)
+      t.eq("auto", inv.previous_mode)
+    end)
+  end)
+
+  t.describe("inline transcript folding", function()
+    local blocks = require("acp.ui.blocks")
+    local ctx = {
+      icons = blocks.icon_set(true),
+      width = 80,
+      cwd = "/proj",
+      show_thoughts = false,
+    }
+
+    local function text_of(block)
+      local out = {}
+      for _, line in ipairs(blocks.render_block(block, ctx)) do
+        out[#out + 1] = line.text
+      end
+      return table.concat(out, "\n")
+    end
+
+    t.it("shows the summary for a generated prompt", function()
+      local s = state.new("s", "/proj")
+      s:add_local_user("INLINE_BUFFER_EDIT: a very long instruction block", nil, {
+        display_text = "inline: rename the function",
+      })
+      local rendered = text_of(s.blocks[1])
+      t.match("inline: rename the function", rendered)
+      t.falsy(rendered:find("INLINE_BUFFER_EDIT", 1, true), "the full prompt leaked into the collapsed view")
+    end)
+
+    t.it("shows the full prompt once expanded", function()
+      local s = state.new("s", "/proj")
+      local block = s:add_local_user("INLINE_BUFFER_EDIT: full text", nil, {
+        display_text = "inline: summary",
+      })
+      block.expanded = true
+      local rendered = text_of(block)
+      t.match("INLINE_BUFFER_EDIT", rendered)
+    end)
+
+    t.it("leaves an ordinary user message alone", function()
+      local s = state.new("s", "/proj")
+      s:add_local_user("hello there", nil)
+      local rendered = text_of(s.blocks[1])
+      t.match("hello there", rendered)
+    end)
+
+    t.it("drops the summary when the agent replays the message", function()
+      local s = state.new("s", "/proj")
+      s:begin_turn()
+      s:add_local_user("INLINE_BUFFER_EDIT: x", nil, { display_text = "inline: x" })
+      -- The agent echoes the message back; that is the authoritative text.
+      s:user_chunk("real user text", "m1")
+      t.eq(nil, s.blocks[#s.blocks].display_text)
+      t.match("real user text", text_of(s.blocks[#s.blocks]))
     end)
   end)
 
