@@ -44,6 +44,9 @@ local function build_client_capabilities(config)
   return vim.empty_dict()
 end
 
+-- Exposed for the protocol conformance tests.
+Connection.client_capabilities = build_client_capabilities
+
 ---Open the panel's agent process, starting it when needed.
 function Connection:connect()
   local S = self.state()

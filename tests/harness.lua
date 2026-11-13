@@ -15,6 +15,17 @@ function M.it(name, fn)
   tests[#tests + 1] = { name = current_file .. " :: " .. name, fn = fn }
 end
 
+---A known gap: the test describes the intended behaviour and is expected to
+---fail until the work that fixes it lands. A failure is reported as pending,
+---not as a failure; an unexpected pass is a failure ("XPASS"), so the marker
+---is removed as soon as the behaviour exists.
+---@param name string
+---@param reason string what is missing, e.g. "phase 3: elicitation"
+---@param fn fun()
+function M.pending(name, reason, fn)
+  tests[#tests + 1] = { name = current_file .. " :: " .. name, fn = fn, pending = reason }
+end
+
 function M.eq(expected, actual, message)
   if not vim.deep_equal(expected, actual) then
     error(
@@ -61,11 +72,28 @@ function M.raises(fn, pattern)
 end
 
 function M.run()
-  local passed, failed = 0, 0
+  local passed, failed, pending = 0, 0, 0
   local failures = {}
   for _, test in ipairs(tests) do
     local ok, err = xpcall(test.fn, debug.traceback)
-    if ok then
+    if test.pending then
+      if ok then
+        failed = failed + 1
+        failures[#failures + 1] = {
+          name = test.name,
+          err = "XPASS: marked pending (" .. test.pending .. ") but passed; turn it into a normal test",
+        }
+        io.write("XPASS " .. test.name .. "\n")
+      else
+        pending = pending + 1
+        io.write("pend " .. test.name .. "  [" .. test.pending .. "]\n")
+        -- ACP_TEST_PENDING=1 shows why each pending test fails, so a broken
+        -- test cannot hide behind the marker.
+        if os.getenv("ACP_TEST_PENDING") == "1" then
+          io.write("     " .. (tostring(err):gsub("\n%s*stack traceback.*", ""):gsub("\n", " ")) .. "\n")
+        end
+      end
+    elseif ok then
       passed = passed + 1
       io.write("ok   " .. test.name .. "\n")
     else
@@ -74,7 +102,7 @@ function M.run()
       io.write("FAIL " .. test.name .. "\n")
     end
   end
-  io.write(string.format("\n%d passed, %d failed\n", passed, failed))
+  io.write(string.format("\n%d passed, %d failed, %d pending\n", passed, failed, pending))
   for _, failure in ipairs(failures) do
     io.write("\n--- " .. failure.name .. " ---\n" .. tostring(failure.err) .. "\n")
   end
