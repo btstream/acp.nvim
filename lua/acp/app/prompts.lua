@@ -116,10 +116,8 @@ function Prompts:send(session, text, attachments, hooks, retrying)
         self.notify("Image attachments are disabled or exceed context.images.max_per_message", vim.log.levels.WARN)
         return false
       end
-      if not capabilities.prompt(client, "image") and att.inline ~= false then
-        self.notify("This agent does not accept images; switch models or remove the attachment", vim.log.levels.WARN)
-        return false
-      end
+      -- An agent without image support is not an error: `to_prompt` turns the
+      -- block into a resource link, which is the most it can accept.
     end
   end
 
@@ -138,10 +136,14 @@ function Prompts:send(session, text, attachments, hooks, retrying)
     return true
   end
 
-  -- The agent advertises whether it can decode images. A resource_link is
-  -- always allowed, so only refuse when this attachment would really become an
-  -- `image` block; otherwise let the turn fail later with a protocol error.
-  local blocks, block_err = context.to_prompt(text, attachments, cfg)
+  -- An agent without `promptCapabilities.image` cannot take an `image` block.
+  -- `to_prompt` degrades those to a resource link instead of failing the send,
+  -- so a resource_link attachment still works on every agent.
+  local blocks, block_err = context.to_prompt(text, attachments, cfg, {
+    supports = function(name)
+      return capabilities.prompt(client, name)
+    end,
+  })
   if block_err then
     -- An image that disappeared from the cache must not become a silent
     -- omission: the user would send a prompt referencing something the agent

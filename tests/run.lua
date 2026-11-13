@@ -72,5 +72,7 @@ require("tests.spec_spinner")(t)
 require("tests.spec_scheduling")(t)
 require("tests.spec_commit")(t)
 require("tests.spec_tail")(t)
+require("tests.spec_session_management")(t)
+require("tests.spec_session_lifecycle")(t)
 
 t.run()

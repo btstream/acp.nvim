@@ -92,6 +92,49 @@ return function(t)
       t.eq(60, config.panel_width(cfg, 200))
     end)
 
+    t.it("defaults mcp_servers to an empty list", function()
+      t.eq({}, config.defaults.mcp_servers)
+      local cfg = config.validate(config.merge(config.defaults, {}))
+      t.eq({}, cfg.mcp_servers)
+    end)
+
+    t.it("accepts stdio, http and sse mcp servers", function()
+      local servers = {
+        { type = "stdio", command = "npx", args = { "-y", "server" }, env = { TOKEN = "x" } },
+        { type = "http", url = "https://example.test/mcp", headers = { Authorization = "Bearer x" } },
+        { type = "sse", url = "http://localhost:8080/sse" },
+      }
+      local cfg = config.validate(config.merge(config.defaults, { mcp_servers = servers }))
+      t.eq(3, #cfg.mcp_servers)
+      t.eq("stdio", cfg.mcp_servers[1].type)
+      t.eq("http", cfg.mcp_servers[2].type)
+      t.eq("sse", cfg.mcp_servers[3].type)
+    end)
+
+    t.it("treats a missing type as stdio", function()
+      local cfg = config.validate(config.merge(config.defaults, {
+        mcp_servers = { { command = "server" } },
+      }))
+      t.eq(1, #cfg.mcp_servers)
+      t.eq(nil, cfg.mcp_servers[1].type)
+    end)
+
+    t.it("rejects malformed mcp servers", function()
+      local cases = {
+        { value = "nope", message = "mcp_servers must be a list" },
+        { value = { { type = "stdio" } }, message = "command must be a non%-empty string" },
+        { value = { { type = "stdio", command = "srv", args = "x" } }, message = "args must be a list" },
+        { value = { { type = "http" } }, message = "url must be an absolute URL" },
+        { value = { { type = "http", url = "example.test" } }, message = "url must be an absolute URL" },
+        { value = { { type = "websocket", url = "ws://x" } }, message = 'type must be "stdio", "http" or "sse"' },
+      }
+      for _, case in ipairs(cases) do
+        t.raises(function()
+          config.validate(config.merge(config.defaults, { mcp_servers = case.value }))
+        end, case.message)
+      end
+    end)
+
     t.it("accepts zero or at least 1024 for receive limits", function()
       for _, value in ipairs({ 0, 1024, 1024 * 1024 }) do
         local cfg = config.validate(

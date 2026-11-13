@@ -451,23 +451,47 @@ function M.display_text(text, attachments)
 end
 
 ---Convert attachments plus a text message into ordered ACP content blocks.
+---
+---`opts.supports` reports what the agent accepts. When it says images are
+---unsupported, an image attachment becomes a `resource_link` instead of an
+---`image` block, so the rest of the message is still delivered.
 ---@param text string
 ---@param attachments table[]
 ---@param config table|nil
----@return table[]
----@return string|nil err first attachment that could not be encoded
-function M.to_prompt(text, attachments, config)
+---@param opts {supports?: fun(name: string): boolean}|nil capability probe
+---@return table[] blocks
+---@return string|nil problem first attachment that could not be encoded
+function M.to_prompt(text, attachments, config, opts)
+  local supports = opts and opts.supports or nil
   local blocks = {}
   local problem
   for _, part in ipairs(M.sequence(text, attachments)) do
     if part.text then
       blocks[#blocks + 1] = { type = "text", text = part.text }
     else
-      local block, err = M.block(part.attachment, config)
-      if block then
-        blocks[#blocks + 1] = block
-      elseif err and not problem then
-        problem = err
+      local att = part.attachment
+      local unsupported_image = att.kind == "image" and supports ~= nil and not supports("image")
+      if unsupported_image and att.uri then
+        -- An agent without `promptCapabilities.image` rejects an `image` block
+        -- outright. Degrade to a link before reading the bytes: encoding a 3 MiB
+        -- screenshot only to throw it away would be pure waste.
+        blocks[#blocks + 1] = {
+          type = "resource_link",
+          uri = att.uri,
+          name = att.label,
+          mimeType = att.mime,
+          size = att.bytes,
+        }
+      else
+        local block, err = M.block(att, config)
+        if block and block.type == "image" and unsupported_image then
+          block = { type = "resource_link", uri = att.uri, name = att.label, mimeType = block.mimeType }
+        end
+        if block then
+          blocks[#blocks + 1] = block
+        elseif err and not problem then
+          problem = err
+        end
       end
     end
   end

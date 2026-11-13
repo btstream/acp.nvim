@@ -12,7 +12,7 @@ the prompt text so tests can request specific flows:
   contains "subagent"   -> a delegated turn: tool call plus agent text, both
                            tagged with `opencode/child-session` metadata
 
-Agent profiles (ACP_MOCK_PROFILE=opencode|claude|pi|generic, default opencode)
+Agent profiles (ACP_MOCK_PROFILE=opencode|claude|pi|generic|resumeonly, default opencode)
 reproduce the protocol shapes of real agents. Shapes are taken from upstream
 sources and recorded scenarios: sst/opencode packages/cli/src/acp,
 agentclientprotocol/claude-agent-acp src/tests/acp-scenarios, svkozak/pi-acp
@@ -39,6 +39,7 @@ Environment:
   ACP_MOCK_EARLY_UPDATE=1  send session updates before the session/new response
   ACP_MOCK_AUTH_REQUIRED=1 session/new fails with auth_required until login
   ACP_MOCK_AUTH_MARKER=path  login marker; `mock_agent.py --mock-login` creates it
+  ACP_MOCK_CLOSE_LOG=path  append one session id per `session/close`
 """
 import json
 import os
@@ -48,6 +49,10 @@ import time
 
 SESSION_ID = "sess_mock"
 SESSION_CWD = None  # set from session/new, so filtering matches the client
+# Sessions the client asked to close. Closing must not remove a session from
+# `session/list`: the agent keeps it on disk and it can be loaded again.
+CLOSED = set()
+CLOSE_LOG = os.environ.get("ACP_MOCK_CLOSE_LOG")
 SESSIONS = {
     SESSION_ID: {"sessionId": SESSION_ID, "title": None, "updatedAt": "2026-01-01T00:00:00Z"},
     # Lives in the same directory as the active session.
@@ -201,6 +206,15 @@ def initialize_result():
     elif PROFILE == "generic":
         caps = {"loadSession": False, "promptCapabilities": {}}
         info = {"name": "generic-mock", "version": "0.1.0"}
+    elif PROFILE == "resumeonly":
+        # An agent that can resume a session but cannot replay its history:
+        # this is the `session/resume` fallback path.
+        caps = {
+            "loadSession": False,
+            "promptCapabilities": {"embeddedContext": True, "image": True},
+            "sessionCapabilities": {"list": {}, "resume": {}, "close": {}, "delete": {}},
+        }
+        info = {"name": "resume-only-mock", "version": "0.1.0"}
     else:
         caps = {
             "loadSession": True,
@@ -893,6 +907,28 @@ def handle(msg):
             "entries": [{"content": "step one\nstep two", "priority": "high", "status": "pending"}],
         })
         result(msg_id, {})
+    elif method == "session/resume":
+        # Resume restores the agent-side context but must not replay history:
+        # anything the client shows afterwards is its own transcript.
+        session_id = params.get("sessionId")
+        resume_cwd = params.get("cwd")
+        entry = SESSIONS.get(session_id)
+        if entry is None:
+            error(msg_id, -32002, "unknown session")
+            return
+        if entry.get("cwd") and resume_cwd and entry["cwd"] != resume_cwd:
+            error(msg_id, -32602, "session cwd mismatch")
+            return
+        result(msg_id, {"sessionId": session_id, "modes": None, "configOptions": None})
+    elif method == "session/close":
+        # Closing releases agent-side resources but keeps the session in the
+        # list: only `session/close` is per spec idempotent for unknown ids.
+        session_id = params.get("sessionId")
+        CLOSED.add(session_id)
+        if CLOSE_LOG:
+            with open(CLOSE_LOG, "a", encoding="utf-8") as handle:
+                handle.write(session_id + "\n")
+        result(msg_id, {})
     elif method == "session/list":
         # Like OpenCode, filter strictly by cwd when one is supplied, and treat
         # an omitted cwd as "every session".
@@ -907,7 +943,13 @@ def handle(msg):
         # ACP_EMPTY_SCOPE_DIR switches the mock into "no sessions in this
         # directory" mode, so the client has to fall back to an unscoped list.
         empty_scope = os.environ.get("ACP_EMPTY_SCOPE_DIR")
-        if cwd and empty_scope and cwd == empty_scope:
+        # The client normalises away a trailing separator; compare the same way
+        # so the scenario is about directory identity, not spelling.
+        def same_dir(a, b):
+            if not a or not b:
+                return False
+            return a.rstrip("/") == b.rstrip("/")
+        if same_dir(cwd, empty_scope):
             listed = []
         result(msg_id, {"sessions": listed})
     elif method == "session/delete":

@@ -259,9 +259,10 @@ fzf-lua 只是可选的交互式搜索入口，不会在每次按键时重新扫
 
 ### 图像附件
 
-输入区可以附加图像，以 ACP `image` 内容块发送。这需要 Agent 声明
-`promptCapabilities.image`（OpenCode 支持）；未声明时附加内嵌图像会被明确拒绝，
-而不是等发送后才由 Agent 报错。
+输入区可以附加图像，以 ACP `image` 内容块发送，这需要 Agent 声明
+`promptCapabilities.image`（OpenCode 支持）。未声明的 Agent 不会让整条消息失败：
+发送时图像会降级为 `resource_link`（带上磁盘上的 URI），消息其余文本照常送达。
+这比直接拒绝更有用——Agent 至少能看到图片所在的文件。
 
 ```lua
 require("acp").setup({
@@ -611,6 +612,15 @@ require("acp").setup({
 
   -- 会话的工作目录。默认与 Neovim 的 cwd 一致（vim.fn.getcwd()）。
   cwd = nil,
+
+  -- 传给 agent 的 MCP 服务器（ACP McpServer）。stdio 总会被发送；
+  -- http/sse 只有 agent 在 mcpCapabilities 中声明时才发送。
+  mcp_servers = {},
+  -- 例：
+  -- mcp_servers = {
+  --   { type = "stdio", command = "npx", args = { "-y", "@modelcontextprotocol/server-filesystem" } },
+  --   { type = "http", url = "https://example.test/mcp", headers = { Authorization = "Bearer ..." } },
+  -- },
 
   -- 本地保留的载荷预算，不是 Lua/Neovim RSS 的硬上限。
   memory = {
@@ -1022,7 +1032,43 @@ require("acp").setup({ cwd = "/home/user/projects/my-app" })
 退回展示 Agent 知道的所有会话，而不是提示「没有会话」。
 
 > 切换到历史会话时，acp.nvim 会使用**该会话自己的目录**发起 `session/load`。
-> ACP 规范要求 cwd 与会话一致，Agent 会在不匹配时拒绝该请求。
+> ACP 规范要求 cwd 与会话一致，Agent 会在不匹配时拒绝该请求。目录末尾的 `/` 会被
+> 去掉（根目录除外），避免同一目录因写法不同被判成两个。
+
+### 会话的加载、恢复与关闭
+
+打开历史会话时，acp.nvim 按 Agent 能力选择方式：
+
+| Agent 能力 | 行为 |
+|---|---|
+| `loadSession` | `session/load`，回放完整历史 |
+| 只有 `sessionCapabilities.resume` | `session/resume`，恢复 Agent 端上下文但**不回放历史**，并提示「history is not replayed」 |
+| 两者都没有 | 新建会话 |
+
+会话切换、删除会话和退出 Neovim 时，若 Agent 声明了 `sessionCapabilities.close`，
+会发送 `session/close` 释放 Agent 端资源；没有该能力的 Agent 会被跳过。退出时是同步
+等待响应后再终止进程，避免通知随进程一起消失。
+
+会话列表会跟随 Agent 的 `nextCursor` 翻完所有页，因此标题查找和 picker 不会只看到
+第一页。
+
+### MCP 服务器
+
+`mcp_servers` 会在建立会话时交给 Agent：
+
+```lua
+require("acp").setup({
+  mcp_servers = {
+    { type = "stdio", command = "npx", args = { "-y", "@modelcontextprotocol/server-filesystem", "." } },
+    { type = "sse", url = "http://localhost:8080/sse" },
+  },
+})
+```
+
+stdio 是 ACP 的基线能力，总会被发送；`http` / `sse` 需要 Agent 在 `mcpCapabilities`
+里声明，否则会被丢弃而不是发出去让 Agent 报错。同一份配置用于 `session/new`、
+`session/load` 和 `session/resume`。
+
 
 ### 面板尺寸
 

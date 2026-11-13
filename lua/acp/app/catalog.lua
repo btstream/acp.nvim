@@ -148,18 +148,45 @@ function Catalog:list(scoped_cwd, cb)
       finish(false, {})
     end
 
-    local ok, result = task:call("list_sessions", scoped_cwd)
-    if not ok then
-      to_error(result)
-      return
+    ---Follow `nextCursor` until the agent stops returning one.
+    ---
+    ---A bounded loop guards against an agent that echoes the same cursor
+    ---forever; the cap is far above any realistic session count.
+    ---@param scoped string|nil
+    ---@return boolean ok, table|string sessions_or_error
+    local function collect(scoped)
+      local sessions, cursor, seen = {}, nil, {}
+      for _ = 1, 100 do
+        local ok, result = task:call("list_sessions", scoped, cursor)
+        if not ok then
+          return false, result
+        end
+        if type(result) ~= "table" then
+          return false, "invalid session/list response"
+        end
+        for _, info in ipairs(result.sessions or {}) do
+          sessions[#sessions + 1] = info
+        end
+        local next_cursor = result.nextCursor
+        if type(next_cursor) ~= "string" or next_cursor == "" or seen[next_cursor] then
+          return true, sessions
+        end
+        seen[next_cursor] = true
+        cursor = next_cursor
+      end
+      return true, sessions
     end
 
-    local sessions = result.sessions or {}
+    local ok, sessions = collect(scoped_cwd)
+    if not ok then
+      to_error(sessions)
+      return
+    end
     if #sessions == 0 then
       -- Nothing in this directory: show every session the agent knows about.
-      local all_ok, all_result = task:call("list_sessions", nil)
-      if all_ok and type(all_result) == "table" then
-        sessions = all_result.sessions or {}
+      local all_ok, all = collect(nil)
+      if all_ok then
+        sessions = all
       end
     end
 

@@ -44,18 +44,22 @@ function M.client(config)
 end
 
 ---Agent capabilities for a client, tolerating lightweight test doubles.
+---
+---The predicate `has_session_capability` is the compatibility hook for doubles
+---and the way tests revoke one capability without building a whole table. When
+---present it is authoritative for the session subset.
 ---@param client table|nil
 ---@return table
 function M.agent(client)
   local caps = {}
+  local reported
   if client and type(client.agent_capabilities) == "function" then
     local value = client:agent_capabilities()
     if type(value) == "table" then
+      reported = value
       caps = vim.tbl_extend("force", {}, value)
     end
   end
-  -- A predicate is the compatibility hook used by lightweight doubles and by
-  -- tests that revoke one capability; let it override the session subset.
   if client and type(client.has_session_capability) == "function" then
     local session_caps = {}
     for _, name in ipairs({ "list", "resume", "close", "delete", "fork" }) do
@@ -67,6 +71,14 @@ function M.agent(client)
     if client:has_session_capability("loadSession") then
       caps.loadSession = true
     end
+  end
+  -- A *bare* double that implements the call is stating support for it: the
+  -- predicate exists to grant capability, not to deny an implemented method.
+  -- A real client always implements every method, so this inference is limited
+  -- to doubles that cannot report capabilities at all; otherwise an agent that
+  -- explicitly advertises `loadSession: false` would look like it supports it.
+  if reported == nil and client and type(client.load_session) == "function" then
+    caps.loadSession = true
   end
   return caps
 end

@@ -45,6 +45,12 @@ M.defaults = {
   -- Working directory for sessions. Defaults to vim.fn.getcwd().
   cwd = nil,
 
+  -- MCP servers handed to `session/new`, `session/load` and `session/resume`.
+  -- Each entry is an ACP `McpServer`: `{ type = "stdio", command, args, env }`
+  -- or `{ type = "http"|"sse", url, headers }`. Entries the agent does not
+  -- advertise support for are dropped rather than sent and rejected.
+  mcp_servers = {},
+
   completion = {
     native = true, -- keep <C-x><C-u>; external sources are explicitly configured
     max_items = 200, -- native menu only; frameworks/pickers receive the full index
@@ -854,6 +860,31 @@ function M.validate(cfg)
   end
 
   check_number(cfg.ui.toolbar.animation_interval, 10, 60000, "ui.toolbar.animation_interval")
+
+  if type(cfg.mcp_servers) ~= "table" or (next(cfg.mcp_servers) ~= nil and not vim.islist(cfg.mcp_servers)) then
+    fail("mcp_servers must be a list")
+  end
+  for index, server in ipairs(cfg.mcp_servers) do
+    local where = "mcp_servers[" .. index .. "]"
+    if type(server) ~= "table" then
+      fail("%s must be a table", where)
+    end
+    local kind = server.type
+    if kind == nil or kind == "stdio" then
+      if type(server.command) ~= "string" or server.command == "" then
+        fail("%s.command must be a non-empty string", where)
+      end
+      if server.args ~= nil and not vim.islist(server.args) then
+        fail("%s.args must be a list", where)
+      end
+    elseif kind == "http" or kind == "sse" then
+      if type(server.url) ~= "string" or not server.url:match("^%a[%w+.-]*://") then
+        fail("%s.url must be an absolute URL", where)
+      end
+    else
+      fail('%s.type must be "stdio", "http" or "sse"', where)
+    end
+  end
 
   if type(cfg.permissions.auto_allow) ~= "table" or not vim.islist(cfg.permissions.auto_allow) then
     fail("permissions.auto_allow must be a list")

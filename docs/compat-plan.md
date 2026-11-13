@@ -472,6 +472,29 @@ elicitation 与提问型权限。`allow_commands` 收窄到 `execute`，其余 k
    三个主力 agent 都不使用，只对通用 agent 有价值，排在最后，并由配置开关控制。
 9. （可选）实现 `terminal/*`：Neovim 的 job 加只读输出 buffer。同上，由配置开关控制，排在最后。
 
+**状态**：已完成（8、9 两项可选项未实现，保持关闭）。`session/list` 跟随 `nextCursor`
+翻到最后一页（上限 100 页，遇到重复 cursor 即停），回退到不限目录时游标从头开始。
+`Sessions:load` 与 `restore` 先查 `loadSession`：不支持但有 `resume` 时走新增的
+`Sessions:resume`，只恢复 agent 端上下文、不回放历史，并明确提示「history is not
+replayed」；两者都不支持才新建会话。`session/close` 在切换会话、删除会话与退出编辑器
+（`close_all_on_exit`，同步 `vim.wait` 等待响应）三条路径发送，仅当 agent 声明
+`sessionCapabilities.close` 且 client 真正实现了该方法时才发；切换离开仍在运行的会话
+不会 close，避免打断用户留在后台的回合。`config.mcp_servers`
+支持 stdio/http/sse，`Client:mcp_servers()` 按 `mcpCapabilities` 过滤后传给
+`session/new`、`session/load`、`session/resume`。图片在 agent 不支持
+`promptCapabilities.image` 时于编码前降级为 `resource_link`（不再读取字节），
+移除发送前的直接拒绝。cwd 去掉末尾 `/`（保留根目录的 `/`）。
+
+过程中发现并修正一个真实缺陷：`capabilities.agent` 原先对「client 实现了
+`load_session`」一律视为支持，而真实 client 总是实现该方法，导致显式声明
+`loadSession: false` 的 agent 被误判为可加载。现在只在无法上报能力的轻量 double 上
+做这种推断。
+
+验证：1087 项单元/组件测试通过（阶段 8 新增 23 项，覆盖分页、mcp 过滤、图片降级、
+能力探测、resume 回退与 close 三条路径）。mock 新增 `resumeonly` profile、
+`session/resume` 与 `session/close` 处理、`ACP_MOCK_CLOSE_LOG`。未在真实 agent 上
+手工验收。
+
 ---
 
 ## 阶段 9：架构收尾（穿插进行）
@@ -511,7 +534,7 @@ protocol 和 session 两层不 require `ui/*`；controller 少于 600 行。
   transport = {
     timeouts = { initialize = 120000, session_new = 60000, session_load = 120000 },  -- 新增
   },
-  mcp_servers = {},              -- 新增
+  mcp_servers = {},              -- 新增：stdio/http/sse，按 mcpCapabilities 过滤后下发
   permissions = {
     prompt = "select",           -- 不变
     auto_allow = {},             -- 不变；但不再作用于提问型请求

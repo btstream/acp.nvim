@@ -71,6 +71,7 @@ function Connection:connect()
       agent = cfg.agents[cfg.agent],
       cwd = self.resolve_cwd(),
       client_capabilities = build_client_capabilities(cfg),
+      mcp_servers = cfg.mcp_servers,
       scheduler = work_scheduler.shared,
       interactions = self.interactions and self.interactions() or nil,
       limits = cfg.transport,

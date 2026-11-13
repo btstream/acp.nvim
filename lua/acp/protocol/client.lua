@@ -47,13 +47,14 @@ end
 local Client = {}
 Client.__index = Client
 
----@param opts {agent: table, cwd: string, client_capabilities: table, limits?: table, scheduler?: table, interactions?: table, on_event: fun(name: string, payload: any)}
+---@param opts {agent: table, cwd: string, client_capabilities: table, limits?: table, scheduler?: table, interactions?: table, mcp_servers?: table[], on_event: fun(name: string, payload: any)}
 ---@return AcpClient
 function M.new(opts)
   local self = setmetatable({
     agent = opts.agent,
     cwd = opts.cwd,
     limits = opts.limits,
+    declared_mcp_servers = opts.mcp_servers,
     scheduler = opts.scheduler,
     interactions = opts.interactions,
     client_capabilities = opts.client_capabilities,
@@ -568,13 +569,36 @@ function Client:cancel_permissions(session_id)
   end
 end
 
+---MCP servers this agent can actually accept.
+---
+---ACP gates the transports on `mcpCapabilities`: stdio is baseline, while HTTP
+---and SSE have to be advertised. Sending an unsupported transport would fail
+---session creation for a configuration the agent never promised to handle.
+---@return table[]
+function Client:mcp_servers()
+  local declared = self.declared_mcp_servers or {}
+  if type(declared) ~= "table" or #declared == 0 then
+    return {}
+  end
+  local caps = self:agent_capabilities().mcpCapabilities
+  caps = type(caps) == "table" and caps or {}
+  local out = {}
+  for _, server in ipairs(declared) do
+    local kind = server.type or "stdio"
+    if kind == "stdio" or (kind == "http" and caps.http == true) or (kind == "sse" and caps.sse == true) then
+      out[#out + 1] = server
+    end
+  end
+  return out
+end
+
 ---Create a new session.
 ---@param cwd string
 ---@return boolean ok, any value
 function Client:new_session(cwd)
   return self:request("session/new", {
     cwd = cwd,
-    mcpServers = {},
+    mcpServers = self:mcp_servers(),
   }, request_timeout(self, "session_new", REQUEST_TIMEOUT))
 end
 
@@ -586,8 +610,35 @@ function Client:load_session(session_id, cwd)
   return self:request("session/load", {
     sessionId = session_id,
     cwd = cwd,
-    mcpServers = {},
+    mcpServers = self:mcp_servers(),
   }, request_timeout(self, "session_load", REQUEST_TIMEOUT), true)
+end
+
+---Resume an existing session without replaying its history.
+---Only call this after checking `sessionCapabilities.resume`.
+---@param session_id string
+---@param cwd string
+---@return boolean ok, any value
+function Client:resume_session(session_id, cwd)
+  return self:request("session/resume", {
+    sessionId = session_id,
+    cwd = cwd,
+    mcpServers = self:mcp_servers(),
+  }, request_timeout(self, "session_load", REQUEST_TIMEOUT))
+end
+
+---Close an active session on the agent side.
+---Only call this after checking `sessionCapabilities.close`.
+---@param session_id string
+---@return boolean ok, any value
+function Client:close_session(session_id)
+  local ok, result =
+    self:request("session/close", { sessionId = session_id }, request_timeout(self, "", REQUEST_TIMEOUT))
+  if not ok and type(result) == "table" and result.code == -32002 then
+    -- The spec treats closing an unknown session as success.
+    return true, {}
+  end
+  return ok, result
 end
 
 ---List sessions known to the agent.

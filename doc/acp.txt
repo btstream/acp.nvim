@@ -268,6 +268,7 @@ picker、会话浏览器等自绘浮窗内部的按键不在 keymaps 管辖范�
       },
       permissions = { prompt = "select", show_details = true },
       notices = true,
+      mcp_servers = {},   -- { { type = "stdio", command = "..." }, ... } 见 *acp-mcp-servers*
       capabilities = {
         elicitation = { form = true, url = false },
         auth_terminal = true,
@@ -377,10 +378,42 @@ ACP 的两个窗口默认锁定到自己的 buffer（'winfixbuf'），:edit、:b
 的所有会话。
 
 切换历史会话时使用该会话自己的目录发起 session/load，因为 ACP 规范要求 cwd 与
-会话一致，不匹配时 Agent 会拒绝。
+会话一致，不匹配时 Agent 会拒绝。目录末尾的 / 会被去掉（根目录除外），避免同一个
+目录因写法不同被当成两个。
+
+会话列表跟随 Agent 返回的 nextCursor 翻完所有页。
 
 ==============================================================================
-11. 面板尺寸                                                    *acp-sizing*
+11. 会话的加载与关闭                              *acp-session-lifecycle*
+
+打开历史会话时按 Agent 能力选择方式：
+
+  loadSession                      session/load，回放完整历史
+  只有 sessionCapabilities.resume   session/resume，恢复 Agent 端上下文但不回放
+                                   历史，并提示 history is not replayed
+  两者都没有                        新建会话
+
+切换会话、删除会话和退出 Neovim 时，若 Agent 声明 sessionCapabilities.close，
+会发送 session/close 释放 Agent 端资源。退出时同步等待响应后再终止进程。
+
+==============================================================================
+12. MCP 服务器                                        *acp-mcp-servers*
+
+通过 mcp_servers 把 MCP 服务器交给 Agent，同一份配置用于 session/new、
+session/load 和 session/resume：
+
+    require("acp").setup({
+      mcp_servers = {
+        { type = "stdio", command = "npx", args = { "-y", "server" } },
+        { type = "http", url = "https://example.test/mcp" },
+      },
+    })
+
+stdio 是 ACP 基线能力，总会被发送；http / sse 需要 Agent 在 mcpCapabilities 中
+声明，否则会被丢弃，而不是发出去让 Agent 报错。
+
+==============================================================================
+13. 面板尺寸                                                    *acp-sizing*
 
 原生布局中 layout.width 为 0.05~1 时按编辑器宽度取比例，>1 时为绝对列数。
 先应用 min_width / max_width，再限制为编辑器宽度的 60%；空间不足时可能小于
@@ -399,7 +432,7 @@ edgy 调整宽度均适用。连续调整采用 100ms 防抖，期间流式内�
 并不要求包含 a。设为空字符串会关闭鼠标支持。无法点击时也可用 <M-m>/<M-b>。
 
 ==============================================================================
-12. 会话标题与删除                                      *acp-session-titles*
+14. 会话标题与删除                                      *acp-session-titles*
 
 标题显示在对话记录窗口的 winbar 中。为兼容未推送 session_info_update 的 Agent，
 acp.nvim 在会话创建后、切换会话后及每回合结束后查询 session/list 来同步标题，
@@ -429,7 +462,7 @@ q 关闭，gg/G 跳到首项/末项；需要搜索保留字母 j/k/q 时用大�
 sessionCapabilities.delete 时给出提示，不弹出无法兑现的确认框。
 
 ==============================================================================
-13. 行为细节                                                *acp-behavior*
+15. 行为细节                                                *acp-behavior*
 
 同一会话同时只运行一个 prompt；生成中提交的消息本地排队。
 默认最多排队 16 条、估算载荷 4 MiB，超过时拒绝入队并保留输入。
@@ -543,7 +576,7 @@ spill_bytes 默认 64 MiB，是完整 JSON 行异步落盘的工作集目标；�
 cancelled。
 
 ==============================================================================
-14. 轮次分隔符                                          *acp-separator*
+16. 轮次分隔符                                          *acp-separator*
 
 每两轮对话之间画一条细分隔线。默认中间一个圆点：
 
@@ -563,7 +596,7 @@ ui.separator.form 控制样式：
 上面时 <Tab> 不会误展开相邻的卡片。
 
 ==============================================================================
-15. 高亮                                                    *acp-highlights*
+17. 高亮                                                    *acp-highlights*
 
 样式为静态定义，多数组链接到 Neovim / Tree-sitter 组；模式徽标默认使用固定颜色，
 可通过 ui.highlights 覆盖。插件不会在运行时混合主题颜色。
@@ -643,14 +676,14 @@ AcpUserIcon；助手的两组均链接到 Keyword。想区分时
 ui.icons = false 会改用 ASCII 图标。
 
 ==============================================================================
-16. 健康检查                                                 *acp-health*
+18. 健康检查                                                 *acp-health*
 
     :checkhealth acp
 
 检查 Neovim 版本、Agent 可执行文件、edgy 与日志路径。
 
 ==============================================================================
-17. 输入区补全                                               *acp-completion*
+19. 输入区补全                                               *acp-completion*
 
 默认用 <C-x><C-u> 补全 /命令 和 @文件；索引异步建立，完成后显示原生菜单。
 可选 blink.cmp / nvim-cmp 原生 source（选择一个），只在 acp_input 中生效。
@@ -705,11 +738,12 @@ picker 可选 vim（vim.ui.select）、fzf-lua、snacks、telescope，不设强�
 取消、会话切换、buffer 销毁或查询过期后，旧结果不会修改输入。
 
 ==============================================================================
-18. 图像附件                                             *acp-images*
+20. 图像附件                                             *acp-images*
 
-输入区可附加图像，以 ACP image 内容块发送。要求 Agent 声明
-promptCapabilities.image（OpenCode 支持）；未声明时内嵌图像会被明确拒绝，
-不会等到发送后才由 Agent 报错。resource_link 形式不受此限制。
+输入区可附加图像，以 ACP image 内容块发送，要求 Agent 声明
+promptCapabilities.image（OpenCode 支持）。未声明的 Agent 不会让消息失败：
+图像在发送时降级为 resource_link（附带磁盘 URI），其余文字照常送达。
+resource_link 形式本来就不受此限制。
 
 用法：
     :Acp image              读取系统剪贴板中的截图并附加
@@ -760,7 +794,7 @@ path_mode = "inline" 时 @shot.png 会内嵌字节；默认 link 只发引用。
 可能使缓存超过配置预算。文件被外部删除后，发送会明确报错，而不是静默丢掉图像。
 
 ==============================================================================
-19. 内联编辑                                            *acp-inline*
+21. 内联编辑                                            *acp-inline*
 
 require("acp").inline() 在光标处或 Visual 选区打开输入框，由 Agent 修改当前
 buffer。默认绑定 <leader>ai（普通和 Visual 模式）。Visual 选区按整行处理；

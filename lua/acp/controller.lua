@@ -133,10 +133,19 @@ end
 ---explicitly with `cwd` in the configuration.
 ---@return string
 local function resolve_cwd()
+  local path
   if S.config and S.config.cwd and S.config.cwd ~= "" then
-    return vim.fn.fnamemodify(S.config.cwd, ":p")
+    path = vim.fn.fnamemodify(S.config.cwd, ":p")
+  else
+    path = vim.fn.getcwd()
   end
-  return vim.fn.getcwd()
+  -- ACP requires an absolute path, and agents compare it byte for byte when
+  -- they look a session up, so a trailing separator would make one directory
+  -- look like two. The filesystem root keeps its single "/".
+  if #path > 1 then
+    path = (path:gsub("/+$", ""))
+  end
+  return path
 end
 
 ---Current session or nil.
@@ -305,8 +314,22 @@ end
 
 ---@param session AcpSessionState
 local function activate_session(session)
+  local previous = S.session
   S.session = session
   S.runtime:select(session)
+  -- Switching away leaves the previous session active on the agent side. Ask it
+  -- to release the resources, but never while a turn is still in flight: closing
+  -- a running session would kill work the user only meant to leave in the
+  -- background. Agents without `session/close` simply ignore the request.
+  if
+    previous
+    and previous ~= session
+    and previous.status == "idle"
+    and #(previous.queue or {}) == 0
+    and S.sessions_service
+  then
+    pcall(S.sessions_service.close, S.sessions_service, previous.id)
+  end
   if S.chat then
     S.chat:set_session(session)
     S.chat.pending_new = false
@@ -336,6 +359,12 @@ local function setup_window_events()
         pcall(S.input.save_draft, S.input)
       end
       pcall(drafts.flush)
+      -- Release active sessions before the process goes away.
+      if S.sessions_service and S.client then
+        pcall(function()
+          S.sessions_service:close_all_on_exit()
+        end)
+      end
       if S.connection_service then
         -- Do not let a stray agent process outlive the editor.
         S.connection_service:terminate()

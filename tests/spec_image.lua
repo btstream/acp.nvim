@@ -711,19 +711,28 @@ return function(t)
       t.eq("a[Image 1]b", context.display_text(captured.text, captured.attachments))
     end)
 
-    t.it("refuses an image the agent did not advertise", function()
+    t.it("degrades an image to a resource link when the agent lacks image support", function()
       local Prompts = require("acp.app.prompts")
       local state = require("acp.session.state")
       local c = cfg()
-      local notified
       local session = state.new("s", "/tmp")
-      local sent = false
+      local blocks
+      local paths = {}
       local prompts = Prompts.new({
         config = function()
           return c
         end,
         runtime = function()
-          return { replays = {} }
+          return {
+            replays = {},
+            begin_turn = function()
+              return 1
+            end,
+            enqueue = function()
+              return true
+            end,
+            finish_turn = function() end,
+          }
         end,
         client = function()
           return {
@@ -738,9 +747,76 @@ return function(t)
         connection = function()
           return "ready"
         end,
+        run = function(_, _, _, fn)
+          local task = {
+            check = function() end,
+            status = "running",
+            call = function(_, _, _, prompt_blocks)
+              blocks = prompt_blocks
+              return true, { stopReason = "end_turn" }
+            end,
+          }
+          fn(task)
+          return task
+        end,
+        selected = function()
+          return true
+        end,
+        on_turn_start = function() end,
+        on_turn_end = function() end,
+        on_changed = function() end,
+        on_render = function() end,
+        add_block = function() end,
+        prune = function() end,
+        dispatch_queued = function() end,
+        refresh_title = function() end,
+        notify = function() end,
+      })
+      -- The agent advertised no image support, so the block must become a link
+      -- rather than failing the whole message.
+      local ok = prompts:send(session, "look", {
+        { kind = "image", inline = false, label = "a.png", uri = "file:///tmp/a.png" },
+      })
+      t.truthy(ok)
+      t.truthy(blocks, "the prompt was not sent")
+      local image
+      for _, block in ipairs(blocks) do
+        if block.type == "resource_link" then
+          image = block
+        end
+      end
+      t.truthy(image, "the image was not degraded to a link: " .. vim.inspect(blocks))
+      t.eq("file:///tmp/a.png", image.uri)
+    end)
+
+    t.it("still refuses too many images for one message", function()
+      local Prompts = require("acp.app.prompts")
+      local state = require("acp.session.state")
+      local c = cfg()
+      local notified
+      local session = state.new("s", "/tmp")
+      local prompts = Prompts.new({
+        config = function()
+          return c
+        end,
+        runtime = function()
+          return { replays = {} }
+        end,
+        client = function()
+          return {
+            is_ready = function()
+              return true
+            end,
+            supports_prompt = function()
+              return true
+            end,
+          }
+        end,
+        connection = function()
+          return "ready"
+        end,
         run = function()
-          sent = true
-          return { status = "running" }
+          error("must not run")
         end,
         selected = function()
           return true
@@ -757,12 +833,6 @@ return function(t)
           notified = message
         end,
       })
-      local ok = prompts:send(session, "look", { { kind = "image", inline = true, label = "a.png" } })
-      t.eq(false, ok)
-      t.falsy(sent)
-      t.match("does not accept images", notified)
-      session.status = "running"
-      t.eq(false, prompts:send(session, "queued", { { kind = "image", inline = true } }))
       c.context.images.max_per_message = 1
       t.eq(
         false,

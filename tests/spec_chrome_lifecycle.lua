@@ -22,8 +22,10 @@ return function(t)
         return true
       end,
       shutdown = function() end,
-      has_session_capability = function()
-        return false
+      -- This double drives the replay path, so it must look like an agent that
+      -- supports `session/load`; `Sessions:load` checks the capability first.
+      has_session_capability = function(_, name)
+        return name == "loadSession"
       end,
       load_session = function()
         return true, {}

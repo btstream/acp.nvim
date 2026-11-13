@@ -129,6 +129,95 @@ function Sessions:create(on_missing)
   end)
 end
 
+---Resume `session_id` without replaying its history.
+---
+---The fallback when the agent supports `session/resume` but not `session/load`:
+---the agent-side context comes back, the transcript does not. The user is told,
+---because an empty transcript after "open session" otherwise looks like a bug.
+---@param session_id string
+---@param opts {kind: string|nil}|nil
+function Sessions:resume(session_id, opts)
+  opts = opts or {}
+  local client = self.get_client()
+  if not self:ready() or not client then
+    self.notify("No agent process is running", vim.log.levels.WARN)
+    return
+  end
+  local runtime = self.get_runtime()
+  local cwd = self.catalog:session_cwd(session_id, self.resolve_cwd())
+  local entry = runtime:stage(session_id, cwd)
+  local intent = runtime:intend()
+  -- Hold the same replay lock as `replay`: a second load while this request is
+  -- in flight would stage a second projection for the same session id.
+  self.replaying = true
+  self.on_replaying(true)
+  self.run("resume", client, entry, function(task)
+    local ok, result = task:call("resume_session", session_id, cwd)
+    if not ok then
+      task.status = "failed"
+      runtime:rollback(entry)
+      local auth = self.get_auth and self.get_auth()
+      if
+        auth
+        and auth:require(result, {
+          retry = function()
+            self:resume(session_id, opts)
+          end,
+        })
+      then
+        return
+      end
+      local message = type(result) == "table" and (result.message or vim.inspect(result)) or tostring(result)
+      if opts.kind == "restore" and tostring(message):lower():match("shutdown") then
+        -- Expected during teardown; do not alarm the user.
+        self:create()
+        return
+      end
+      self.notify(
+        "unable to resume the session: " .. message,
+        opts.kind == "restore" and vim.log.levels.WARN or vim.log.levels.ERROR
+      )
+      -- Restoring has no session to fall back on: the old one is already gone.
+      if opts.kind == "restore" then
+        self:create()
+      end
+      return
+    end
+    if type(result) ~= "table" then
+      error("invalid session/resume response")
+    end
+    entry:configure(result)
+    entry.needs_load = false
+    if not runtime:commit(entry) then
+      return
+    end
+    if self.catalog:apply_title(entry) then
+      self.on_changed()
+    end
+    if runtime.selection == intent then
+      self.activate(entry)
+      self.render()
+    end
+    self.prune()
+    self.on_changed()
+    self.notify("Session resumed (history is not replayed)")
+    self.catalog:refresh_title(entry)
+  end, function(err)
+    runtime:rollback(entry)
+    self.notify("unable to resume the session: " .. tostring(err), vim.log.levels.ERROR)
+  end, function(_, owned)
+    if not owned then
+      return
+    end
+    runtime:rollback(entry)
+    self.replaying = false
+    self.on_replaying(false)
+    if runtime.sessions[entry.id] == entry then
+      self.dispatch_queued(entry)
+    end
+  end)
+end
+
 ---Load `session_id`, replaying the agent's history into the transcript.
 ---
 ---Used both when switching sessions and when restoring the current one after a
@@ -220,6 +309,10 @@ function Sessions:restore(session_id)
     return
   end
   if not capabilities.supports(capabilities.agent(client), "loadSession") then
+    if capabilities.supports(capabilities.agent(client), "sessionCapabilities.resume") then
+      self:resume(session_id, { kind = "restore" })
+      return
+    end
     self:create()
     return
   end
@@ -246,10 +339,81 @@ function Sessions:load(session_id)
     self.notify("Wait for the session to finish before loading its history", vim.log.levels.WARN)
     return
   end
+  local client = self.get_client()
+  if not capabilities.supports(capabilities.agent(client), "loadSession") then
+    -- Resuming restores the agent-side context without replaying history; it is
+    -- the closest this agent can get to "open that session".
+    if capabilities.supports(capabilities.agent(client), "sessionCapabilities.resume") then
+      self:resume(session_id)
+      return
+    end
+    self.notify("This agent cannot load sessions; starting a new one", vim.log.levels.WARN)
+    self:create()
+    return
+  end
   -- Agents reject session/load when the cwd does not match the session.
   -- Loading replays authoritative history, even for a cached session; appending
   -- to the cached object would duplicate every message on subsequent visits.
   self:replay(session_id, { kind = "load" })
+end
+
+---Whether the client can be asked to close a session.
+---
+---Both the advertised capability and the local method are required: a test
+---double may advertise through the predicate without implementing the call.
+---@param client table|nil
+---@return boolean
+local function can_close(client)
+  return client ~= nil
+    and type(client.close_session) == "function"
+    and capabilities.supports(capabilities.agent(client), "sessionCapabilities.close")
+end
+
+---Ask the agent to release a session it no longer needs to keep active.
+---
+---Best effort: `session/close` only exists on agents that advertise it, and a
+---failure must not block switching, deleting or quitting.
+---@param session_id string|nil
+function Sessions:close(session_id)
+  if not session_id then
+    return
+  end
+  local client = self.get_client()
+  if not can_close(client) then
+    return
+  end
+  local runtime = self.get_runtime()
+  local session = runtime.sessions[session_id]
+  self.run("close:" .. session_id, client, session, function(task)
+    task:call("close_session", session_id)
+  end)
+end
+
+---Close every active session synchronously, for editor exit.
+---
+---The process is killed right after this runs, so the request has to complete
+---on this turn of the event loop; a fire-and-forget coroutine would leave the
+---notification unsent.
+function Sessions:close_all_on_exit()
+  local client = self.get_client()
+  if not can_close(client) then
+    return
+  end
+  local runtime = self.get_runtime()
+  local async = require("acp.async")
+  for id in pairs(runtime.sessions) do
+    local done = false
+    local co = async.run(function()
+      client:close_session(id)
+      done = true
+    end)
+    vim.wait(200, function()
+      return done
+    end, 10)
+    if not done then
+      pcall(async.cancel, co)
+    end
+  end
 end
 
 ---Delete a session through the agent and drop it from local state.
@@ -272,6 +436,11 @@ function Sessions:delete(session_id, done)
   end
   local session = runtime.sessions[session_id]
   self.run("delete:" .. session_id, client, session, function(task)
+    -- Release agent-side resources first. Not every agent has `session/close`,
+    -- and a failed close must not prevent the delete.
+    if can_close(client) then
+      task:call("close_session", session_id)
+    end
     local ok, result = task:call("delete_session", session_id)
     if not ok then
       task.status = "failed"

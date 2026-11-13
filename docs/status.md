@@ -741,3 +741,39 @@ inline 安全与提问：
 验证：1064 项单元/组件测试通过，0 失败，0 项 pending；inline 安全集成脚本 3 项通过。
 已知：`tests/integration_inline.lua`（阶段 7 之前就存在）依赖交互式权限选择，在 headless
 下会在权限提示处停顿，通过项数在 7–10 之间浮动，不作为门禁使用。
+
+## 多 agent 兼容阶段 8（2026-11-13）
+
+会话管理与上下文补全：
+
+- **分页**：`Catalog:list` 跟随 `nextCursor` 翻到底（上限 100 页；cursor 重复或为空即停），
+  cwd 作用域内没有结果时回退到不限目录，并从 `nil` 游标重新开始。任何一页失败都整体
+  报错，不返回半截列表。
+- **resume**：新增 `Sessions:resume` 与 `Client:resume_session`。`Sessions:load` /
+  `restore` 先查 `loadSession`；不支持但有 `sessionCapabilities.resume` 时走 resume，
+  只恢复 agent 端上下文并提示「history is not replayed」，两者都不支持才新建。
+- **close**：`Sessions:close` 在切换会话时释放上一个会话，`close_all_on_exit` 在
+  `VimLeavePre` 里同步 `vim.wait` 逐个关闭（进程马上就被终止，协程式发送会丢包），
+  删除会话前也先 close。三处都要求 agent 声明 `sessionCapabilities.close` **且** client
+  真正实现了 `close_session`，避免只声明能力的 double 触发空调用。
+- **MCP**：`config.mcp_servers`（stdio/http/sse）经校验后交给
+  `Client:mcp_servers()`；stdio 始终保留，http/sse 需 `mcpCapabilities` 声明，
+  再传给 `session/new`、`session/load`、`session/resume`。
+- **上下文降级**：agent 不支持 `promptCapabilities.image` 时，图片在读取字节前就降级为
+  `resource_link`，不再于发送前直接拒绝整条消息。
+- **cwd**：`resolve_cwd` 去掉末尾 `/`（根目录保留），避免同一目录被 agent 当成两个。
+
+顺带修正一个真实缺陷：`capabilities.agent` 曾把「client 实现了 `load_session`」一律当作
+支持，而真实 client 总是实现该方法，使显式声明 `loadSession: false` 的 agent 被误判；
+现在只对无法上报能力的轻量 double 做这种推断。
+
+mock 新增 `resumeonly` profile（可 resume、不可 load）、`session/resume` 与
+`session/close` 处理、`ACP_MOCK_CLOSE_LOG`（逐行记录被关闭的会话 id），并让
+`ACP_EMPTY_SCOPE_DIR` 的目录比较忽略末尾斜杠。
+
+验证：1087 项单元/组件测试通过，0 失败，0 项 pending（新增 23 项，分布在
+`spec_session_management`、`spec_session_lifecycle`、`spec_config`、`spec_image`）。
+未在真实 agent 上手工验收 resume/close 与 MCP 下发。
+
+切换离开仍在运行的会话不会发送 close：那只会打断用户打算留在后台的工作，等它结束
+后（或退出编辑器时）才释放。

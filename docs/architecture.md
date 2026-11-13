@@ -43,6 +43,10 @@ Controller 只保留公开入口、会话选择、服务装配和跨模块协调
   diff 和 rawOutput 保持原子替换，避免累计前缀的二次方复制。
 - `protocol/capabilities` 是客户端能力声明和 agent 能力查询的唯一入口；能力按配置开关逐项
   打开，未实现的能力不下发。协议层不再 require `ui/*`，调度器由连接服务注入。
+  `M.agent()` 以 client 上报的能力表为基础，`has_session_capability` 谓词供测试 double
+  授予或撤销单项能力；只有**无法上报能力**的 double 才按“实现了方法即支持”推断
+  `loadSession`，避免真实 client（总是实现 `load_session`）掩盖 agent 的
+  `loadSession: false`。
 - agent 请求经 `client:on_agent_request` / `on_agent_notification` 注册表分发；未注册方法
   保持 -32601。每个 agent 请求只能回复一次，`$/cancel_request` 与迟到回复共用一个已答标记。
 - `app/interactions` 是等待用户回答的唯一状态源。协议层只交出回复回调；策略链（当前 inline
@@ -116,7 +120,12 @@ Controller 只保留公开入口、会话选择、服务装配和跨模块协调
   返回错误而不是省略该附件。`context/clipboard` 异步跑平台工具，返回“有图/无图/后端失败”
   三态，避免空的 Wayland 剪贴板回落到 X11 的旧截图，并用 `vim.system` 超时兜住挂起的工具。
 - `ui/paste_image` 覆盖 `vim.paste`，仅在光标位于输入区且粘贴内容是单个存在的图像路径时
-  接管，其余一律交还原处理器；`app/prompts` 依据 `promptCapabilities.image` 拒绝内嵌图像。
+  接管，其余一律交还原处理器；`app/prompts` 在发送时按 `promptCapabilities.image` 决定
+  是否降级为 `resource_link`（在读取字节之前判断），不再于附加/发送前直接拒绝整条消息。
+- 会话列表由 `app/catalog` 跟随 `nextCursor` 翻页，`app/sessions` 按能力在
+  `session/load`、`session/resume`、新建三者间选择；`session/close` 只在 agent 声明
+  `sessionCapabilities.close` 且 client 实现该方法时发送。`protocol/client` 的
+  `mcp_servers()` 按 `mcpCapabilities` 过滤 `config.mcp_servers` 后再下发。
 - 断连取消任务后重置 Catalog 的查询合并状态，但保留元信息缓存；重新 setup 则清空
   标题及 cwd 缓存，避免混用不同 Agent/项目的数据。
 - `session/runtime` 仍是重放事务、outbox 与 LRU 的唯一实现者，`app/sessions` 只负责编排。
