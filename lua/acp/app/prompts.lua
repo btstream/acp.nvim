@@ -4,6 +4,7 @@
 -- controller keeps composer ownership: it decides whether a draft is cleared
 -- after this module reports that the message was accepted.
 local context = require("acp.context")
+local capabilities = require("acp.protocol.capabilities")
 
 local Prompts = {}
 Prompts.__index = Prompts
@@ -97,7 +98,7 @@ function Prompts:send(session, text, attachments, hooks)
         self.notify("Image attachments are disabled or exceed context.images.max_per_message", vim.log.levels.WARN)
         return false
       end
-      if client.supports_prompt and not client:supports_prompt("image") and att.inline ~= false then
+      if not capabilities.prompt(client, "image") and att.inline ~= false then
         self.notify("This agent does not accept images; switch models or remove the attachment", vim.log.levels.WARN)
         return false
       end

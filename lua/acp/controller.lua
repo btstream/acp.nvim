@@ -12,6 +12,7 @@ local layout = require("acp.layout")
 local Runtime = require("acp.session.runtime")
 local Tasks = require("acp.tasks")
 local context = require("acp.context")
+local capabilities = require("acp.protocol.capabilities")
 local Permissions = require("acp.app.permissions")
 local Options = require("acp.app.options")
 local Chrome = require("acp.ui.chrome")
@@ -965,7 +966,7 @@ function M.add_selection()
     bufnr = bufnr,
     line = line,
     include_current_line = true,
-    embedded = S.client and S.client:supports_prompt("embeddedContext") or false,
+    embedded = S.client and capabilities.prompt(S.client, "embeddedContext") or false,
   })
   if not attachment then
     notify(err or "unable to attach selection", vim.log.levels.WARN)

@@ -4,6 +4,7 @@
 -- cached by session id here instead of on the object. The query helpers never
 -- activate a session; they only report what the agent knows.
 local log = require("acp.log")
+local capabilities = require("acp.protocol.capabilities")
 
 local Catalog = {}
 Catalog.__index = Catalog
@@ -195,7 +196,7 @@ function Catalog:refresh_title(session, cb)
     end
     return
   end
-  if not client:has_session_capability("list") then
+  if not capabilities.supports(capabilities.agent(client), "sessionCapabilities.list") then
     if cb then
       cb()
     end

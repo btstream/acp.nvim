@@ -5,6 +5,7 @@
 -- callbacks, so it never touches the panel or the composer directly.
 local session_picker = require("acp.ui.session_picker")
 local session_snacks = require("acp.ui.session_snacks")
+local capabilities = require("acp.protocol.capabilities")
 
 local Sessions = {}
 Sessions.__index = Sessions
@@ -178,7 +179,7 @@ function Sessions:restore(session_id)
   if self.replaying then
     return
   end
-  if not client:agent_capabilities().loadSession then
+  if not capabilities.supports(capabilities.agent(client), "loadSession") then
     self:create()
     return
   end
@@ -283,7 +284,7 @@ function Sessions:pick()
     local picker_opts = {
       sessions = sessions,
       current_id = active and active.id or nil,
-      can_delete = client:has_session_capability("delete"),
+      can_delete = capabilities.supports(capabilities.agent(client), "sessionCapabilities.delete"),
       use_icons = self.config().ui.icons,
       on_open = function(session_id)
         if ui_current() then

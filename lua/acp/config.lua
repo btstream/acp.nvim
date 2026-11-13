@@ -18,6 +18,16 @@ M.defaults = {
     },
   },
 
+  -- Client capabilities. Each switch exists so a capability can be turned off
+  -- while diagnosing an agent, even after the implementation lands.
+  capabilities = {
+    elicitation = { form = false, url = false },
+    auth_terminal = false,
+    terminal_output_meta = false,
+    fs = false,
+    terminal = false,
+  },
+
   -- Working directory for sessions. Defaults to vim.fn.getcwd().
   cwd = nil,
 
@@ -801,6 +811,23 @@ function M.validate(cfg)
   end
   if type(cfg.notices) ~= "boolean" then
     fail("notices must be a boolean, got %s", type(cfg.notices))
+  end
+  local caps = cfg.capabilities
+  if type(caps) ~= "table" then
+    fail("capabilities must be a table, got %s", type(caps))
+  end
+  if type(caps.elicitation) ~= "table" then
+    fail("capabilities.elicitation must be a table, got %s", type(caps.elicitation))
+  end
+  for _, key in ipairs({ "form", "url" }) do
+    if type(caps.elicitation[key]) ~= "boolean" then
+      fail("capabilities.elicitation.%s must be a boolean, got %s", key, type(caps.elicitation[key]))
+    end
+  end
+  for _, key in ipairs({ "auth_terminal", "terminal_output_meta", "fs", "terminal" }) do
+    if type(caps[key]) ~= "boolean" then
+      fail("capabilities.%s must be a boolean, got %s", key, type(caps[key]))
+    end
   end
   if cfg.cwd ~= nil and cfg.cwd ~= vim.NIL and type(cfg.cwd) ~= "string" then
     fail("cwd must be a string, got %s", type(cfg.cwd))

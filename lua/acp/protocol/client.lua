@@ -3,6 +3,7 @@ local Log = require("acp.log")
 local rpcmod = require("acp.transport.jsonrpc")
 local process = require("acp.transport.process")
 local async = require("acp.async")
+local capabilities = require("acp.protocol.capabilities")
 
 local M = {}
 
@@ -32,19 +33,21 @@ end
 ---@field proc AcpProcess|nil
 ---@field capabilities table
 ---@field auth_methods table[]
+---@field scheduler table|nil
 ---@field on_event fun(name: string, payload: any)
 ---@field permissions table<string, {respond: fun(result:any), session_id: string}>
 ---@field generation integer
 local Client = {}
 Client.__index = Client
 
----@param opts {agent: table, cwd: string, client_capabilities: table, limits?: table, on_event: fun(name: string, payload: any)}
+---@param opts {agent: table, cwd: string, client_capabilities: table, limits?: table, scheduler?: table, on_event: fun(name: string, payload: any)}
 ---@return AcpClient
 function M.new(opts)
   local self = setmetatable({
     agent = opts.agent,
     cwd = opts.cwd,
     limits = opts.limits,
+    scheduler = opts.scheduler,
     client_capabilities = opts.client_capabilities,
     on_event = opts.on_event or function() end,
     permissions = {},
@@ -125,7 +128,7 @@ function Client:do_start(generation)
     max_pending_bytes = limits.max_pending_bytes,
     spill_bytes = limits.spill_bytes,
     dispatch_budget_ms = limits.dispatch_budget_ms,
-    scheduler = require("acp.ui.work_scheduler").shared,
+    scheduler = self.scheduler,
     on_line = function(line)
       return self:on_line(line)
     end,
@@ -499,11 +502,7 @@ end
 ---@param name string
 ---@return boolean
 function Client:has_session_capability(name)
-  local caps = self:agent_capabilities().sessionCapabilities
-  if type(caps) ~= "table" then
-    return false
-  end
-  return caps[name] ~= nil
+  return capabilities.supports(self:agent_capabilities().sessionCapabilities, name)
 end
 
 ---Whether the agent accepts a given prompt content type.
@@ -514,8 +513,7 @@ end
 ---@param name "image"|"audio"|"embeddedContext"
 ---@return boolean
 function Client:supports_prompt(name)
-  local caps = self:agent_capabilities().promptCapabilities
-  return type(caps) == "table" and caps[name] == true
+  return capabilities.supports(self:agent_capabilities().promptCapabilities, name)
 end
 
 ---@param session_id string

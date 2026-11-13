@@ -3,6 +3,8 @@
 -- the decision depends on the currently selected session.
 local log = require("acp.log")
 local client_mod = require("acp.protocol.client")
+local capabilities = require("acp.protocol.capabilities")
+local work_scheduler = require("acp.ui.work_scheduler")
 
 local Connection = {}
 Connection.__index = Connection
@@ -36,12 +38,7 @@ function Connection.new(opts)
 end
 
 local function build_client_capabilities(config)
-  -- Only advertise what is actually implemented, and encode capability
-  -- objects as JSON objects (vim.empty_dict) rather than empty arrays.
-  if config.notices then
-    return { session = { notices = vim.empty_dict() } }
-  end
-  return vim.empty_dict()
+  return capabilities.client(config)
 end
 
 -- Exposed for the protocol conformance tests.
@@ -73,6 +70,7 @@ function Connection:connect()
       agent = cfg.agents[cfg.agent],
       cwd = self.resolve_cwd(),
       client_capabilities = build_client_capabilities(cfg),
+      scheduler = work_scheduler.shared,
       limits = cfg.transport,
       on_event = function(name, payload)
         local function dispatch()
