@@ -127,30 +127,55 @@ end
 ---Modes that get a dedicated glyph. Anything else falls back to its own text.
 local MODE_GLYPHS = { plan = "mode_plan", build = "mode_build" }
 
+---Candidate strings to test, most specific first.
+---@param mode string|nil
+---@param key string|nil
+---@return string[]
+local function mode_candidates(mode, key)
+  local out = {}
+  if type(key) == "string" and key ~= "" then
+    out[#out + 1] = key
+  end
+  if type(mode) == "string" and mode ~= "" then
+    out[#out + 1] = mode
+  end
+  return out
+end
+
 ---Text for the mode region: a glyph for known modes, the raw label otherwise.
 ---
 ---With `ui.icons = false` the label is kept, because a single ASCII letter would
 ---not tell the user which mode is active.
----@param mode string
+---@param mode string display label
 ---@param ic table<string, string>
+---@param key string|nil value id, preferred for the glyph decision
 ---@return string
-function M.mode_text(mode, ic)
-  local key = MODE_GLYPHS[mode:lower()]
-  if key and ic[key] then
-    return ic[key]
+function M.mode_text(mode, ic, key)
+  for _, candidate in ipairs(mode_candidates(mode, key)) do
+    local glyph = MODE_GLYPHS[candidate:lower()]
+    if glyph and ic[glyph] then
+      return ic[glyph]
+    end
   end
   return mode
 end
 
 ---Highlight group for the mode region, so plan and build read differently.
----@param mode string
+---@param mode string display label
+---@param key string|nil value id, preferred for the style decision
+---@param plan boolean|nil the agent's own semantic kind, when it reported one
 ---@return string
-function M.mode_hl(mode)
-  local lower = mode:lower()
-  if lower == "plan" then
+function M.mode_hl(mode, key, plan)
+  if plan then
     return "AcpToolbarModePlan"
-  elseif lower == "build" then
-    return "AcpToolbarModeBuild"
+  end
+  for _, candidate in ipairs(mode_candidates(mode, key)) do
+    local lower = candidate:lower()
+    if lower == "plan" or lower == "architect" then
+      return "AcpToolbarModePlan"
+    elseif lower == "build" then
+      return "AcpToolbarModeBuild"
+    end
   end
   return "AcpToolbarAccent"
 end
@@ -172,7 +197,7 @@ function M.status_text(status, ic, spinner)
 end
 
 ---Build the composer toolbar.
----@param info {mode: string|nil, model: string|nil, thinking: string|nil, status: string, waiting: boolean|nil, queued: integer|nil, usage: table|nil, spinner: string|nil, show_usage: boolean|nil, chips: string[]|nil}
+---@param info {mode: string|nil, mode_key: string|nil, mode_plan: boolean|nil, model: string|nil, thinking: string|nil, status: string, waiting: boolean|nil, queued: integer|nil, usage: table|nil, spinner: string|nil, show_usage: boolean|nil, chips: string[]|nil}
 ---@param width integer available cells (the whole window width)
 ---@return string
 function M.render(info, width)
@@ -190,8 +215,8 @@ function M.render(info, width)
   local badge = "%#AcpToolbar#"
   local badge_width = 0
   if info.mode and info.mode ~= "" then
-    local glyph = M.mode_text(info.mode, ic)
-    local group = M.mode_hl(info.mode)
+    local glyph = M.mode_text(info.mode, ic, info.mode_key)
+    local group = M.mode_hl(info.mode, info.mode_key, info.mode_plan)
     badge = badge .. clickable(" " .. glyph .. " ", group, "AcpPickMode")
     badge_width = dw(glyph) + 2
   end

@@ -125,9 +125,12 @@ function Chrome:composer_bar(win)
   self.last_eval_at = self.clock()
   self.stats.last_bar_status = waiting and "waiting" or (session and session.status or "idle")
   self.stats.last_evaluated_frame = self.stats.last_bar_status == "running" and self.frame or nil
-  local model, mode, thinking
+  local model, mode, thinking, mode_key, mode_plan
   if session then
     model, mode, thinking = presenter.toolbar_labels(session)
+    -- The badge needs the value id and the agent's own plan flag; the label
+    -- alone cannot tell "Plan mode" from an ordinary mode.
+    mode, mode_key, mode_plan = presenter.mode_badge(session)
   end
 
   local input = self.get_input()
@@ -143,6 +146,8 @@ function Chrome:composer_bar(win)
   return toolbar.render({
     icons = cfg.ui.icons,
     mode = mode,
+    mode_key = mode_key,
+    mode_plan = mode_plan,
     model = model,
     thinking = thinking,
     status = session and session.status or "idle",

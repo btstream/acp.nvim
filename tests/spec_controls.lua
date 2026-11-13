@@ -43,6 +43,61 @@ return function(t)
       t.eq(nil, claude.tool_name(nil))
     end)
 
+    t.it("stores the agent tool name and shows it on the card", function()
+      local reducer = require("acp.session.reducer")
+      local blocks = require("acp.ui.blocks")
+      local s = state.new("s", "/proj")
+      s.profile = agents.get({}, "claude")
+      reducer.apply(s, {
+        sessionUpdate = "tool_call",
+        toolCallId = "t1",
+        title = "",
+        kind = "edit",
+        status = "pending",
+        _meta = { claudeCode = { toolName = "MultiEdit" } },
+      })
+      t.eq("MultiEdit", s.tools.t1.tool_name)
+      local ctx = {
+        icons = blocks.icon_set(true),
+        width = 80,
+        cwd = "/proj",
+        show_thoughts = false,
+      }
+      local lines = blocks.render_block(s.tools.t1, ctx)
+      local text = lines[1].text
+      t.match("MultiEdit", text)
+    end)
+
+    t.it("never reads another agent's _meta", function()
+      local reducer = require("acp.session.reducer")
+      local s = state.new("s", "/proj")
+      s.profile = agents.get({}, "unknown")
+      reducer.apply(s, {
+        sessionUpdate = "tool_call",
+        toolCallId = "t1",
+        title = "X",
+        kind = "edit",
+        status = "pending",
+        _meta = { claudeCode = { toolName = "MultiEdit" } },
+      })
+      t.eq(nil, s.tools.t1.tool_name)
+    end)
+
+    t.it("classifies protocol error codes per agent", function()
+      t.truthy(agents.get({}, "opencode").error_hint({ code = -32602 }))
+      t.truthy(agents.get({}, "claude").error_hint({ code = -32601 }))
+      t.truthy(agents.get({}, "pi").error_hint({ code = -32601 }))
+      t.eq(nil, agents.get({}, "claude").error_hint({ code = -32002 }))
+      t.eq(nil, agents.get({}, "claude").error_hint(nil))
+    end)
+
+    t.it("gives every profile an install hint", function()
+      for _, name in ipairs(agents.names()) do
+        local hint = agents.get({ profile = name }).install_hint
+        t.truthy(type(hint) == "string" and hint ~= "", name .. " has no install hint")
+      end
+    end)
+
     t.it("treats ExitPlanMode and pi UI requests as questions", function()
       local claude = agents.get({}, "claude")
       t.truthy(claude.is_question({ toolCall = { kind = "switch_mode" } }))
@@ -151,6 +206,39 @@ return function(t)
       t.eq("off", controls.label(s.controls.extras[1]))
     end)
 
+    t.it("lets the profile decide what a question is", function()
+      local state_mod = require("acp.session.state")
+      local permissions = require("acp.app.permissions")
+      local pi_session = state_mod.new("s", "/tmp")
+      pi_session.profile = agents.get({}, "pi")
+      local p = permissions.new({
+        config = function()
+          return { permissions = { prompt = "select" } }
+        end,
+        valid = function()
+          return true
+        end,
+        answer = function() end,
+        dismiss = function() end,
+        notify = function() end,
+        session = function()
+          return pi_session
+        end,
+      })
+      -- Mixed option kinds would look like an approval to the generic
+      -- heuristic, but pi's profile recognises its own select method.
+      local request = {
+        toolCall = { kind = "other", rawInput = { method = "select" } },
+        options = { { optionId = "a", kind = "allow_once" }, { optionId = "r", kind = "reject_once" } },
+      }
+      t.truthy(p:is_question({ type = "permission", request = request }))
+      -- A plain single-option approval stays an approval.
+      t.falsy(p:is_question({
+        type = "permission",
+        request = { toolCall = { kind = "execute" }, options = { { optionId = "a", kind = "allow_once" } } },
+      }))
+    end)
+
     t.it("reads the nested current mode from modes", function()
       local s = session_with({
         modes = { currentModeId = "default", availableModes = { { id = "default", name = "Default" } } },
@@ -183,6 +271,38 @@ return function(t)
         modes = { currentModeId = "plan", availableModes = { { id = "plan", name = "Plan" } } },
       })
       t.eq("Plan", controls.label(s.controls.mode))
+    end)
+
+    t.it("styles the mode badge from the value id, not the label", function()
+      local toolbar = require("acp.ui.toolbar")
+      local presenter = require("acp.ui.presenter")
+      local s = session_with({
+        configOptions = {
+          {
+            id = "mode",
+            category = "mode",
+            type = "select",
+            currentValue = "plan",
+            options = {
+              { value = "plan", name = "Plan mode", _meta = { kind = "plan" } },
+              { value = "default", name = "Manual approval" },
+            },
+          },
+        },
+      }, "claude")
+      local label, key, plan = presenter.mode_badge(s)
+      t.eq("Plan mode", label)
+      t.eq("plan", key)
+      t.truthy(plan)
+      t.eq("AcpToolbarModePlan", toolbar.mode_hl(label, key, plan))
+      t.truthy(toolbar.mode_text(label, require("acp.ui.icons").get(true), key) ~= "Plan mode")
+    end)
+
+    t.it("keeps the label glyph fallback when no id is available", function()
+      local toolbar = require("acp.ui.toolbar")
+      t.eq("AcpToolbarModePlan", toolbar.mode_hl("plan"))
+      t.eq("AcpToolbarModeBuild", toolbar.mode_hl("Build"))
+      t.eq("AcpToolbarAccent", toolbar.mode_hl("ask"))
     end)
   end)
 end

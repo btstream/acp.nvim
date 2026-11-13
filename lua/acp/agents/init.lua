@@ -97,12 +97,32 @@ register("generic", {
   install_hint = "Install the agent you configured, then run :Acp login if it needs credentials.",
   plan_mode = plan_mode,
   unsafe_edit_mode = unsafe_edit_mode,
+  -- Only the codes the protocol defines are classified; anything else keeps
+  -- the raw message, which is all a generic client can honestly say.
+  error_hint = function(err)
+    if type(err) ~= "table" then
+      return nil
+    end
+    if err.code == -32602 then
+      return "The agent rejected these parameters. Check the working directory and the configured launch arguments."
+    end
+    return nil
+  end,
 })
 
 register("opencode", {
   install_hint = "Install OpenCode (https://opencode.ai/docs/).",
   plan_mode = plan_mode,
   unsafe_edit_mode = unsafe_edit_mode,
+  error_hint = function(err)
+    if type(err) ~= "table" then
+      return nil
+    end
+    if err.code == -32602 then
+      return "OpenCode rejected these parameters. Check that the session cwd exists, then try :Acp new."
+    end
+    return nil
+  end,
   -- OpenCode marks its mode with `_meta.kind` on the option; there is no
   -- separate profile decision beyond that.
   classify_mode = function(control)
@@ -139,6 +159,15 @@ register("claude", {
   install_hint = "Install claude-agent-acp (`npm i -g @agentclientprotocol/claude-agent-acp`).",
   plan_mode = plan_mode,
   unsafe_edit_mode = unsafe_edit_mode,
+  error_hint = function(err)
+    if type(err) ~= "table" then
+      return nil
+    end
+    if err.code == -32601 then
+      return "This claude-agent-acp version does not implement that method; update the adapter."
+    end
+    return nil
+  end,
   -- The tool name also lives in `_meta.claudeCode.toolName`; `toolCall.name` is
   -- preferred, but agents have shipped both forms.
   tool_name = function(tool_call)
@@ -171,6 +200,14 @@ register("pi", {
   install_hint = "Install pi-acp (`npm i -g pi-acp`, or keep the npx command).",
   plan_mode = plan_mode,
   unsafe_edit_mode = unsafe_edit_mode,
+  -- pi-acp is third-party and has several forks, so a missing method is
+  -- usually a version mismatch rather than a client bug.
+  error_hint = function(err)
+    if type(err) == "table" and err.code == -32601 then
+      return "This pi-acp version does not implement that method; update it (`npm i -g pi-acp@latest`)."
+    end
+    return nil
+  end,
   -- pi exposes thinking levels as `modes`; the same list is duplicated as a
   -- thought_level config option. A mode that is a thinking level is not a
   -- work mode.

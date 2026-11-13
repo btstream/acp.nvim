@@ -242,5 +242,42 @@ return function(t)
       t.eq("opencode", S3.config.agent)
       controller.hide()
     end)
+    t.it("warns about dropped work when switching agents", function()
+      local S = setup("opencode")
+      -- Register the second agent before the turn so the switch is the only
+      -- thing that tears the session down.
+      local opts = vim.deepcopy(S.config)
+      opts.agents.claude = {
+        command = "python3",
+        args = { mock },
+        env = { ACP_MOCK_PROFILE = "claude" },
+        profile = "claude",
+      }
+      S.config = opts
+      controller.submit("slow", {})
+      vim.wait(2000, function()
+        local now = controller.state().session
+        return now ~= nil and now.status == "running"
+      end, 20)
+      t.truthy(controller.state().session and controller.state().session.status ~= "idle", "no running turn")
+
+      local notices = {}
+      local original = vim.notify
+      vim.notify = function(message, level)
+        notices[#notices + 1] = { message = tostring(message), level = level }
+      end
+      local ok, err = pcall(controller.pick_agent, "claude")
+      vim.notify = original
+      t.truthy(ok, tostring(err))
+      local warned
+      for _, notice in ipairs(notices) do
+        if notice.message:find("dropped", 1, true) then
+          warned = notice.message
+        end
+      end
+      t.truthy(warned, "switching agents dropped a running turn without a warning")
+      t.match("interrupted 1 running turn", warned)
+      controller.hide()
+    end)
   end)
 end

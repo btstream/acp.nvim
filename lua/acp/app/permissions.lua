@@ -11,7 +11,8 @@ Permissions.__index = Permissions
 
 ---@param opts {config: fun(): table, valid: fun(interaction: table): boolean,
 ---  answer: fun(interaction: table, option_id: string|nil),
----  dismiss: fun(interaction: table), notify: fun(message: string, level: integer|nil)}
+---  dismiss: fun(interaction: table), notify: fun(message: string, level: integer|nil),
+---  session: fun(): table|nil}
 function Permissions.new(opts)
   return setmetatable({
     config = opts.config,
@@ -19,19 +20,27 @@ function Permissions.new(opts)
     answer = opts.answer,
     dismiss = opts.dismiss,
     notify = opts.notify,
+    current_session = opts.session,
     shown = nil,
   }, Permissions)
 end
 
 ---A request that asks a question rather than for tool approval.
 ---
----pi wraps questions in a permission request whose options all share one kind,
----and Claude's plan approval is a switch_mode call. Neither may be auto-answered.
+---The profile knows its agent's own wrapping (pi's select/confirm, Claude's
+---ExitPlanMode). When it does not claim the request, the generic heuristics
+---apply: a single option carries no choice, and options of differing kinds are
+---an approval rather than a question.
 ---@param interaction table
 ---@return boolean
 function Permissions:is_question(interaction)
   local request = interaction.request or {}
   local tool = request.toolCall or request.tool_call or {}
+  local session = self.current_session and self.current_session() or nil
+  local profile = session and session.profile or nil
+  if profile and profile.is_question and profile.is_question(request) then
+    return true
+  end
   if tool.kind == "switch_mode" then
     return true
   end

@@ -29,6 +29,18 @@ function M.short_model_name(name)
   return name
 end
 
+---Tab-separated mode label, id and plan flag, for the toolbar.
+---@param session AcpSessionState
+---@return string|nil label, string|nil key, boolean plan
+function M.mode_badge(session)
+  local control = session.controls and session.controls.mode
+  if not control then
+    return nil, nil, false
+  end
+  local controls_mod = require("acp.session.controls")
+  return controls_mod.label(control), control.current, control.plan == true
+end
+
 ---Extract the model and mode labels used by the composer toolbar.
 ---
 ---Called from the winbar, which Vim evaluates on every redraw (cursor moves,

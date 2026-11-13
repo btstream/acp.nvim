@@ -193,13 +193,6 @@ function M.build(session, profile)
   return controls
 end
 
----Whether any control exists.
----@param controls table
----@return boolean
-function M.any(controls)
-  return controls.mode ~= nil or controls.model ~= nil or controls.thinking ~= nil or #(controls.extras or {}) > 0
-end
-
 ---Find a control by id, including extras.
 ---@param controls table
 ---@param id string

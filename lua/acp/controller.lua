@@ -650,6 +650,24 @@ end
 
 ---Switch the agent, reusing the current configuration for everything else.
 ---@param name string|nil
+---Count messages that would be lost by a reconfiguration.
+---@return integer queued, integer running
+local function pending_work()
+  local queued, running = 0, 0
+  for _, session in pairs(S.sessions) do
+    queued = queued + #session.queue
+    if session.status ~= "idle" then
+      running = running + 1
+    end
+  end
+  return queued, running
+end
+
+---Switch the agent, reusing the current configuration for everything else.
+---
+---Switching tears down the connection and every session, so pending messages
+---would be lost. Ask first instead of silently dropping them.
+---@param name string|nil
 function M.pick_agent(name)
   if not S.config then
     return
@@ -661,12 +679,24 @@ function M.pick_agent(name)
       notify("already using " .. target, vim.log.levels.INFO)
       return
     end
+    -- Sample before teardown: setup() clears the sessions that hold the queue.
+    local queued, running = pending_work()
     local opts = vim.deepcopy(S.config)
     opts.agent = target
     pcall(function()
       require("acp.inline").stop()
     end)
     M.setup(opts, { discard_queued = true })
+    if queued > 0 or running > 0 then
+      notify(
+        string.format(
+          "Switching agents dropped %d queued message(s) and interrupted %d running turn(s)",
+          queued,
+          running
+        ),
+        vim.log.levels.WARN
+      )
+    end
     notify("Switched to " .. target, vim.log.levels.INFO)
     M.open()
   end
@@ -1397,6 +1427,9 @@ function M.setup(opts, action)
       M.resolve_permission(interaction.id, nil, true)
     end,
     notify = notify,
+    session = function()
+      return S.session
+    end,
   })
   S.elicitation = Elicitation.new({
     answer = function(interaction, response)

@@ -115,6 +115,25 @@ local function maybe_auto_expand(session, block)
   end
 end
 
+---Resolve the agent-specific tool name for a tool call.
+---
+---`toolCall.name` is the protocol field, but some agents only put the real
+---name in their own `_meta` (Claude: `claudeCode.toolName`). The profile knows
+---where; the reducer only stores the result.
+---@param session table
+---@param update table
+---@return string|nil
+local function profile_tool_name(session, update)
+  local profile = session.profile
+  if profile and profile.tool_name then
+    local name = profile.tool_name(update)
+    if type(name) == "string" and name ~= "" then
+      return name
+    end
+  end
+  return nil
+end
+
 ---Ask the agent profile what an update carries beyond the protocol core.
 ---@param session table
 ---@param update table
@@ -297,6 +316,7 @@ local function reduce(session, update, tx)
         text = "",
         title = update.title or "",
         name = update.name,
+        tool_name = profile_tool_name(session, update),
         tool_kind = update.kind,
         status = update.status or "pending",
         locations = update.locations,
@@ -314,6 +334,7 @@ local function reduce(session, update, tx)
     tx:block(block)
     block.title = update.title or block.title
     block.name = merge_list(block.name, update.name)
+    block.tool_name = profile_tool_name(session, update) or block.tool_name
     block.tool_kind = update.kind or block.tool_kind
     block.status = update.status or block.status
     block.locations = merge_list(block.locations, update.locations)
@@ -354,6 +375,10 @@ local function reduce(session, update, tx)
     end
     if update.name then
       block.name = update.name
+    end
+    local tool_name = profile_tool_name(session, update)
+    if tool_name then
+      block.tool_name = tool_name
     end
     if update.kind then
       block.tool_kind = update.kind

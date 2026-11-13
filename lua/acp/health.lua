@@ -31,12 +31,17 @@ function M.check()
     local cfg = st.config
     if cfg then
       local agent = cfg.agents[cfg.agent]
+      local profile = require("acp.agents").get(agent, cfg.agent)
       health.info(string.format("agent: %s (%s %s)", cfg.agent, agent.command, table.concat(agent.args or {}, " ")))
       if vim.fn.executable(agent.command) == 1 then
         health.ok("agent executable found: " .. vim.fn.exepath(agent.command))
       else
         health.error("agent executable not found: " .. agent.command)
-        health.info("Install the agent, then run `:Acp login` (the agent offers its own login method)")
+        -- The profile knows how this agent is installed; a generic client can
+        -- only point at the documentation.
+        if profile.install_hint then
+          health.info(profile.install_hint)
+        end
       end
       local client = st.client
       local methods = client and client.auth_methods or {}
@@ -48,6 +53,28 @@ function M.check()
         health.info("login methods: " .. table.concat(names, ", ") .. " (use :Acp login)")
       elseif client then
         health.info("the agent reported no login method; see its documentation")
+      end
+      -- Every configured agent is checked, not only the active one: a user
+      -- switching agents needs to know which are installed.
+      local others = {}
+      for name in pairs(cfg.agents) do
+        if name ~= cfg.agent then
+          others[#others + 1] = name
+        end
+      end
+      table.sort(others)
+      for _, name in ipairs(others) do
+        local other = cfg.agents[name]
+        local label = string.format("configured agent %s (%s)", name, other.command)
+        if vim.fn.executable(other.command) == 1 then
+          health.ok(label)
+        else
+          health.warn(label .. ": not found")
+          local hint = require("acp.agents").get(other, name).install_hint
+          if hint then
+            health.info(hint)
+          end
+        end
       end
       health.info("layout backend: " .. cfg.layout.backend)
     end

@@ -216,7 +216,11 @@ function Prompts:send(session, text, attachments, hooks, retrying)
             .. "This is a provider-side limit, not an acp.nvim error. Click the model name in the toolbar, press <M-m> while typing, or run :Acp model."
         )
       else
-        add_error("prompt failed: " .. raw)
+        -- Agent-specific advice comes last: the generic classifications above
+        -- are protocol-wide, while a profile hint knows this agent's quirks.
+        local profile = session.profile
+        local hint = profile and profile.error_hint and profile.error_hint(result) or nil
+        add_error("prompt failed: " .. raw .. (hint and ("\n\n" .. hint) or ""))
       end
       runtime:finish_turn(session, turn, "error")
     else

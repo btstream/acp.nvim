@@ -132,6 +132,11 @@ local function tool_title(block)
   if type(title) == "string" and title ~= "" then
     return one_line(title)
   end
+  -- The agent's own tool name (Claude's `MultiEdit`, for example) is more
+  -- specific than the protocol `name`, which may only say "Edit".
+  if type(block.tool_name) == "string" and block.tool_name ~= "" then
+    return one_line(block.tool_name)
+  end
   if block.name and block.name ~= "" then
     return one_line(block.name)
   end

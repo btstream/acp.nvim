@@ -97,6 +97,18 @@ function Options:toggle(control, client, generation, session)
   self:apply(control, next_value, client, generation, session)
 end
 
+---Picker title for a control: avoid repeating the same name twice.
+---@param control table
+---@param title string|nil
+---@return string
+local function picker_title(control, title)
+  local name = control.name or control.id
+  if not title or title == "" or title == name then
+    return name
+  end
+  return title .. " · " .. name
+end
+
 ---Picker for a select control.
 ---@param control table
 ---@param title string|nil
@@ -119,7 +131,7 @@ function Options:pick_control(control, title, client, generation, session)
     return
   end
   picker.select({
-    title = (title or control.name or control.id) .. " · " .. (control.name or control.id),
+    title = picker_title(control, title),
     items = items,
     on_choice = function(value)
       self:apply(control, value, client, generation, session)

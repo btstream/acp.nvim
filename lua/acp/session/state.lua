@@ -10,6 +10,7 @@ local memory = require("acp.session.memory")
 ---@field status string|nil
 ---@field title string|nil
 ---@field name string|nil
+---@field tool_name string|nil agent-specific tool name, e.g. Claude's MultiEdit
 ---@field tool_kind string|nil
 ---@field content table[]|nil
 ---@field locations table[]|nil
@@ -499,64 +500,6 @@ function Session:finish_turn(stop_reason)
   self.status = "idle"
   self.pending_user = nil
   self.stop_reason = stop_reason
-end
-
----Return the active config option with the given category.
----@param category string
----@return table|nil
-function Session:option_by_category(category)
-  for _, opt in ipairs(self.config_options or {}) do
-    if opt.category == category then
-      return opt
-    end
-  end
-  return nil
-end
-
----@param option table
----@return {value: string|boolean, name: string, description: string|nil}[]
-function M.select_values(option)
-  local cached = option._select_values
-  if cached and cached.src == option.options then
-    return cached.values
-  end
-  local out = {}
-  for _, entry in ipairs(option.options or {}) do
-    if entry.group then
-      for _, child in ipairs(entry.options or {}) do
-        out[#out + 1] = child
-      end
-    else
-      out[#out + 1] = entry
-    end
-  end
-  option._select_values = { src = option.options, values = out }
-  return out
-end
-
----@param option table
----@param value string|boolean
----@return string|nil
-function M.option_label(option, value)
-  -- The toolbar calls this on every redraw; index the values once instead of
-  -- rescanning the option list each time.
-  local cached = option._value_names
-  if not cached or cached.src ~= option.options then
-    cached = { src = option.options, names = {} }
-    for _, entry in ipairs(M.select_values(option)) do
-      if entry.value ~= nil and cached.names[entry.value] == nil then
-        cached.names[entry.value] = entry.name
-      end
-    end
-    option._value_names = cached
-  end
-  if value ~= nil and cached.names[value] ~= nil then
-    return cached.names[value]
-  end
-  if type(value) == "string" then
-    return value
-  end
-  return nil
 end
 
 return M
