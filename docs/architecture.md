@@ -63,6 +63,10 @@ Controller 只保留公开入口、会话选择、服务装配和跨模块协调
 - 终端输出有两条来源：客户端通过 `terminal/create` 创建的终端，以及 agent 直接放进 `_meta`
   的 `terminal_info`/`terminal_output`/`terminal_exit`（pi，或声明了 `_meta.terminal_output`
   的 Claude）。后者由 reducer 归入 tool block，卡片直接渲染，不依赖客户端终端。
+- inline 回合的安全边界分三层：权限策略（只授权登记的副本与允许的 kind）、模式保护
+  （`inline.guard_mode` 按 profile 的 `unsafe_edit_mode` 判定并可选临时切换）、磁盘快照
+  （`inline/guard` 在提交与结算时比对源文件，直接写入即中止并让用户选择保留哪一份）。
+  提问一律交给用户，策略只回答工具权限。
 - `session/update` 解码时把 JSON null 归一化为 nil；reducer 用变更日志包围一条更新，
   失败时整体回滚，不留下半更新的 block，也不破坏 UI 持有的 block 身份。
 - 创建会话期间，sessionId 尚未知晓的更新先进入有界缓冲（256 条 / 1 MiB），创建成功后

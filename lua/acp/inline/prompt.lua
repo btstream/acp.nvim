@@ -68,6 +68,9 @@ function M.build(inv)
   return table.concat({
     "INLINE_BUFFER_EDIT: This is an inline edit in our current conversation, not a new session.",
     "Edit only the private buffer copy at `" .. inv.copy .. "`. Do not edit the original file or run commands.",
+    "The original file at `"
+      .. (inv.selection.path ~= "" and inv.selection.path or "(unsaved buffer)")
+      .. "` must be left untouched.",
     "The copy contains the current UNSAVED editor contents. Read that copy, not a stale file from earlier turns.",
     kind .. ":\n" .. scope_text,
     sel.free and "Do not change the final-newline convention. Leave unrelated code untouched."

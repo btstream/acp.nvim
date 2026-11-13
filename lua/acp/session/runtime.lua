@@ -209,9 +209,9 @@ function Runtime:rebegin_turn(session)
   return session:begin_turn()
 end
 
-function Runtime:begin_turn(session, text, attachments)
+function Runtime:begin_turn(session, text, attachments, opts)
   local turn = session:begin_turn()
-  session:add_local_user(text, attachments)
+  session:add_local_user(text, attachments, opts)
   return turn
 end
 

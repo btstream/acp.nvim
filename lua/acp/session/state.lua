@@ -440,7 +440,8 @@ end
 ---Insert the optimistic user message for a prompt.
 ---@param text string
 ---@param attachments table|nil
-function Session:add_local_user(text, attachments)
+---@param opts {display_text: string|nil}|nil
+function Session:add_local_user(text, attachments, opts)
   local positioned = false
   for _, att in ipairs(attachments or {}) do
     if att.kind == "image" and type(att.prompt_offset) == "number" then
@@ -452,6 +453,10 @@ function Session:add_local_user(text, attachments)
     id = next_id("user"),
     kind = "user",
     text = text,
+    -- A generated prompt (inline editing) can be hundreds of lines of
+    -- instructions; the transcript shows a one-line summary instead, and the
+    -- full text stays available when the block is expanded.
+    display_text = opts and opts.display_text or nil,
     status = nil,
     optimistic = true,
     attachments = attachments,

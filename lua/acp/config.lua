@@ -352,8 +352,18 @@ M.defaults = {
     copy_dir = "sibling",
     -- Allow the agent's write tools on files other than the copy.
     allow_writes = false,
-    -- Allow commands and other non-read tools.
+    -- Allow shell commands. Only `execute` is affected; `delete`, `move` and
+    -- unknown kinds are always refused unless listed in `allow_kinds`.
     allow_commands = false,
+    -- Tool kinds that may run during an inline turn even though the defaults
+    -- above refuse them. Values are ACP tool kinds ("execute", "delete", ...).
+    allow_kinds = {},
+    -- What to do when the agent's current mode edits without asking
+    -- (Claude's acceptEdits/bypassPermissions/auto).
+    --   "ask"    warn once and let the user continue or cancel
+    --   "switch" temporarily switch to the safest mode, restore afterwards
+    --   "off"    say nothing; rely on the on-disk change check below
+    guard_mode = "ask",
     -- Floating windows used by inline editing. Colours are not set here: the
     -- groups named below are defined by `ui.highlights` and can be overridden
     -- there or with `nvim_set_hl`.
@@ -697,6 +707,17 @@ function M.validate(cfg)
   if type(inline.allow_commands) ~= "boolean" then
     fail("inline.allow_commands must be a boolean")
   end
+  if
+    type(inline.allow_kinds) ~= "table" or (next(inline.allow_kinds) ~= nil and not vim.islist(inline.allow_kinds))
+  then
+    fail("inline.allow_kinds must be a list")
+  end
+  for _, kind in ipairs(inline.allow_kinds) do
+    if type(kind) ~= "string" or kind == "" then
+      fail("inline.allow_kinds entries must be non-empty tool kinds")
+    end
+  end
+  check_enum(inline.guard_mode, { "ask", "switch", "off" }, "inline.guard_mode")
   check_number(inline.context_bytes, 1024, 8 * 1024 * 1024, "inline.context_bytes")
   check_number(inline.max_copy_bytes, 1024, 64 * 1024 * 1024, "inline.max_copy_bytes")
   local window = inline.window

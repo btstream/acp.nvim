@@ -333,8 +333,17 @@ Neovim；OSC 5522 需要终端专用协商并改变普通粘贴处理，本插�
 要求 Agent 编辑同目录下的私有副本（`.acp-inline-*`）：
 
 - 读/搜索/思考/取回默认放行；编辑权限仅授权本次登记的副本，其它写入或命令默认拒绝。
+  `inline.allow_commands` 只放开 shell 命令（`execute`）；`delete`、`move` 与未知 kind 需要
+  用 `inline.allow_kinds` 显式列出。
 - 结果按选区范围过滤，精确字符/块选区不扩大为整行；越界改动提示丢弃数量。
 - 等待或审查期间源内容、文件名或换行约定变化时，拒绝应用冲突结果。
+- 回合结束后会比对源文件在磁盘上的 mtime、大小与内容 hash。Agent 直接改了原文件（而不是副本）
+  时中止应用，并让你选择「从磁盘重新加载 / 保留 buffer / 查看差异」。
+- 当前模式若会自动批准编辑（Claude 的 acceptEdits、bypassPermissions、auto），
+  `inline.guard_mode` 默认会提示一次：`"ask"` 提示后继续，`"switch"` 临时切到最安全的模式并在
+  结束后切回，`"off"` 只依赖上面的磁盘检测。
+- 回合中 Agent 的提问（elicitation 或以权限包装的 select/confirm）交给用户回答，不会被自动答应。
+- 生成的内联 prompt 在聊天记录里折叠成一行摘要，展开可看完整说明。
 - 副本权限为 0600，默认大小上限 `inline.max_copy_bytes = 8 * 1024 * 1024`；
   请求结算后删除，正常退出清理；下次使用时尝试清理超过一天且所属进程已退出的孤儿。
   目录不可写时退回 `stdpath("state")`。

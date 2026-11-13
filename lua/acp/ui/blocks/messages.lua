@@ -25,7 +25,17 @@ local HEADING_GROUPS = {
 
 function M.render_user(block, ctx)
   local ic = ctx.icons
-  local text, placed = context.display_text(block.text, block.attachments)
+  -- A generated prompt is collapsed to its summary; the full text is shown
+  -- when the block is expanded, so the instructions stay available without
+  -- filling the transcript.
+  local collapsed_summary = block.display_text ~= nil and not block.expanded
+  local text, placed
+  if collapsed_summary then
+    text = block.display_text
+    placed = {}
+  else
+    text, placed = context.display_text(block.text, block.attachments)
+  end
   local chips = {}
   if block.attachments then
     for _, att in ipairs(block.attachments) do
@@ -48,6 +58,9 @@ function M.render_user(block, ctx)
   if #chips > 0 then
     -- Attachment chips keep the plain user colour rather than the title colour.
     segments[#segments + 1] = { s = #ic.user + 1 + #label, e = -1, group = "AcpUser" }
+  end
+  if collapsed_summary then
+    header = header .. "  " .. ic.chevron_right
   end
   local out = {
     { text = header, segments = segments },

@@ -31,13 +31,16 @@ end
 ---ExitPlanMode). When it does not claim the request, the generic heuristics
 ---apply: a single option carries no choice, and options of differing kinds are
 ---an approval rather than a question.
+---
+---Callable without an instance (`Permissions.question(interaction)`), which is
+---what the inline policy needs: it must not answer a question on the user's
+---behalf.
 ---@param interaction table
+---@param profile table|nil
 ---@return boolean
-function Permissions:is_question(interaction)
+function Permissions.question(interaction, profile)
   local request = interaction.request or {}
   local tool = request.toolCall or request.tool_call or {}
-  local session = self.current_session and self.current_session() or nil
-  local profile = session and session.profile or nil
   if profile and profile.is_question and profile.is_question(request) then
     return true
   end
@@ -61,6 +64,14 @@ function Permissions:is_question(interaction)
     end
   end
   return true
+end
+
+---Instance form: resolves the profile from the current session first.
+---@param interaction table
+---@return boolean
+function Permissions:is_question(interaction)
+  local session = self.current_session and self.current_session() or nil
+  return Permissions.question(interaction, session and session.profile or nil)
 end
 
 ---Policy: pre-approve tool permissions listed in `permissions.auto_allow`.

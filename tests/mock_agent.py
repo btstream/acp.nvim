@@ -592,6 +592,47 @@ def run_prompt(msg_id, text):
                 with permissions_lock:
                     active_prompts.pop(msg_id, None)
                 return
+            if "INLINE_DIRECT_WRITE" in text:
+                # The agent ignores the copy and writes the source file directly.
+                original = re.search(r"original file at `([^`]*)`", text)
+                if original and os.path.isfile(original.group(1)):
+                    with open(original.group(1), "w", encoding="utf-8") as handle:
+                        handle.write("DIRECTLY WRITTEN BY AGENT\n")
+            if "INLINE_ASK" in text:
+                # A question mid-turn must reach the user, not be auto-answered.
+                if client_declares("elicitation", "form"):
+                    req, response = request_client("elicitation/create", {
+                        "sessionId": SESSION_ID, "mode": "form", "message": "Which style?",
+                        "requestedSchema": {
+                            "type": "object",
+                            "properties": {"style": {"type": "string", "enum": ["tabs", "spaces"]}},
+                        },
+                    })
+                else:
+                    req, response = request_client("session/request_permission", {
+                        "sessionId": SESSION_ID,
+                        "toolCall": {"toolCallId": "inline_ask", "kind": "other",
+                                     "title": "Which style?", "rawInput": {"method": "select"}},
+                        "options": [{"optionId": "tabs", "name": "Tabs", "kind": "allow_once"},
+                                    {"optionId": "spaces", "name": "Spaces", "kind": "allow_once"}],
+                    })
+                report(msg_id, {"inline_ask": response_body(response)})
+            if "INLINE_DELETE" in text:
+                # A delete is not a command: `inline.allow_commands` must not cover it.
+                pending = PendingPermission(msg_id)
+                with permissions_lock:
+                    permissions[9002] = pending
+                send({"jsonrpc": "2.0", "id": 9002, "method": "session/request_permission", "params": {
+                    "sessionId": SESSION_ID,
+                    "toolCall": {"toolCallId": "inline_delete", "kind": "delete",
+                                 "locations": [{"path": path}]},
+                    "options": [{"kind": "allow_once", "optionId": "allow"},
+                                {"kind": "reject_once", "optionId": "reject"}],
+                }})
+                pending.event.wait(timeout=5)
+                report(msg_id, {"inline_delete": pending.option})
+                with permissions_lock:
+                    permissions.pop(9002, None)
             if "INLINE_SLOW" in text:
                 for _ in range(300):
                     if cancel_event.is_set():

@@ -444,6 +444,13 @@ configOptions 优先并忽略重复的 `modes`，只有 `modes` 时按 profile �
 不安全模式会触发提示；`allow_commands` 的新范围。
 **验收（M3）**：在三个 agent 上手工跑一遍 inline 编辑，包括 agent 先提问再改文件的情况。
 
+**状态**：已完成（未在真实 agent 上手工验收）。新增 `inline/guard`：提交时记录源文件
+mtime/大小/hash，回合结束后比对，直接写入时中止应用并提供重载/保留/查看差异。新增
+`inline.guard_mode`（默认 `ask`，另有 `switch`、`off`），按 profile 的 `unsafe_edit_mode`
+判定当前模式。inline 策略不再回答 elicitation 与提问型权限。`allow_commands` 收窄到
+`execute`，其余 kind 需 `allow_kinds` 显式放开。inline prompt 在 transcript 中折叠为摘要。
+私有副本默认仍是同目录隐藏文件。
+
 ---
 
 ## 阶段 8：会话管理与上下文补全

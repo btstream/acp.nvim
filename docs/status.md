@@ -716,3 +716,24 @@ agent profile 与规范化 controls：
   改为单调计数器（此前用 `#blocks`，裁剪后会重用）。
 
 验证：1040 项单元/组件测试通过，0 失败，0 项 pending。
+
+## 多 agent 兼容阶段 7（2026-11-13）
+
+inline 安全与提问：
+
+- **直接写入检测**：提交时记录源文件的 mtime、大小与内容 hash，回合结束后再比一次。
+  原文件被 agent 直接改动（包括 agent 新建文件）时中止应用，并提供「从磁盘重新加载 /
+  保留 buffer / 查看差异」三个选择。hash 兜住了同一秒内等长重写，mtime 只作补充。
+- **模式保护**：`inline.guard_mode` 默认 `"ask"`。当前模式被 profile 判定为自动批准
+  （Claude 的 acceptEdits/bypassPermissions/auto）时提示一次并继续；`"switch"` 会临时切到
+  最安全的模式并在回合结束后切回；`"off"` 只依赖磁盘检测。切换时同时更新
+  `current_mode` 与 configOption 的 `currentValue`，否则派生 controls 会读回旧值。
+- **提问交给用户**：inline 策略不再回答 elicitation，也不再回答以权限包装的提问
+  （`permissions.question` 是唯一判定点）。有待回答的问题时回合不会提前结束。
+- **收窄 `allow_commands`**：只对 `execute` 生效；`delete`、`move` 与未知 kind 一律回
+  `reject_once`，需要时用新的 `inline.allow_kinds` 显式放开。
+- **transcript 噪音**：inline 的生成 prompt 折叠为一行摘要（`inline: <请求>`），展开后
+  才显示完整说明；`user` 块新增 `display_text` 字段承载摘要。
+- 保留同目录隐藏副本作为默认 `inline.copy_dir`（用户确认），state 目录仍可配置。
+
+验证：1056 项单元/组件测试通过，0 失败，0 项 pending。

@@ -158,7 +158,7 @@ function Prompts:send(session, text, attachments, hooks, retrying)
     -- The user block is already in the transcript from the failed attempt.
     turn = runtime:rebegin_turn(session)
   else
-    turn = runtime:begin_turn(session, text, attachments)
+    turn = runtime:begin_turn(session, text, attachments, hooks and hooks.local_user)
   end
   self.on_turn_start(session)
   self.on_changed()
