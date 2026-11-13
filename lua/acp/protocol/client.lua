@@ -40,13 +40,14 @@ end
 ---@field capabilities table
 ---@field auth_methods table[]
 ---@field scheduler table|nil
+---@field interactions table|nil
 ---@field on_event fun(name: string, payload: any)
 ---@field permissions table<string, {respond: fun(result:any), session_id: string}>
 ---@field generation integer
 local Client = {}
 Client.__index = Client
 
----@param opts {agent: table, cwd: string, client_capabilities: table, limits?: table, scheduler?: table, on_event: fun(name: string, payload: any)}
+---@param opts {agent: table, cwd: string, client_capabilities: table, limits?: table, scheduler?: table, interactions?: table, on_event: fun(name: string, payload: any)}
 ---@return AcpClient
 function M.new(opts)
   local self = setmetatable({
@@ -54,6 +55,7 @@ function M.new(opts)
     cwd = opts.cwd,
     limits = opts.limits,
     scheduler = opts.scheduler,
+    interactions = opts.interactions,
     client_capabilities = opts.client_capabilities,
     on_event = opts.on_event or function() end,
     permissions = {},
@@ -422,14 +424,21 @@ function Client:on_agent_notification(method, handler)
 end
 
 function Client:install_handlers()
+  if self.rpc then
+    self.rpc.on_cancel_request = function(rpc_id)
+      if self.interactions then
+        self.interactions:on_remote_cancel(rpc_id)
+      end
+    end
+  end
   self:on_agent_notification("session/update", function(params)
     self:emit("session_update", params)
   end)
   self:on_agent_notification("elicitation/complete", function(params)
     self:emit("elicitation_complete", params)
   end)
-  self:on_agent_request("session/request_permission", function(params, respond, respond_error)
-    self:handle_permission(params, respond, respond_error)
+  self:on_agent_request("session/request_permission", function(params, respond, respond_error, rpc_id)
+    self:handle_permission(params, respond, respond_error, rpc_id)
   end)
   self:on_agent_request("fs/read_text_file", function(_, _, respond_error)
     respond_error(-32601, "fs/read_text_file is not supported by this client")
@@ -439,7 +448,7 @@ function Client:install_handlers()
   end)
 end
 
-function Client:handle_permission(params, respond, respond_error)
+function Client:handle_permission(params, respond, respond_error, rpc_id)
   if type(params) ~= "table" then
     respond_error(-32602, "invalid permission request")
     return
@@ -449,6 +458,11 @@ function Client:handle_permission(params, respond, respond_error)
   local options = params.options or {}
   self.permission_seq = self.permission_seq + 1
   local key = "perm:" .. self.permission_seq
+
+  if self.interactions then
+    self.interactions:open("permission", params, respond, rpc_id, key)
+    return
+  end
 
   self.permissions[key] = {
     respond = respond,
@@ -467,6 +481,12 @@ end
 ---@param key string
 ---@param option_id string|nil nil means cancelled
 function Client:resolve_permission(key, option_id)
+  if self.interactions then
+    if self.interactions:answer(key, { outcome = { outcome = "selected", optionId = option_id or nil } }) then
+      self:emit("permission_resolved", { key = key, option_id = option_id })
+    end
+    return
+  end
   local entry = self.permissions[key]
   if not entry then
     return
@@ -483,6 +503,10 @@ end
 ---Cancel all pending permission requests (used on session cancel).
 ---@param session_id string
 function Client:cancel_permissions(session_id)
+  if self.interactions then
+    self.interactions:cancel_session(session_id)
+    return
+  end
   local keys = vim.tbl_keys(self.permissions)
   for _, key in ipairs(keys) do
     local entry = self.permissions[key]
@@ -643,8 +667,11 @@ function Client:handle_exit(code, stderr, generation)
   end
   self.initialized = false
   self:finish_start(false, { message = "agent process exited" })
-  -- Answer every pending permission request before dropping them: otherwise
-  -- the agent side waits forever and the UI keeps showing a dead prompt.
+  -- Answer every pending interaction before dropping them: otherwise the
+  -- agent side waits forever and the UI keeps showing a dead prompt.
+  if self.interactions then
+    self.interactions:cancel_all("agent exited")
+  end
   for key in pairs(self.permissions or {}) do
     pcall(self.resolve_permission, self, key, nil)
   end
@@ -661,6 +688,9 @@ function Client:shutdown(force, reason)
   if self.start_co then
     async.cancel(self.start_co)
     self.start_co = nil
+  end
+  if self.interactions then
+    self.interactions:cancel_all("client shutdown")
   end
   for key in pairs(self.permissions or {}) do
     pcall(self.resolve_permission, self, key, nil)

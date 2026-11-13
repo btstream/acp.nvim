@@ -15,7 +15,7 @@ Connection.__index = Connection
 ---  notify: fun(message: string, level: integer|nil), on_changed: fun(),
 ---  on_ready: fun(), on_start_failed: fun(err: any), on_stopped: fun(),
 ---  runtime_lost: fun(), reset_permissions: fun(), stop_animation: fun(),
----  on_render: fun()}
+---  interactions: fun(): table|nil, on_render: fun()}
 function Connection.new(opts)
   return setmetatable({
     config = opts.config,
@@ -32,6 +32,7 @@ function Connection.new(opts)
     runtime_lost = opts.runtime_lost,
     reset_permissions = opts.reset_permissions,
     stop_animation = opts.stop_animation,
+    interactions = opts.interactions,
     on_render = opts.on_render,
     pending_reload = nil,
   }, Connection)
@@ -56,7 +57,7 @@ function Connection:connect()
     local previous = S.client
     self.reset_operations()
     self.runtime_lost()
-    S.pending_permissions, S.client = {}, nil
+    S.client = nil
     previous:shutdown(true)
   end
   S.connection = "starting"
@@ -71,6 +72,7 @@ function Connection:connect()
       cwd = self.resolve_cwd(),
       client_capabilities = build_client_capabilities(cfg),
       scheduler = work_scheduler.shared,
+      interactions = self.interactions and self.interactions() or nil,
       limits = cfg.transport,
       on_event = function(name, payload)
         local function dispatch()

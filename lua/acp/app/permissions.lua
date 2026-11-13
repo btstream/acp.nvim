@@ -1,139 +1,89 @@
--- Permission request policy and interaction.
+-- Permission presentation and the `auto_allow` policy.
 --
--- The client owns the RPC respond callbacks; this module owns what the user
--- sees and which option is sent back. The pending table is shared with the
--- controller so the diagnostic state view keeps working during the migration.
+-- Pending state lives in `app/interactions`; this module only turns one
+-- interaction into a picker and decides which requests may be pre-approved.
 local log = require("acp.log")
 local picker = require("acp.ui.picker")
 
 local Permissions = {}
 Permissions.__index = Permissions
 
----@param opts {pending: fun(): table, config: fun(): table, client: fun(): table|nil,
----  on_changed: fun(), valid: fun(entry: table|nil, key: string): boolean,
----  notify: fun(message: string, level: integer|nil)}
+---@param opts {config: fun(): table, valid: fun(interaction: table): boolean,
+---  answer: fun(interaction: table, option_id: string|nil),
+---  dismiss: fun(interaction: table), notify: fun(message: string, level: integer|nil)}
 function Permissions.new(opts)
   return setmetatable({
-    get_pending = opts.pending,
     config = opts.config,
-    get_client = opts.client,
-    on_changed = opts.on_changed or function() end,
     valid = opts.valid,
+    answer = opts.answer,
+    dismiss = opts.dismiss,
     notify = opts.notify,
+    shown = nil,
   }, Permissions)
 end
 
----The controller-owned pending table. It is read through a getter so the
----diagnostic state view and the request bookkeeping never diverge.
----@return table<string, table>
-function Permissions:pending()
-  return self.get_pending()
-end
-
----Whether `session` has a permission request awaiting an answer.
----@param session AcpSessionState|nil
+---A request that asks a question rather than for tool approval.
+---
+---pi wraps questions in a permission request whose options all share one kind,
+---and Claude's plan approval is a switch_mode call. Neither may be auto-answered.
+---@param interaction table
 ---@return boolean
-function Permissions:waiting(session)
-  if not session then
+function Permissions:is_question(interaction)
+  local request = interaction.request or {}
+  local tool = request.toolCall or request.tool_call or {}
+  if tool.kind == "switch_mode" then
+    return true
+  end
+  local options = request.options or {}
+  if #options == 0 then
     return false
   end
-  for _, entry in pairs(self:pending()) do
-    if entry.session_id == session.id then
-      return true
+  local kind = options[1].kind
+  for _, option in ipairs(options) do
+    if option.kind ~= kind then
+      return false
     end
   end
-  return false
+  return true
 end
 
----Register a request coming from the client.
----@param payload table
----@return table|nil entry, string|nil option_id
----Returns the stored entry and an option id when the user pre-approved it.
-function Permissions:request(payload)
-  local entry = {
-    session_id = payload.session_id,
-    tool_call = payload.tool_call,
-    options = payload.options,
-  }
-  self:pending()[payload.key] = entry
-  self.on_changed()
-
-  -- Optional auto-approval, explicitly opted in by the user.
+---Policy: pre-approve tool permissions listed in `permissions.auto_allow`.
+---@param interaction table
+---@return table|nil
+function Permissions:auto(interaction)
+  if interaction.type ~= "permission" or self:is_question(interaction) then
+    return nil
+  end
   local auto = (self.config().permissions or {}).auto_allow or {}
-  if #auto > 0 then
-    for _, option in ipairs(payload.options or {}) do
-      for _, allowed in ipairs(auto) do
-        if option.kind == allowed then
-          log.info("auto-approving permission via %s", allowed)
-          return entry, option.optionId
-        end
+  if #auto == 0 then
+    return nil
+  end
+  for _, option in ipairs(interaction.request.options or {}) do
+    for _, allowed in ipairs(auto) do
+      if option.kind == allowed then
+        log.info("auto-approving permission via %s", allowed)
+        return { outcome = { outcome = "selected", optionId = option.optionId } }
       end
     end
   end
+  return nil
+end
 
+---Presenter: open the picker for one interaction.
+---@param interaction table
+---@return boolean shown
+function Permissions:present(interaction)
+  local request = interaction.request or {}
+  local tool = request.toolCall or request.tool_call or {}
+  local options = request.options or {}
   if (self.config().permissions or {}).prompt ~= "select" then
-    self.notify(
-      "Permission required" .. ": " .. (payload.tool_call and payload.tool_call.title or ""),
-      vim.log.levels.WARN
-    )
-  end
-  return entry, nil
-end
-
----Whether the prompt should be shown for this entry.
----@return boolean
-function Permissions:should_prompt()
-  return (self.config().permissions or {}).prompt == "select"
-end
-
----Resolve a pending request, optionally treating dismissal as a rejection.
----@param key string
----@param option_id string|nil
----@param dismissed boolean|nil
-function Permissions:resolve(key, option_id, dismissed)
-  local entry = self:pending()[key]
-  if not entry then
-    return
-  end
-  if dismissed and not option_id then
-    -- Pick the first reject option so the agent gets an explicit denial.
-    for _, option in ipairs(entry.options or {}) do
-      if option.kind and option.kind:match("^reject") then
-        option_id = option.optionId
-        break
-      end
-    end
-  end
-  self:pending()[key] = nil
-  local client = self.get_client()
-  if client then
-    client:resolve_permission(key, option_id)
-  end
-  self.on_changed()
-end
-
----Drop a request the client reports as already answered.
----@param key string
-function Permissions:resolved(key)
-  self:pending()[key] = nil
-  self.on_changed()
-end
-
----Open the picker for a pending request.
----@param payload table
-function Permissions:show(payload)
-  local key = payload.key
-  -- Capture the shown entry: if the connection is torn down and a new request
-  -- reuses the same key, the stale dialog must not answer the new one.
-  local shown = self:pending()[key]
-  local function valid()
-    return shown ~= nil and self.valid(shown, key)
+    self.notify("Permission required: " .. (tool.title or ""), vim.log.levels.WARN)
+    return false
   end
 
-  local tool = payload.tool_call or {}
   local title = tool.title or tool.kind or "tool"
   local items = {}
-  for _, option in ipairs(payload.options or {}) do
+  for _, option in ipairs(options) do
     items[#items + 1] = {
       label = option.name or option.optionId,
       description = option.kind,
@@ -143,10 +93,10 @@ function Permissions:show(payload)
 
   if #items == 0 then
     self.notify("the agent sent a permission request without options", vim.log.levels.WARN)
-    if valid() then
-      self:resolve(key, nil, true)
+    if self.valid(interaction) then
+      self.answer(interaction, nil)
     end
-    return
+    return true
   end
 
   if tool.locations and #tool.locations > 0 then
@@ -157,45 +107,32 @@ function Permissions:show(payload)
     title = title .. "  " .. table.concat(locs, ", ")
   end
 
-  picker.select({
-    title = "Permission required" .. ": " .. title,
+  local handle = picker.select({
+    title = "Permission required: " .. title,
     items = items,
     width = math.min(90, math.max(50, vim.o.columns - 20)),
     on_choice = function(value)
-      if valid() then
-        self:resolve(key, value and value.id or nil)
+      if self.valid(interaction) then
+        self.answer(interaction, value and value.id or nil)
       end
     end,
     -- Dismissing the dialog must never leave the turn blocked forever.
     on_cancel = function()
-      if valid() then
-        self:resolve(key, nil, true)
+      if self.valid(interaction) then
+        self.dismiss(interaction)
       end
     end,
   })
+  self.shown = handle
+  return true
 end
 
----Reopen the oldest pending permission request.
-function Permissions:show_pending()
-  local keys = vim.tbl_keys(self:pending())
-  table.sort(keys)
-  local key = keys[1]
-  if not key then
-    self.notify("no pending permission requests", vim.log.levels.INFO)
-    return
-  end
-  local entry = self:pending()[key]
-  self:show({
-    key = key,
-    tool_call = entry.tool_call,
-    options = entry.options,
-  })
-end
-
----Drop every pending request without answering it (connection teardown).
-function Permissions:reset()
-  for key in pairs(self:pending()) do
-    self:pending()[key] = nil
+---Close the picker for a dismissed/cancelled interaction.
+function Permissions:dismiss_presented()
+  local handle = self.shown
+  self.shown = nil
+  if handle and handle.close then
+    pcall(handle.close)
   end
 end
 

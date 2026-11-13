@@ -45,6 +45,9 @@ Controller 只保留公开入口、会话选择、服务装配和跨模块协调
   打开，未实现的能力不下发。协议层不再 require `ui/*`，调度器由连接服务注入。
 - agent 请求经 `client:on_agent_request` / `on_agent_notification` 注册表分发；未注册方法
   保持 -32601。每个 agent 请求只能回复一次，`$/cancel_request` 与迟到回复共用一个已答标记。
+- `app/interactions` 是等待用户回答的唯一状态源。协议层只交出回复回调；策略链（当前 inline
+  回合、`auto_allow`）可先行作答，否则由呈现器一次显示一个，其余排队。回答、取消、agent 撤回
+  都只结算一次；会话取消、断线和 shutdown 各自按类型回复取消结果。
 - `session/update` 解码时把 JSON null 归一化为 nil；reducer 用变更日志包围一条更新，
   失败时整体回滚，不留下半更新的 block，也不破坏 UI 持有的 block 身份。
 - 创建会话期间，sessionId 尚未知晓的更新先进入有界缓冲（256 条 / 1 MiB），创建成功后

@@ -45,8 +45,7 @@ local function release(inv)
 end
 
 -- Strict identity: NEVER authorize by basename/prefix or by state directory.
-function M.on_permission(inv, payload)
-  local client = inv.client or state().client
+local function decide(inv, payload)
   local config = inv.config or state().config
   local tool = payload.tool_call or {}
   local allowed = not inv.cancelled and ({ read = true, search = true, think = true, fetch = true })[tool.kind] or false
@@ -85,16 +84,37 @@ function M.on_permission(inv, payload)
     allowed = config.inline.allow_commands
   end
   local wanted = allowed and "allow_once" or "reject_once"
-  local choice
   for _, option in ipairs(payload.options or {}) do
     if option.kind == wanted then
-      choice = option.optionId
-      break
+      return option.optionId
     end
   end
+  return nil
+end
+
+function M.on_permission(inv, payload)
+  local client = inv.client or state().client
   -- An allow_always option is not an acceptable substitute for allow_once.
-  client:resolve_permission(payload.key, choice)
+  client:resolve_permission(payload.key, decide(inv, payload))
   return true
+end
+
+---Interaction policy: answer permissions owned by the running inline turn.
+---@param interaction table
+---@return table|nil response
+function M.policy(interaction)
+  local inv = current
+  if
+    not inv
+    or inv.phase ~= "running"
+    or not live(inv)
+    or interaction.session_id ~= inv.session.id
+    or inv.session.turn ~= inv.turn
+  then
+    return nil
+  end
+  local choice = decide(inv, interaction.request or {})
+  return { outcome = { outcome = choice and "selected" or "cancelled", optionId = choice } }
 end
 
 -- Observe notifications without stealing them from the chat reducer. ACP

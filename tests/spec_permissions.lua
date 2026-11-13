@@ -19,43 +19,36 @@ return function(t)
       controller.setup({ ui = {}, permissions = { prompt = "native" } })
       local S = controller.state()
       local resolved
-      S.client = {
-        resolve_permission = function(_, key, option)
-          resolved = { key = key, option = option }
-        end,
-      }
-      S.pending_permissions.perm1 = {
-        session_id = "s1",
-        tool_call = { title = "Write file" },
+      S.interactions:open("permission", {
+        sessionId = "s1",
+        toolCall = { title = "Write file" },
         options = {
           { optionId = "a", name = "Allow", kind = "allow_once" },
           { optionId = "r", name = "Reject", kind = "reject_once" },
         },
-      }
+      }, function(response)
+        resolved = response
+      end, 1, "perm1")
       controller.resolve_permission("perm1", nil, true)
       t.truthy(resolved)
-      t.eq("r", resolved.option)
-      t.falsy(S.pending_permissions.perm1)
-      S.client = nil
+      t.eq("r", resolved.outcome.optionId)
+      t.eq("answered", S.interactions:get("perm1").state)
     end)
 
     t.it("resolves with the cancelled outcome when no reject exists", function()
       controller.setup({ ui = {}, permissions = { prompt = "native" } })
       local S = controller.state()
       local resolved
-      S.client = {
-        resolve_permission = function(_, key, option)
-          resolved = { key = key, option = option }
-        end,
-      }
-      S.pending_permissions.perm2 = {
-        session_id = "s1",
+      S.interactions:open("permission", {
+        sessionId = "s1",
         options = { { optionId = "a", name = "Allow", kind = "allow_once" } },
-      }
+      }, function(response)
+        resolved = response
+      end, 1, "perm2")
       controller.resolve_permission("perm2", nil, true)
       t.truthy(resolved)
-      t.eq(nil, resolved.option)
-      S.client = nil
+      t.eq("cancelled", resolved.outcome.outcome)
+      t.eq("cancelled", S.interactions:get("perm2").state)
     end)
 
     t.it("reports waiting_permission in the status payload", function()
@@ -63,11 +56,40 @@ return function(t)
       local S = controller.state()
       local session = state.new("s1", "/tmp")
       S.session = session
-      S.pending_permissions.perm3 = { session_id = "s1", options = {} }
+      S.interactions:open("permission", { sessionId = "s1", options = {} }, function() end, 1, "perm3")
       local st = controller.status()
       t.truthy(st.waiting_permission)
-      S.pending_permissions = {}
+      S.interactions:cancel("perm3")
       t.falsy(controller.status().waiting_permission)
+    end)
+
+    t.it("expires the picker when the agent withdraws the request", function()
+      controller.setup({ ui = {}, permissions = { prompt = "select" } })
+      local S = controller.state()
+      local picker = require("acp.ui.picker")
+      local original = picker.select
+      local choices = {}
+      picker.select = function(opts)
+        choices[#choices + 1] = opts
+      end
+      local ok, err = pcall(function()
+        S.interactions:open(
+          "permission",
+          { sessionId = "s1", options = { { optionId = "a", name = "Allow", kind = "allow_once" } } },
+          function() end,
+          9,
+          "perm9"
+        )
+        t.eq(1, #choices)
+        S.interactions:on_remote_cancel(9)
+        t.eq("expired", S.interactions:get("perm9").state)
+        t.eq(0, #S.interactions:pending())
+        t.falsy(controller.status().waiting_permission)
+      end)
+      picker.select = original
+      if not ok then
+        error(err, 0)
+      end
     end)
 
     t.it("renders a compact statusline component", function()

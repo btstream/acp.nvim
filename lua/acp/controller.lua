@@ -14,6 +14,7 @@ local Tasks = require("acp.tasks")
 local context = require("acp.context")
 local capabilities = require("acp.protocol.capabilities")
 local Permissions = require("acp.app.permissions")
+local Interactions = require("acp.app.interactions")
 local Options = require("acp.app.options")
 local Chrome = require("acp.ui.chrome")
 local Panel = require("acp.ui.panel")
@@ -38,7 +39,7 @@ local S = {
   chat = nil,
   input = nil,
   connection = "stopped", -- stopped | starting | ready | disconnected
-  pending_permissions = {},
+  interactions = nil,
   pending_selections = nil,
   replaying = false,
 }
@@ -58,8 +59,16 @@ local function new_local_session(id, cwd, result)
   return S.runtime:create(id, cwd, result)
 end
 
+local function pending_map()
+  local map = {}
+  for _, interaction in ipairs(S.interactions:pending()) do
+    map[interaction.id] = { session_id = interaction.session_id }
+  end
+  return map
+end
+
 local function prune_sessions()
-  S.runtime:prune(S.session, S.pending_permissions)
+  S.runtime:prune(S.session, pending_map())
 end
 
 local function dispatch_queued(session)
@@ -159,7 +168,7 @@ end
 
 ---@param session AcpSessionState|nil
 local function waiting_permission(session)
-  return S.permissions:waiting(session)
+  return session ~= nil and S.interactions:waiting(session.id) or false
 end
 
 ---Public structured status for statusline components.
@@ -670,10 +679,6 @@ end
 ---@param name string
 ---@param payload any
 function M.on_client_event(name, payload)
-  -- The current inline turn answers permissions; updates still reach chat.
-  if require("acp.inline").handle(name, payload) then
-    return
-  end
   if name == "starting" then
     S.connection = "starting"
     refresh_chrome()
@@ -711,26 +716,22 @@ function M.on_client_event(name, payload)
   end
 
   if name == "permission_request" then
-    local entry, auto = S.permissions:request(payload)
-    refresh_chrome()
-    if auto ~= nil then
-      S.permissions:resolve(payload.key, auto)
-      return
-    end
-    if not S.permissions:should_prompt() then
-      return
-    end
-    local client, generation = S.client, operations.generation
-    vim.schedule(function()
-      if ui_current(client, generation) and S.pending_permissions[payload.key] == entry then
-        M.show_permission(payload)
+    local client = S.client
+    S.interactions:open("permission", {
+      session_id = payload.session_id,
+      toolCall = payload.tool_call,
+      options = payload.options,
+    }, function(response)
+      local outcome = response.outcome or {}
+      if client then
+        client:resolve_permission(payload.key, outcome.outcome == "selected" and outcome.optionId or nil)
       end
-    end)
+    end, nil, payload.key)
     return
   end
 
   if name == "permission_resolved" then
-    S.permissions:resolved(payload.key)
+    S.interactions:resolved(payload.key)
     refresh_chrome()
     return
   end
@@ -771,9 +772,13 @@ function M.on_client_event(name, payload)
 end
 
 ---Open the permission picker for a pending request.
----@param payload table
+---@param payload table|nil accepts the legacy `{ key = ... }` shape
 function M.show_permission(payload)
-  S.permissions:show(payload)
+  if payload and payload.key then
+    S.interactions:show(payload.key)
+    return
+  end
+  S.interactions:show_next()
 end
 
 ---Resolve a pending permission request.
@@ -781,12 +786,32 @@ end
 ---@param option_id string|nil
 ---@param dismissed boolean|nil when true, prefer an explicit reject option
 function M.resolve_permission(key, option_id, dismissed)
-  S.permissions:resolve(key, option_id, dismissed)
+  local interaction = S.interactions:get(key)
+  if not interaction then
+    return
+  end
+  if dismissed and not option_id then
+    for _, option in ipairs((interaction.request or {}).options or {}) do
+      if option.kind and option.kind:match("^reject") then
+        option_id = option.optionId
+        break
+      end
+    end
+  end
+  if option_id then
+    S.interactions:answer(key, { outcome = { outcome = "selected", optionId = option_id } })
+  else
+    S.interactions:cancel(key, "dismissed")
+  end
 end
 
 ---Reopen the oldest pending permission request.
 function M.show_pending_permission()
-  S.permissions:show_pending()
+  if not S.interactions:waiting() then
+    notify("no pending permission requests", vim.log.levels.INFO)
+    return
+  end
+  S.interactions:show_next()
 end
 
 ---------------------------------------------------------------------------
@@ -1097,7 +1122,7 @@ function M.debug_state()
     blocks = session and #session.blocks or 0,
     status = session and session.status or nil,
     queue = session and #session.queue or 0,
-    pending_permissions = vim.tbl_count(S.pending_permissions),
+    pending_permissions = S.interactions and #S.interactions:pending() or 0,
     transport = S.client and S.client.transport_stats and S.client:transport_stats() or nil,
     render = S.chat and S.chat:render_stats() or nil,
     spinner = S.chrome and S.chrome:diagnostics() or nil,
@@ -1181,19 +1206,39 @@ function M.setup(opts, action)
     on_changed = refresh_chrome,
     notify = notify,
   })
-  S.pending_permissions = {}
   S.permissions = Permissions.new({
-    pending = function()
-      return S.pending_permissions
-    end,
     config = cfg,
-    client = function()
-      return S.client
+    valid = function(interaction)
+      return interaction ~= nil and interaction.state == "pending" and ui_current(S.client, operations.generation)
+    end,
+    answer = function(interaction, option_id)
+      M.resolve_permission(interaction.id, option_id, false)
+    end,
+    dismiss = function(interaction)
+      M.resolve_permission(interaction.id, nil, true)
+    end,
+    notify = notify,
+  })
+  S.interactions = Interactions.new({
+    policies = {
+      -- Only the current inline turn may answer without the user.
+      function(interaction)
+        return require("acp.inline").policy(interaction)
+      end,
+      function(interaction)
+        return S.permissions:auto(interaction)
+      end,
+    },
+    present = function(interaction)
+      if not S.permissions.valid(interaction) then
+        return false
+      end
+      return S.permissions:present(interaction)
+    end,
+    dismiss = function()
+      S.permissions:dismiss_presented()
     end,
     on_changed = refresh_chrome,
-    valid = function(entry, key)
-      return entry ~= nil and ui_current(S.client, operations.generation) and S.pending_permissions[key] == entry
-    end,
     notify = notify,
   })
 
@@ -1349,10 +1394,12 @@ function M.setup(opts, action)
       S.runtime:connection_lost()
     end,
     reset_permissions = function()
-      if S.permissions then
-        S.permissions:reset()
+      if S.interactions then
+        S.interactions:cancel_all("connection reset")
       end
-      S.pending_permissions = {}
+    end,
+    interactions = function()
+      return S.interactions
     end,
     stop_animation = stop_spinner,
     on_render = function()

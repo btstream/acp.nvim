@@ -352,6 +352,7 @@ local function internal_select(opts)
       cancel()
     end,
   })
+  return { close = cancel }
 end
 
 ---------------------------------------------------------------------------
@@ -428,6 +429,11 @@ function M.select(opts)
       opts.on_choice(item.value, item)
     end
   end)
+  return {
+    close = function()
+      settled = true
+    end,
+  }
 end
 
 ---Yes/no confirmation, also routed through `vim.ui.select`.

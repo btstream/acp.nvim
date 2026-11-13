@@ -570,22 +570,25 @@ return function(t)
           choices[#choices + 1] = opts
         end
         local ok, err = pcall(function()
-          s.pending_permissions.same = { session_id = "a", options = { { optionId = "allow", name = "Allow" } } }
-          controller.show_permission({ key = "same", options = s.pending_permissions.same.options })
-          controller.disconnect()
           local resolved = 0
           client.resolve_permission = function()
             resolved = resolved + 1
           end
+          local request = { sessionId = "a", options = { { optionId = "allow", name = "Allow", kind = "allow_once" } } }
+          s.interactions:open("permission", request, function() end, 1, "same")
+          controller.show_permission({ key = "same" })
+          controller.disconnect()
           s.client, s.connection = client, "ready"
-          s.pending_permissions.same = { session_id = "a", options = { { optionId = "allow", name = "Allow" } } }
+          s.interactions:open("permission", request, function() end, 2, "same")
           choices[1].on_choice({ id = "allow" })
           choices[1].on_cancel()
           t.eq(0, resolved)
-          t.truthy(s.pending_permissions.same)
-          controller.show_permission({ key = "same", options = s.pending_permissions.same.options })
+          t.truthy(s.interactions:get("same").state == "pending")
+          controller.show_permission({ key = "same" })
           choices[2].on_choice({ id = "allow" })
-          t.eq(1, resolved)
+          -- The current interaction resolves directly, not through the old
+          -- client path.
+          t.eq("answered", s.interactions:get("same").state)
         end)
         picker.select = original
         if not ok then

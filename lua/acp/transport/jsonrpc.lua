@@ -175,7 +175,7 @@ local function dispatch_request(self, msg)
     end
     self:respond_error(msg.id, code, message, data)
   end
-  local ok, err = pcall(handler, msg.params or vim.empty_dict(), reply, reply_error)
+  local ok, err = pcall(handler, msg.params or vim.empty_dict(), reply, reply_error, msg.id)
   if not ok then
     Log.error("request handler for %s failed: %s", msg.method, err)
     reply_error(-32603, "Internal error")
@@ -205,6 +205,9 @@ function Rpc:handle(msg, raw)
         -- Agent cancelled one of its own pending requests.
         entry.answered = true
         self.incoming[target] = nil
+        if self.on_cancel_request then
+          pcall(self.on_cancel_request, target)
+        end
         self:respond_error(target, -32800, "Request cancelled")
       end
       return

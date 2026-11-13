@@ -601,3 +601,17 @@ native/edgy/reconnect、性能 smoke、tail/spinner 附加 UI 回归通过。
 请求注册表/重复回复、能力查询、创建缓冲、超时续期与取消顺序测试；一致性套件 4 个 profile
 的 null 与撤回请求用例转为普通测试。
 
+## 多 agent 兼容阶段 2（2026-11-12）
+
+等待回答的请求迁入单一交互中心：
+
+- `app/interactions` 保存唯一状态并保证只回复一次；inline 回合和 `auto_allow` 是策略，
+  picker 是呈现器，同一时间只显示一个，其余排队。agent 的 `$/cancel_request` 会关闭 picker
+  并标记过期，迟到回答被忽略。
+- 控制器的 `pending_permissions` 删除；工具栏等待提示与诊断计数从交互中心读取。
+- 关闭 picker 时只在存在 `reject*` 选项时显式拒绝，否则回复 `cancelled`；撤回的请求只回复
+  一次。`auto_allow` 不再回答以权限包装的提问（统一 kind 或 `switch_mode`）。
+- 权限策略与呈现测试改写为交互中心语义，新增单次回复、排队、撤回、会话取消与类型化取消测试。
+
+验证：905 项单元/组件测试通过，0 失败，6 项 pending。
+
