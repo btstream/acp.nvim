@@ -6,7 +6,7 @@ local M = {}
 ---@class AcpRpc
 ---@field next_id integer
 ---@field pending table<integer, {method: string, cb: fun(ok: boolean, value: any), cancelled?: boolean}>
----@field incoming table<integer, string>
+---@field incoming table<integer, {method: string, answered: boolean}>
 ---@field request_handlers table<string, fun(params: any, respond: fun(result: any), respond_error: fun(code: integer, message: string, data?: any))>
 ---@field notification_handlers table<string, fun(params: any)>
 ---@field send fun(payload: string): boolean
@@ -151,13 +151,28 @@ local function dispatch_request(self, msg)
     self:respond_error(msg.id, -32601, "Method not found: " .. msg.method)
     return
   end
-  self.incoming[msg.id] = msg.method
-  local function reply(result)
+  self.incoming[msg.id] = { method = msg.method, answered = false }
+  local function settle()
+    local entry = self.incoming[msg.id]
+    if not entry or entry.answered then
+      return false
+    end
+    entry.answered = true
     self.incoming[msg.id] = nil
+    return true
+  end
+  local function reply(result)
+    if not settle() then
+      Log.debug("ignoring duplicate reply to %s", msg.method)
+      return
+    end
     self:respond(msg.id, result)
   end
   local function reply_error(code, message, data)
-    self.incoming[msg.id] = nil
+    if not settle() then
+      Log.debug("ignoring duplicate error reply to %s", msg.method)
+      return
+    end
     self:respond_error(msg.id, code, message, data)
   end
   local ok, err = pcall(handler, msg.params or vim.empty_dict(), reply, reply_error)
@@ -185,8 +200,10 @@ function Rpc:handle(msg, raw)
   if msg.method and msg.id == nil then
     if msg.method == "$/cancel_request" then
       local target = type(msg.params) == "table" and msg.params.id
-      if target and self.incoming[target] then
+      local entry = target and self.incoming[target]
+      if entry and not entry.answered then
         -- Agent cancelled one of its own pending requests.
+        entry.answered = true
         self.incoming[target] = nil
         self:respond_error(target, -32800, "Request cancelled")
       end

@@ -259,7 +259,7 @@ return function(t)
       client:shutdown(true)
     end)
 
-    t.pending("answers a withdrawn permission request at most once", "phase 2: interaction broker", function()
+    t.it("answers a withdrawn permission request at most once", function()
       local client, ctx = start("opencode")
       local key
       local session = prompt(client, ctx, "@cancel-request")

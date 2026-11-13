@@ -42,6 +42,29 @@ return function(t)
   end
 
   t.describe("client", function()
+    t.it("routes only registered agent requests through the registry", function()
+      local sent = {}
+      local client = new_client({})
+      client.rpc = require("acp.transport.jsonrpc").new({
+        send = function(payload)
+          sent[#sent + 1] = vim.json.decode(payload)
+          return true
+        end,
+      })
+      client:on_agent_request("custom/ask", function(_, respond)
+        respond({ ok = true })
+      end)
+      client.rpc:handle({ jsonrpc = "2.0", id = 1, method = "custom/ask", params = {} })
+      client.rpc:handle({ jsonrpc = "2.0", id = 2, method = "custom/unknown", params = {} })
+      t.eq({ ok = true }, sent[1].result)
+      t.eq(-32601, sent[2].error.code)
+      client:on_agent_notification("custom/event", function(params)
+        client.seen = params
+      end)
+      client.rpc:handle({ jsonrpc = "2.0", method = "custom/event", params = { n = 1 } })
+      t.eq(1, client.seen.n)
+    end)
+
     t.it("initializes against the mock agent", function()
       if not has_python then
         return

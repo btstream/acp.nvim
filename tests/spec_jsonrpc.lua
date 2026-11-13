@@ -78,6 +78,60 @@ return function(t)
       t.eq("allow", sent.result.outcome.optionId)
     end)
 
+    t.it("only sends the first reply for an agent request", function()
+      local sent = {}
+      local rpc = rpcmod.new({
+        send = function(payload)
+          sent[#sent + 1] = vim.json.decode(payload)
+          return true
+        end,
+      })
+      rpc:on_request("session/request_permission", function(_, respond, respond_error)
+        respond({ outcome = { outcome = "cancelled" } })
+        respond({ outcome = { outcome = "selected", optionId = "allow" } })
+        respond_error(-32603, "late")
+      end)
+      rpc:handle({ jsonrpc = "2.0", id = 3, method = "session/request_permission", params = {} })
+      t.eq(1, #sent)
+      t.eq("cancelled", sent[1].result.outcome.outcome)
+    end)
+
+    t.it("does not answer a request after the agent withdrew it", function()
+      local sent = {}
+      local respond
+      local rpc = rpcmod.new({
+        send = function(payload)
+          sent[#sent + 1] = vim.json.decode(payload)
+          return true
+        end,
+      })
+      rpc:on_request("session/request_permission", function(_, reply)
+        respond = reply
+      end)
+      rpc:handle({ jsonrpc = "2.0", id = 4, method = "session/request_permission", params = {} })
+      rpc:handle({ jsonrpc = "2.0", method = "$/cancel_request", params = { id = 4 } })
+      t.eq(-32800, sent[1].error.code)
+      respond({ outcome = { outcome = "cancelled" } })
+      t.eq(1, #sent)
+    end)
+
+    t.it("does not send a cancellation after the handler already replied", function()
+      local sent = {}
+      local rpc = rpcmod.new({
+        send = function(payload)
+          sent[#sent + 1] = vim.json.decode(payload)
+          return true
+        end,
+      })
+      rpc:on_request("session/request_permission", function(_, respond)
+        respond({ outcome = { outcome = "cancelled" } })
+      end)
+      rpc:handle({ jsonrpc = "2.0", id = 5, method = "session/request_permission", params = {} })
+      rpc:handle({ jsonrpc = "2.0", method = "$/cancel_request", params = { id = 5 } })
+      t.eq(1, #sent)
+      t.truthy(sent[1].result)
+    end)
+
     t.it("ignores unknown notifications and malformed values", function()
       local rpc = rpcmod.new({
         send = function()

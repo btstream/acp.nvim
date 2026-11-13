@@ -357,20 +357,35 @@ function Client:chunk_update(decoded)
   end
 end
 
+---Register a handler for a request from the agent. Unregistered methods keep
+---the default -32601 response from the RPC layer.
+---@param method string
+---@param handler fun(params: any, respond: fun(result: any), respond_error: fun(code: integer, message: string, data?: any))
+function Client:on_agent_request(method, handler)
+  self.rpc:on_request(method, handler)
+end
+
+---Register a handler for a notification from the agent.
+---@param method string
+---@param handler fun(params: any)
+function Client:on_agent_notification(method, handler)
+  self.rpc:on_notification(method, handler)
+end
+
 function Client:install_handlers()
-  self.rpc:on_notification("session/update", function(params)
+  self:on_agent_notification("session/update", function(params)
     self:emit("session_update", params)
   end)
-  self.rpc:on_notification("elicitation/complete", function(params)
+  self:on_agent_notification("elicitation/complete", function(params)
     self:emit("elicitation_complete", params)
   end)
-  self.rpc:on_request("session/request_permission", function(params, respond, respond_error)
+  self:on_agent_request("session/request_permission", function(params, respond, respond_error)
     self:handle_permission(params, respond, respond_error)
   end)
-  self.rpc:on_request("fs/read_text_file", function(_, _, respond_error)
+  self:on_agent_request("fs/read_text_file", function(_, _, respond_error)
     respond_error(-32601, "fs/read_text_file is not supported by this client")
   end)
-  self.rpc:on_request("fs/write_text_file", function(_, _, respond_error)
+  self:on_agent_request("fs/write_text_file", function(_, _, respond_error)
     respond_error(-32601, "fs/write_text_file is not supported by this client")
   end)
 end
