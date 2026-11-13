@@ -1536,6 +1536,9 @@ function M.setup(opts, action)
     restart = function()
       S.connection_service:restart()
     end,
+    base_window = function()
+      return layout.saved_focus()
+    end,
     after_ready = function(fn)
       -- The reconnect may already have finished by the time the login terminal
       -- exits (a fast agent, or a synchronous start); run immediately then.

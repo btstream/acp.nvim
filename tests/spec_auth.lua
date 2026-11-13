@@ -190,6 +190,38 @@ return function(t)
       t.match("unable to open", h.notices[#h.notices].message)
     end)
 
+    t.it("prefers the remembered editor window for the login terminal", function()
+      local origin = vim.api.nvim_get_current_win()
+      local editor = vim.api.nvim_create_buf(true, false)
+      local editor_win = vim.api.nvim_open_win(editor, true, {
+        relative = "editor",
+        row = 0,
+        col = 0,
+        width = math.max(10, vim.o.columns - 2),
+        height = math.max(2, vim.o.lines - 4),
+        border = "none",
+      })
+      local original = auth.open_terminal
+      local seen_base
+      local h = harness()
+      h.auth.base_window = function()
+        return editor_win
+      end
+      h.auth.open_terminal = function(command, opts)
+        seen_base = opts.base
+        return 1
+      end
+      h.client.auth_methods = { { id = "m", type = "terminal", args = { "--login" } } }
+      h.auth:login()
+      auth.open_terminal = original
+      t.eq(editor_win, seen_base)
+      pcall(vim.api.nvim_win_close, editor_win, true)
+      pcall(vim.api.nvim_buf_delete, editor, { force = true })
+      if vim.api.nvim_win_is_valid(origin) then
+        pcall(vim.api.nvim_set_current_win, origin)
+      end
+    end)
+
     t.it("falls back to a tab when a split does not fit", function()
       -- The real runner, not the stub: force the horizontal split to fail.
       local original = vim.cmd

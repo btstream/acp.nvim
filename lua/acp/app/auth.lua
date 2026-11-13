@@ -96,10 +96,14 @@ local function is_panel_window(win)
   return ft == "acp_chat" or ft == "acp_input"
 end
 
----Pick where to put the login terminal: an editor window when there is one,
----otherwise the current window. The panel keeps its layout either way.
+---Pick where to put the login terminal: the remembered editor window when the
+---panel knows one, otherwise any non-panel window, otherwise the current one.
+---@param preferred integer|nil
 ---@return integer win
-local function login_base_window()
+local function login_base_window(preferred)
+  if preferred and vim.api.nvim_win_is_valid(preferred) and not is_panel_window(preferred) then
+    return preferred
+  end
   local current = vim.api.nvim_get_current_win()
   if not is_panel_window(current) then
     return current
@@ -149,10 +153,10 @@ end
 ---and a small editor must still be able to show it. When no split fits, a tab
 ---is opened instead of failing.
 ---@param command string
----@param opts {cwd: string|nil, env: table<string,string>|nil, on_exit: fun(code: integer)}
+---@param opts {cwd: string|nil, env: table<string,string>|nil, base: integer|nil, on_exit: fun(code: integer)}
 function M.open_terminal(command, opts)
   local cwd = opts.cwd or vim.fn.getcwd()
-  local base = login_base_window()
+  local base = login_base_window(opts.base)
   local split = pcall(function()
     vim.api.nvim_set_current_win(base)
     vim.cmd("belowright split")
@@ -170,6 +174,7 @@ end
 ---@param opts {config: fun(): table, client: fun(): table|nil,
 ---  notify: fun(message: string, level: integer|nil),
 ---  restart: fun(), after_ready: fun(fn: fun()),
+---  base_window: fun(): integer|nil,
 ---  open_terminal: fun(command: string, opts: table)|nil,
 ---  on_changed: fun()|nil}
 function M.new(opts)
@@ -181,6 +186,7 @@ function M.new(opts)
     after_ready = opts.after_ready or function(fn)
       fn()
     end,
+    base_window = opts.base_window,
     open_terminal = opts.open_terminal or M.open_terminal,
     on_changed = opts.on_changed or function() end,
     running = false,
@@ -280,6 +286,9 @@ function Auth:run(method, retry)
   local opened, err = pcall(self.open_terminal, command, {
     cwd = self.config().cwd or vim.fn.getcwd(),
     env = spec.env,
+    -- The panel remembers the editor window the user last worked in; placing
+    -- the login there keeps the panel's own layout untouched.
+    base = self.base_window and self.base_window() or nil,
     on_exit = function(code)
       self.running = false
       self.on_changed()
