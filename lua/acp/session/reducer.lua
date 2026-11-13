@@ -122,11 +122,114 @@ local function merge_list(current, incoming)
   return incoming
 end
 
+---Undo journal for one update. Reducers mutate state in place; a failure
+---halfway used to leave a block with the new title but the old status. Every
+---write goes through here so a failed update can be dropped whole without
+---losing block identity (the UI holds references to blocks).
+local Tx = {}
+Tx.__index = Tx
+
+function Tx.new()
+  return setmetatable({ log = {}, slots = {}, blocks = {}, order = {}, added = {}, added_list = {} }, Tx)
+end
+
+---@param tbl table
+---@param key any
+---@param value any
+function Tx:set(tbl, key, value)
+  local slots = self.slots[tbl]
+  if not slots then
+    slots = {}
+    self.slots[tbl] = slots
+  end
+  local record = slots[key]
+  if not record then
+    local present = rawget(tbl, key) ~= nil
+    record = { present = present, value = rawget(tbl, key) }
+    slots[key] = record
+    self.log[#self.log + 1] = { tbl = tbl, key = key, record = record }
+  end
+  tbl[key] = value
+end
+
+---Copy a block the first time it is mutated in this transaction.
+---@param block table|nil
+function Tx:block(block)
+  if not block or self.blocks[block] then
+    return
+  end
+  -- A shallow copy plus a length marker for the streaming chunk buffer is
+  -- enough: later chunks truncate back to that length on rollback. Deep-copying
+  -- the whole message on every chunk would reintroduce quadratic streaming.
+  local fields = {}
+  for key, value in pairs(block) do
+    fields[key] = value
+  end
+  local parts = rawget(block, "_parts")
+  self.blocks[block] = { fields = fields, mt = getmetatable(block), parts = parts and { parts, #parts } or nil }
+  self.order[#self.order + 1] = block
+end
+
+---Record a block appended by this transaction.
+---@param block table
+function Tx:add(block)
+  if not self.added[block] then
+    self.added[block] = true
+    self.added_list[#self.added_list + 1] = block
+  end
+end
+
+function Tx:rollback(session)
+  for i = #self.log, 1, -1 do
+    local entry = self.log[i]
+    if entry.record.present then
+      entry.tbl[entry.key] = entry.record.value
+    else
+      entry.tbl[entry.key] = nil
+    end
+  end
+  -- Appended blocks are always new; the journal restored the old arrays, so
+  -- drop them from both the transcript and the tool index.
+  if #self.added_list > 0 then
+    local kept = {}
+    for _, block in ipairs(session.blocks) do
+      if not self.added[block] then
+        kept[#kept + 1] = block
+      end
+    end
+    session.blocks = kept
+    for id, block in pairs(session.tools) do
+      if self.added[block] then
+        session.tools[id] = nil
+      end
+    end
+  end
+  for _, block in ipairs(self.order) do
+    local snapshot = self.blocks[block]
+    for key in pairs(block) do
+      if snapshot.fields[key] == nil then
+        block[key] = nil
+      end
+    end
+    for key, value in pairs(snapshot.fields) do
+      block[key] = value
+    end
+    if snapshot.parts then
+      local parts, count = snapshot.parts[1], snapshot.parts[2]
+      for i = #parts, count + 1, -1 do
+        parts[i] = nil
+      end
+    end
+    setmetatable(block, snapshot.mt)
+  end
+end
+
 ---Apply one update to a session.
 ---@param session AcpSessionState
 ---@param update table
+---@param tx table|nil mutation journal
 ---@return boolean changed
-local function reduce(session, update)
+local function reduce(session, update, tx)
   if type(update) ~= "table" or type(update.sessionUpdate) ~= "string" then
     Log.warn("ignoring malformed session update")
     return false
@@ -135,13 +238,13 @@ local function reduce(session, update)
 
   -- Existing tools/plans mutate in place and do not pass through append().
   if kind == "tool_call" or kind == "tool_call_update" or kind == "plan" then
-    session:finish_thought()
+    session:finish_thought(nil, tx)
   end
 
   if kind == "user_message_chunk" then
     local text = text_of(update.content)
     if text ~= "" then
-      session:user_chunk(text, update.messageId)
+      session:user_chunk(text, update.messageId, tx)
       return true
     end
     return false
@@ -152,8 +255,8 @@ local function reduce(session, update)
     if text == "" then
       return false
     end
-    local block = session:append_text("agent", text, update.messageId)
-    block.child = update._meta and update._meta["opencode/child-session"] or nil
+    local block = session:append_text("agent", text, update.messageId, tx)
+    tx:set(block, "child", update._meta and update._meta["opencode/child-session"] or nil)
     return true
   end
 
@@ -162,7 +265,7 @@ local function reduce(session, update)
     if text == "" then
       return false
     end
-    session:append_text("thought", text, update.messageId)
+    session:append_text("thought", text, update.messageId, tx)
     return true
   end
 
@@ -188,9 +291,10 @@ local function reduce(session, update)
         raw_output = update.rawOutput,
         expanded = false,
         child = update._meta and update._meta["opencode/child-session"] or nil,
-      })
-      session.tools[id] = block
+      }, tx)
+      tx:set(session.tools, id, block)
     end
+    tx:block(block)
     block.title = update.title or block.title
     block.name = merge_list(block.name, update.name)
     block.tool_kind = update.kind or block.tool_kind
@@ -224,9 +328,10 @@ local function reduce(session, update)
         title = update.title or tostring(id),
         status = update.status or "pending",
         expanded = false,
-      })
-      session.tools[id] = block
+      }, tx)
+      tx:set(session.tools, id, block)
     end
+    tx:block(block)
     if update.title then
       block.title = update.title
     end
@@ -266,10 +371,11 @@ local function reduce(session, update)
       end
     end
     if active then
+      tx:block(active)
       active.entries = update.entries or {}
       return true
     end
-    session:append({ id = "plan:" .. session.turn, kind = "plan", text = "", entries = update.entries or {} })
+    session:append({ id = "plan:" .. session.turn, kind = "plan", text = "", entries = update.entries or {} }, tx)
     return true
   end
 
@@ -280,7 +386,7 @@ local function reduce(session, update)
     if vim.deep_equal(session.commands, commands) then
       return false
     end
-    session.commands = commands
+    tx:set(session, "commands", commands)
     return true
   end
 
@@ -288,7 +394,7 @@ local function reduce(session, update)
     if session.current_mode == update.currentModeId then
       return false
     end
-    session.current_mode = update.currentModeId
+    tx:set(session, "current_mode", update.currentModeId)
     return true
   end
 
@@ -297,33 +403,34 @@ local function reduce(session, update)
     if vim.deep_equal(session.config_options, options) then
       return false
     end
-    session.config_options = options
+    tx:set(session, "config_options", options)
     return true
   end
 
   if kind == "session_info_update" then
     if update.title then
-      session.title = update.title
+      tx:set(session, "title", update.title)
     end
     local meta = update._meta or {}
     if meta["opencode/retry"] ~= nil then
-      session.retry = meta["opencode/retry"]
+      tx:set(session, "retry", meta["opencode/retry"])
       return true
     end
     if meta["opencode/compaction"] then
       local marker = meta["opencode/compaction"]
-      session.compaction = marker
+      tx:set(session, "compaction", marker)
       if marker.status == "started" then
         session:append({
           id = "compaction:" .. tostring(marker.messageId),
           kind = "compaction",
           text = "",
           status = "in_progress",
-        })
+        }, tx)
       else
         local found = false
         for _, b in ipairs(session.blocks) do
           if b.kind == "compaction" and b.status == "in_progress" then
+            tx:block(b)
             b.status = marker.status
             found = true
           end
@@ -334,7 +441,7 @@ local function reduce(session, update)
             kind = "compaction",
             text = "",
             status = marker.status,
-          })
+          }, tx)
         end
       end
       return true
@@ -347,7 +454,7 @@ local function reduce(session, update)
     if vim.deep_equal(session.usage, usage) then
       return false
     end
-    session.usage = usage
+    tx:set(session, "usage", usage)
     return true
   end
 
@@ -358,7 +465,7 @@ local function reduce(session, update)
       text = update.description or "",
       title = update.title,
       severity = update.severity,
-    })
+    }, tx)
     return true
   end
 
@@ -378,8 +485,9 @@ local function reduce(session, update)
         text = "",
         status = update.status,
         compaction_id = id,
-      })
+      }, tx)
     end
+    tx:block(block)
     block.status = update.status or block.status
     block.error = update.error or block.error
     if update.summary ~= nil then
@@ -412,8 +520,9 @@ local function reduce(session, update)
         text = "",
         status = "in_progress",
         compaction_id = id,
-      })
+      }, tx)
     end
+    tx:block(block)
     state.append_block_text(block, text_of(update.content))
     return true
   end
@@ -423,8 +532,19 @@ local function reduce(session, update)
 end
 
 function M.apply(session, update)
-  local changed = reduce(session, update)
+  local tx = Tx.new()
+  local ok, changed = pcall(reduce, session, update, tx)
+  if not ok then
+    tx:rollback(session)
+    local kind = type(update) == "table" and update.sessionUpdate or "?"
+    local id = type(update) == "table" and update.toolCallId or nil
+    Log.error("dropping failed session update %s%s: %s", kind, id and (" (" .. tostring(id) .. ")") or "", changed)
+    return false
+  end
   if not changed then
+    -- "No change" branches can still have side effects (closing a thought).
+    -- Roll them back too so the result is one atomic unit.
+    tx:rollback(session)
     return false
   end
   local kind = update.sessionUpdate

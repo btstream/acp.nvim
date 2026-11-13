@@ -67,6 +67,65 @@ return function(t)
       t.eq("in_progress", s.blocks[1].status)
     end)
 
+    t.it("drops a failed update without leaving a half-applied block", function()
+      local s = state.new("s1", "/tmp")
+      reducer.apply(s, {
+        sessionUpdate = "tool_call",
+        toolCallId = "c1",
+        title = "Read file",
+        kind = "read",
+        status = "pending",
+      })
+      local before = {
+        title = s.blocks[1].title,
+        status = s.blocks[1].status,
+        content = s.blocks[1].content,
+        bytes = s.bytes,
+        version = s.version,
+      }
+      -- A string content reaches ipairs() in the detail builder and throws
+      -- after the title and status were already assigned.
+      local applied = reducer.apply(s, {
+        sessionUpdate = "tool_call_update",
+        toolCallId = "c1",
+        title = "Changed",
+        status = "completed",
+        content = "not a list",
+      })
+      t.falsy(applied)
+      t.eq(before.title, s.blocks[1].title)
+      t.eq(before.status, s.blocks[1].status)
+      t.eq(before.content, s.blocks[1].content)
+      t.eq(before.bytes, s.bytes)
+      t.eq(before.version, s.version)
+      -- The session is still usable afterwards.
+      reducer.apply(s, {
+        sessionUpdate = "tool_call_update",
+        toolCallId = "c1",
+        status = "completed",
+        content = { { type = "content", content = { type = "text", text = "ok" } } },
+      })
+      t.eq("completed", s.blocks[1].status)
+      t.eq("ok", s.blocks[1].detail)
+    end)
+
+    t.it("rolls back the side effects of a no-op update", function()
+      local s = state.new("s1", "/tmp")
+      s:begin_turn()
+      reducer.apply(s, {
+        sessionUpdate = "agent_thought_chunk",
+        messageId = "m1",
+        content = { type = "text", text = "thinking" },
+      })
+      local thought = s.blocks[1]
+      t.eq("streaming", thought.status)
+      -- A tool update without an id closes the thought first, then reports no
+      -- change; the thought must stay open.
+      t.falsy(reducer.apply(s, { sessionUpdate = "tool_call_update", status = "pending" }))
+      t.eq("streaming", thought.status)
+      t.eq(thought, s.active_thought)
+    end)
+
     t.it("keeps diff content out of the summary text", function()
       local s = state.new("s1", "/tmp")
       reducer.apply(s, {

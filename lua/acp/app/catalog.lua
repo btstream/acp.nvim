@@ -55,7 +55,7 @@ function Catalog:cwd(session_id)
   return self:cwds()[session_id]
 end
 
----Remember an agent-provided title, ignoring JSON null and empty strings.
+---Remember an agent-provided title, ignoring missing values and empty strings.
 ---@param session_id string
 ---@param title any
 ---@return boolean changed
@@ -63,7 +63,7 @@ function Catalog:cache_title(session_id, title)
   if not session_id then
     return false
   end
-  -- JSON null decodes to vim.NIL; that means "no title yet", not "clear it".
+  -- JSON null decodes to nil; that means "no title yet", not "clear it".
   if type(title) ~= "string" or title == "" then
     return false
   end

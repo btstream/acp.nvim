@@ -154,15 +154,34 @@ function M.new(id, cwd, limits)
   }, Session)
 end
 
-function Session:append(block)
-  self:finish_thought()
+---Write through a transaction journal when one is active.
+local function set(tx, tbl, key, value)
+  if tx then
+    tx:set(tbl, key, value)
+  else
+    tbl[key] = value
+  end
+end
+
+---Snapshot a block before its fields change inside a transaction.
+local function copy(tx, block)
+  if tx and block then
+    tx:block(block)
+  end
+end
+
+function Session:append(block, tx)
+  self:finish_thought(nil, tx)
   if block.kind == "thought" and block.status == "streaming" then
-    self.active_thought = block
+    set(tx, self, "active_thought", block)
   end
   block._index = #self.blocks + 1
   block._max_bytes = self.limits.max_block_bytes
-  self.blocks[#self.blocks + 1] = block
-  self:touch(block)
+  set(tx, self.blocks, #self.blocks + 1, block)
+  if tx then
+    tx:add(block)
+  end
+  self:touch(block, nil, tx)
   return block
 end
 
@@ -190,13 +209,14 @@ end
 ---Close a streaming thought. A finished thought defaults to collapsed; the
 ---text stays in the model so it can be reopened.
 ---@param block AcpBlock
-function Session:finish_thought(block)
+function Session:finish_thought(block, tx)
   block = block or self.active_thought
   if not block then
     return
   end
+  copy(tx, block)
   if self.active_thought == block then
-    self.active_thought = nil
+    set(tx, self, "active_thought", nil)
   end
   if block.kind ~= "thought" or block.status ~= "streaming" then
     return
@@ -206,7 +226,7 @@ function Session:finish_thought(block)
   if (self.thoughts or {}).collapse_on_finish ~= false then
     block.expanded = false
   end
-  self:touch(block, false)
+  self:touch(block, false, tx)
 end
 
 function Session:configure(result)
@@ -244,23 +264,24 @@ function Session:cancel_turn()
   return true
 end
 
-function Session:touch(block, payload_changed)
+function Session:touch(block, payload_changed, tx)
   if not block then
     return
   end
+  copy(tx, block)
   if payload_changed ~= false then
     if rawget(block, "text") ~= nil then
-      block._append_base = nil
+      set(tx, block, "_append_base", nil)
     end
     local previous = block._bytes or 0
-    block._bytes = memory.bound_block(block, self.limits.max_block_bytes)
-    self.bytes = self.bytes + block._bytes - previous
-    block._text_bytes = rawget(block, "text") and #rawget(block, "text") or block._text_bytes
+    set(tx, block, "_bytes", memory.bound_block(block, self.limits.max_block_bytes))
+    set(tx, self, "bytes", self.bytes + block._bytes - previous)
+    set(tx, block, "_text_bytes", rawget(block, "text") and #rawget(block, "text") or block._text_bytes)
   end
-  block._revision = (block._revision or 0) + 1
-  self.version = self.version + 1
-  self.changes[(self.version - 1) % 256 + 1] = { version = self.version, index = block._index or 1 }
-  self:trim()
+  set(tx, block, "_revision", (block._revision or 0) + 1)
+  set(tx, self, "version", self.version + 1)
+  set(tx, self.changes, (self.version - 1) % 256 + 1, { version = self.version, index = block._index or 1 })
+  self:trim(tx)
 end
 
 function Session:changed_since(version)
@@ -285,7 +306,7 @@ end
 ---
 ---Trimming happens in batches (down to 90% of the cap) so the O(n) compaction
 ---cost is amortised over many appends instead of running on every render tick.
-function Session:trim()
+function Session:trim(tx)
   local n = #self.blocks
   if n <= MAX_BLOCKS and self.bytes <= self.limits.max_session_bytes then
     return
@@ -304,42 +325,44 @@ function Session:trim()
   for i = 1, keep_from - 1 do
     removed[self.blocks[i].id] = true
     if self.blocks[i] == self.active_thought then
-      self.active_thought = nil
+      set(tx, self, "active_thought", nil)
     end
   end
   for i = keep_from, n do
     kept[#kept + 1] = self.blocks[i]
   end
-  self.blocks = kept
-  self.bytes = retained
+  set(tx, self, "blocks", kept)
+  set(tx, self, "bytes", retained)
   for index, block in ipairs(kept) do
+    copy(tx, block)
     block._index = index
   end
-  self.version = self.version + 1
-  self.changes[(self.version - 1) % 256 + 1] = { version = self.version, index = 1 }
+  set(tx, self, "version", self.version + 1)
+  set(tx, self.changes, (self.version - 1) % 256 + 1, { version = self.version, index = 1 })
   -- Drop tool mappings whose block was trimmed; otherwise `session.tools`
   -- would keep resurrecting removed entries on the next tool_call_update.
   for id, tool in pairs(self.tools) do
     if removed[tool.id] then
-      self.tools[id] = nil
+      set(tx, self.tools, id, nil)
     end
   end
-  self.trimmed = true
+  set(tx, self, "trimmed", true)
 end
 
-function Session:append_text(kind, text, message_id)
+function Session:append_text(kind, text, message_id, tx)
   local last = self.blocks[#self.blocks]
   local cancelled_thought = kind == "thought" and self.status == "cancelling"
   if last and last.kind == kind and (last.status == "streaming" or cancelled_thought) then
     if not message_id or last.message_id == nil or last.message_id == message_id then
+      copy(tx, last)
       last.message_id = last.message_id or message_id
       M.append_block_text(last, text)
-      self:touch(last)
+      self:touch(last, nil, tx)
       return last
     end
   end
   if kind == "thought" and last and last.kind == "thought" then
-    self:finish_thought(last)
+    self:finish_thought(last, tx)
   end
   local block = self:append({
     id = next_id(kind),
@@ -348,9 +371,9 @@ function Session:append_text(kind, text, message_id)
     status = "streaming",
     message_id = message_id,
     expanded = kind == "thought" and (self.thoughts or {}).expand_while_streaming ~= false and true or nil,
-  })
+  }, tx)
   if cancelled_thought then
-    self:finish_thought(block)
+    self:finish_thought(block, tx)
   end
   return block
 end
@@ -398,27 +421,29 @@ function Session:add_local_user(text, attachments)
 end
 
 ---Handle a streamed user message chunk, replacing the optimistic message when possible.
-function Session:user_chunk(text, message_id)
+function Session:user_chunk(text, message_id, tx)
   local pending = self.pending_user
   if pending and pending.positioned_prompt then
     -- The local message already has the complete ordered multimodal prompt.
     -- Agents may echo text and images as separate chunks (or omit images from
     -- their echo). Replacing/concatenating those would corrupt saved offsets.
+    copy(tx, pending)
     pending.optimistic = false
     pending.message_id = message_id or pending.message_id
     pending.status = "streaming"
-    self:touch(pending, false)
+    self:touch(pending, false, tx)
     return pending
   end
   if pending and pending.optimistic then
+    copy(tx, pending)
     pending.optimistic = false
     pending.text = text
     pending.message_id = message_id
     pending.status = "streaming"
-    self:touch(pending)
+    self:touch(pending, nil, tx)
     return pending
   end
-  return self:append_text("user", text, message_id)
+  return self:append_text("user", text, message_id, tx)
 end
 
 ---Close streaming blocks at the end of a turn.

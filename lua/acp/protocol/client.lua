@@ -257,7 +257,9 @@ function Client:request(method, params, timeout)
 end
 
 function Client:on_line(line)
-  local ok, decoded = pcall(vim.json.decode, line)
+  -- Decode JSON null as Lua nil. Otherwise vim.NIL leaks into reducers and
+  -- string/number operations fail halfway through an update.
+  local ok, decoded = pcall(vim.json.decode, line, { luanil = { object = true, array = true } })
   if not ok then
     Log.error("invalid JSON from agent: %s", vim.trim(line:sub(1, 500)))
     return

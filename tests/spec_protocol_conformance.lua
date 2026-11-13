@@ -239,7 +239,7 @@ return function(t)
 
     -- Robustness --------------------------------------------------------------
 
-    t.pending("reduces updates carrying JSON null", "phase 1: null normalisation", function()
+    t.it("reduces updates carrying JSON null", function()
       local client, ctx = start("opencode")
       local session = prompt(client, ctx, "@null")
       t.eq({}, ctx.reduce_errors)

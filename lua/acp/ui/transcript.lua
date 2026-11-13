@@ -8,7 +8,7 @@ local metrics = require("acp.ui.render_metrics")
 
 local M = {}
 
----Length of a string field, tolerating JSON null (vim.NIL) and other types.
+---Length of a string field, tolerating missing values and other types.
 ---@param value any
 ---@return integer
 local function len(value)
