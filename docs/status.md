@@ -637,19 +637,27 @@ native/edgy/reconnect、性能 smoke、tail/spinner 附加 UI 回归通过。
 
 认证：
 
-- 默认声明 `auth.terminal` 与 `_meta["terminal-auth"]`（`capabilities.auth_terminal` 可关）。
-  声明关闭时 agent 不再提供登录方式，`elicitation/create` 等未声明请求回 -32601。
-- 新增 `app/auth`：按错误码 -32000 识别 `auth_required`，不匹配消息文本；`session/new`、
-  `session/load`、`session/prompt` 失败都会进入登录流程并在成功后重试。
-- 单一登录方式直接执行，多个用 picker。`terminal` 类型或带 `_meta["terminal-auth"]` 时在
-  新 `:terminal` 分屏运行命令，退出后重连并重试；`agent` 类型调用 `authenticate` 后直接重试。
-  重试消息会等会话可用后再发，终端登录会重连、恢复会话。
-- 新增 `:Acp login` 与 `:Acp logout`（后者仅当 agent 声明 `auth.logout`）。
+- 默认声明 `auth.terminal` 与 `_meta["terminal-auth"]`（`capabilities.auth_terminal` 可关）；
+  同时声明 `session.configOptions.boolean`（本轮新增，`boolean_config_options` 可关）。声明关闭后
+  agent 不再提供登录方式，未声明的 `elicitation/create` 回 -32601。
+- 新增 `app/auth`：只按 `-32000` 识别 `auth_required`。客户端自造的失败（超时、断线、写入失败）
+  改用 `-32099`，因此崩溃和超时不再被误判为登录；`session/new`、`session/load`、`session/prompt`
+  失败都会进入登录并在成功后重试。
+- 单一登录方式直接执行，多个用 picker。`terminal` 类型在 `:terminal` 分屏运行**客户端自己配置的**
+  agent 命令，只采用方法给出的 `args`/`env`（按 ACP 要求，方法不能指定 command；env 覆盖同名
+  配置），启动前展示命令与 env。退出码 0 后**强制重启** agent 进程（`Connection:restart`，因为
+  `reconnect` 在连接健康时是 no-op），再重发失败的消息；`agent` 类型调用 `authenticate`。
+- 同一登录流程连续成功后 agent 仍拒绝时，最多重试 2 次后停止并提示；`:Acp login` 会重置计数。
+  登录终端打开失败（例如窗口太小）会报告错误而不是留下 `running` 状态。
+- 重试保留原用户消息，不重复插入；失败的那一轮不再留下错误块。
+- 新增 `:Acp login` 与 `:Acp logout`（后者仅当 agent 声明 `auth.logout`）；未连接时 `:Acp login`
+  明确提示先连接。
 - 删除 `prompts.lua`、`controller.lua` 里写死的 OpenCode 提示；没有登录方式时提示查看 agent
   文档。`health` 报告当前登录方式。
 - 修复 `Sessions:create` 的 `creating` 守卫：创建任务被重连取消后不再永久卡住后续创建。
-- 新增 auth 单元测试（错误码、命令构造、引用、单选/多选流程、退出码、logout）、controller
-  级登录全流程测试与一致性套件的登录方式用例；mock 增加 `@auth` 场景、`logout` 处理，
-  并修正 `@auth` 失败后未释放 active prompt 的问题。
+- 切换连接时清理 `pending_auth_retry` / `auth_after_ready`；`disconnect()` 取消进行中的登录。
+- 新增 auth 单元测试（错误码、命令与 env 合并、引用、重试上限、取消、打开失败、logout）、
+  controller 级登录全流程与「超时/崩溃不触发登录」「重试不重复消息」测试；mock 增加 `@auth`
+  场景与 `logout`，并把非认证失败从 `-32000` 改为 `-32099`。
 
-验证：966 项单元/组件测试通过，0 失败，3 项 pending（终端输出 ×2、controls）。
+验证：975 项单元/组件测试通过，0 失败，3 项 pending（终端输出 ×2、controls）。

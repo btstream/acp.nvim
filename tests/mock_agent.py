@@ -560,12 +560,12 @@ def run_prompt(msg_id, text):
         # mode gets a byte range; normal mode must not be described as an
         # insert-only point.
         if "INLINE_NORMAL" in text and "INSERT ONLY" in text:
-            error(msg_id, -32000, "normal-mode inline was described as insert-only")
+            error(msg_id, -32099, "normal-mode inline was described as insert-only")
             with permissions_lock:
                 active_prompts.pop(msg_id, None)
             return
         if "INLINE_VISUAL" in text and "Rewrite only" not in text:
-            error(msg_id, -32000, "visual inline lost its range instruction")
+            error(msg_id, -32099, "visual inline lost its range instruction")
             with permissions_lock:
                 active_prompts.pop(msg_id, None)
             return
@@ -588,7 +588,7 @@ def run_prompt(msg_id, text):
                 with permissions_lock:
                     permissions.pop(9001, None)
             if choices != ["allow", "allow", "reject"]:
-                error(msg_id, -32000, "inline permission policy failed: " + repr(choices))
+                error(msg_id, -32099, "inline permission policy failed: " + repr(choices))
                 with permissions_lock:
                     active_prompts.pop(msg_id, None)
                 return
@@ -633,7 +633,7 @@ def run_prompt(msg_id, text):
         finish(msg_id)
         return
     if "fail" in text:
-        error(msg_id, -32000, "mock failure")
+        error(msg_id, -32099, "mock failure")
         with permissions_lock:
             active_prompts.pop(msg_id, None)
         return
@@ -884,7 +884,7 @@ def handle(msg):
             # that here turns the client-side race into a test failure instead
             # of silently letting two turns overlap.
             if active_prompts:
-                error(msg_id, -32000, "Internal error: Session already has an active ACP prompt: " + SESSION_ID)
+                error(msg_id, -32099, "Internal error: Session already has an active ACP prompt: " + SESSION_ID)
                 return
             active_prompts[msg_id] = True
         cancel_event.clear()

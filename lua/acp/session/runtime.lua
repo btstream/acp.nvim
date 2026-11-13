@@ -188,6 +188,16 @@ function Runtime:enqueue(session, text, attachments)
   return true
 end
 
+---Begin a turn without adding a new optimistic user block.
+---
+---Used when a prompt is retried after a login: the original message is still
+---in the transcript, so adding it again would show it twice.
+---@param session table
+---@return integer turn
+function Runtime:rebegin_turn(session)
+  return session:begin_turn()
+end
+
 function Runtime:begin_turn(session, text, attachments)
   local turn = session:begin_turn()
   session:add_local_user(text, attachments)

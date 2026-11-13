@@ -143,6 +143,16 @@ function Connection:reconnect()
   if S.connection == "starting" or S.connection == "ready" then
     return
   end
+  self:restart()
+end
+
+---Replace the agent process unconditionally.
+---
+---A terminal login changes credentials on disk, so the running process must be
+---restarted even though the connection is still healthy. `reconnect` is a no-op
+---in that state, which is why this path exists separately.
+function Connection:restart()
+  local S = self.state()
   local previous = S.session
   self.reset_operations()
   self.runtime_lost()

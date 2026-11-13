@@ -64,7 +64,9 @@ end
 function Rpc:request(method, params, cb)
   if self.closed then
     if cb then
-      cb(false, { code = -32000, message = "connection closed" })
+      -- Not -32000: ACP reserves that for `auth_required` and the login flow
+      -- must not be triggered by a local transport failure.
+      cb(false, { code = M.LOCAL_ERROR, message = "connection closed" })
     end
     return nil
   end
@@ -78,7 +80,7 @@ function Rpc:request(method, params, cb)
     local entry = self.pending[id]
     self.pending[id] = nil
     if entry and entry.cb then
-      entry.cb(false, { code = -32000, message = "failed to send request: " .. method })
+      entry.cb(false, { code = M.LOCAL_ERROR, message = "failed to send request: " .. method })
     end
     return nil
   end
@@ -272,7 +274,7 @@ function Rpc:close(reason)
   for _, entry in pairs(pending) do
     -- A failing callback used to abort the loop, leaving the remaining
     -- requests unresolved forever.
-    pcall(entry.cb, false, { code = -32000, message = reason or "connection closed" })
+    pcall(entry.cb, false, { code = M.LOCAL_ERROR, message = reason or "connection closed" })
   end
 end
 

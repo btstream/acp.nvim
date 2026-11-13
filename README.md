@@ -710,6 +710,7 @@ require("acp").setup({
     elicitation = { form = true, url = false },
     auth_terminal = true,      -- 终端登录（:Acp login）
     terminal_output_meta = false,
+    boolean_config_options = true,
     fs = false,
     terminal = false,
   },
@@ -1179,11 +1180,13 @@ require("acp").setup({ ui = { picker = "internal" } })
 Agent 在 `initialize` 里声明登录方式时，`:Acp login` 会使用它：
 
 - 只有一个方式时直接执行；多个时用选择器挑选（显示名称和说明）。
-- `terminal` 类型（或带 `_meta["terminal-auth"]`）会在新的 `:terminal` 分屏里运行 Agent 给的命令；
-  命令退出后自动重连并重试刚才失败的操作。
+- `terminal` 类型会在新的 `:terminal` 分屏里运行**你自己配置的** Agent 命令，只追加 Agent 给出的
+  参数和环境变量（ACP 规定登录方式不能指定命令）。启动前会显示实际执行的命令；命令成功退出后
+  会重启 Agent 进程并重试刚才失败的操作。连续失败会停止重试，`:Acp login` 可重新开始。
 - `agent` 类型（或没有 type）调用 `authenticate(methodId)`，成功后直接重试。
-- `session/new`、`session/load`、`session/prompt` 返回 `auth_required`（-32000）时也会进入同一流程；
-  Agent 完全没有提供登录方式时只提示查看它的文档。
+- `session/new`、`session/load`、`session/prompt` 返回 `auth_required`（-32000）时也会进入同一流程。
+  超时、断线等本地失败使用不同的错误码，不会误触发登录。
+- Agent 完全没有提供登录方式时只提示查看它的文档。
 - `:Acp logout` 仅在 Agent 声明 `auth.logout` 时可用。
 
 ### 权限请求

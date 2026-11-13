@@ -103,7 +103,7 @@ return function(t)
         return done ~= nil
       end, 2000)
       t.falsy(done[1])
-      t.eq(-32000, done[2].code)
+      t.eq(require("acp.transport.jsonrpc").LOCAL_ERROR, done[2].code)
     end)
 
     t.it("routes only registered agent requests through the registry", function()

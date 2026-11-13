@@ -31,9 +31,26 @@ return function(t)
       rpc:request("session/new", {}, function(ok, value)
         got = { ok = ok, value = value }
       end)
-      rpc:handle({ jsonrpc = "2.0", id = 1, error = { code = -32000, message = "boom" } })
+      rpc:handle({ jsonrpc = "2.0", id = 1, error = { code = -32602, message = "boom" } })
       t.falsy(got.ok)
       t.eq("boom", got.value.message)
+    end)
+
+    t.it("reports local failures outside the ACP error range", function()
+      local rpc = rpcmod.new({
+        send = function()
+          return true
+        end,
+      })
+      local got
+      rpc:request("session/prompt", {}, function(ok, value)
+        got = { ok = ok, value = value }
+      end)
+      rpc:close("agent process exited")
+      t.falsy(got.ok)
+      -- -32000 means auth_required in ACP; a closed transport is not a login.
+      t.eq(rpcmod.LOCAL_ERROR, got.value.code)
+      t.truthy(rpcmod.LOCAL_ERROR ~= -32000)
     end)
 
     t.it("dispatches notifications", function()

@@ -38,7 +38,7 @@ return function(t)
       notify = function(message, level)
         notices[#notices + 1] = { message = message, level = level }
       end,
-      reconnect = function()
+      restart = function()
         terminals.reconnects = (terminals.reconnects or 0) + 1
       end,
       after_ready = function(fn)
@@ -66,7 +66,8 @@ return function(t)
     t.it("recognises the auth_required error code only", function()
       t.truthy(auth.is_auth_error({ code = -32000 }))
       t.truthy(auth.is_auth_error({ code = -32000, message = "Authentication required" }))
-      t.truthy(auth.is_auth_error({ code = -1, data = { code = -32000 } }))
+      -- A local failure (timeout, closed transport) must not look like a login.
+      t.falsy(auth.is_auth_error({ code = -32099, message = "request timed out: session/prompt" }))
       t.falsy(auth.is_auth_error({ code = -32601, message = "auth is not supported" }))
       t.falsy(auth.is_auth_error("auth required"))
       t.falsy(auth.is_auth_error(nil))
@@ -88,13 +89,25 @@ return function(t)
       t.eq("'opencode' 'acp' '--login'", auth.command_line(spec))
     end)
 
-    t.it("prefers the command carried by _meta", function()
+    t.it("prefers the client's configured command over any _meta command", function()
+      -- ACP: "The descriptor cannot provide a command." Only args/env are used.
       local spec = auth.terminal_spec({
         id = "m",
-        _meta = { ["terminal-auth"] = { command = "claude", args = { "login" } } },
-      }, { command = "claude-agent-acp", args = {} })
-      t.eq("claude", spec.command)
-      t.eq({ "login" }, spec.args)
+        _meta = { ["terminal-auth"] = { command = "/tmp/evil", args = { "login" } } },
+        args = { "--login" },
+      }, { command = "opencode", args = { "acp" }, env = { A = "1" } })
+      t.eq("opencode", spec.command)
+      t.eq({ "acp", "--login" }, spec.args)
+      t.eq({ A = "1" }, spec.env)
+    end)
+
+    t.it("merges the method env over the configured launch env", function()
+      local spec = auth.terminal_spec(
+        { id = "m", type = "terminal", args = { "--login" }, env = { A = "2", B = "3" } },
+        { command = "opencode", args = { "acp" }, env = { A = "1" } }
+      )
+      t.eq("2", spec.env.A)
+      t.eq("3", spec.env.B)
     end)
 
     t.it("quotes arguments that contain spaces or quotes", function()
@@ -113,7 +126,7 @@ return function(t)
       end))
       t.eq(1, #h.terminals)
       t.match("auth", h.terminals[1].command)
-      -- The terminal exits successfully: reconnect, then retry once ready.
+      -- The terminal exits successfully: restart the agent, then retry.
       h.terminals[1].opts.on_exit(0)
       t.eq(1, h.terminals.reconnects)
       t.eq(1, #h.deferred)
@@ -132,6 +145,66 @@ return function(t)
       t.eq(0, retried)
       t.eq(nil, h.terminals.reconnects)
       t.match("exited with 2", h.notices[#h.notices].message)
+    end)
+
+    t.it("gives up instead of looping when the agent still refuses", function()
+      local h = harness()
+      h.client.auth_methods = { { id = "m", type = "terminal", args = { "--login" } } }
+      for _ = 1, 5 do
+        h.auth:login()
+        h.terminals[#h.terminals].opts.on_exit(0)
+      end
+      -- MAX_LOGIN_ATTEMPTS is 2: further successes stop instead of restarting.
+      t.eq(2, h.terminals.reconnects, "restarted more than the attempt limit")
+      t.match("gave up", h.notices[#h.notices].message)
+      -- A deliberate :Acp login resets the counter.
+      h.auth:reset()
+      h.auth:login()
+      h.terminals[#h.terminals].opts.on_exit(0)
+      t.eq(3, h.terminals.reconnects)
+    end)
+
+    t.it("cancels an in-flight login without restarting", function()
+      local h = harness()
+      h.client.auth_methods = { { id = "m", type = "terminal", args = { "--login" } } }
+      local retried = 0
+      h.auth:login(nil, function()
+        retried = retried + 1
+      end)
+      t.truthy(h.auth:is_running())
+      h.auth:cancel()
+      t.falsy(h.auth:is_running())
+      h.terminals[1].opts.on_exit(0)
+      t.eq(nil, h.terminals.reconnects)
+      t.eq(0, retried)
+    end)
+
+    t.it("reports a terminal that cannot be opened", function()
+      local h = harness()
+      h.client.auth_methods = { { id = "m", type = "terminal", args = { "--login" } } }
+      h.auth.open_terminal = function()
+        error("E36: Not enough room")
+      end
+      h.auth:login()
+      t.falsy(h.auth:is_running(), "running flag leaked after a failed terminal")
+      t.match("unable to open", h.notices[#h.notices].message)
+    end)
+
+    t.it("shows the command and env before launching", function()
+      local h = harness()
+      h.client.auth_methods = {
+        { id = "m", type = "terminal", args = { "--login" }, env = { ACP_LOGIN = "1" } },
+      }
+      h.auth:login()
+      local shown
+      for _, notice in ipairs(h.notices) do
+        if notice.message:find("running login command", 1, true) then
+          shown = notice.message
+        end
+      end
+      t.truthy(shown, "the command was not shown before launch")
+      t.match("ACP_LOGIN=1", shown)
+      t.match("--login", shown)
     end)
 
     t.it("calls authenticate for an agent method", function()

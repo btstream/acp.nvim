@@ -29,6 +29,13 @@ function M.client(config)
     caps.auth = { terminal = true }
     caps._meta = { ["terminal-auth"] = true }
   end
+  -- Boolean session config options are a declared capability, not a free
+  -- default: an agent must not send `type: "boolean"` options to a client that
+  -- did not advertise them.
+  if switches.boolean_config_options then
+    caps.session = caps.session or vim.empty_dict()
+    caps.session.configOptions = { boolean = vim.empty_dict() }
+  end
   return caps
 end
 

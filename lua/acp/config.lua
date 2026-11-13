@@ -24,6 +24,7 @@ M.defaults = {
     elicitation = { form = true, url = false },
     auth_terminal = true,
     terminal_output_meta = false,
+    boolean_config_options = true,
     fs = false,
     terminal = false,
   },
@@ -841,7 +842,7 @@ function M.validate(cfg)
       fail("capabilities.elicitation.%s must be a boolean, got %s", key, type(caps.elicitation[key]))
     end
   end
-  for _, key in ipairs({ "auth_terminal", "terminal_output_meta", "fs", "terminal" }) do
+  for _, key in ipairs({ "auth_terminal", "terminal_output_meta", "boolean_config_options", "fs", "terminal" }) do
     if type(caps[key]) ~= "boolean" then
       fail("capabilities.%s must be a boolean, got %s", key, type(caps[key]))
     end

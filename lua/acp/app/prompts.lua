@@ -45,12 +45,26 @@ function Prompts.new(opts)
   }, Prompts)
 end
 
+---Undo a turn that will be retried after a login. The user's message stays in
+---the transcript (it was never delivered); only the turn state is closed.
+---@param session table
+---@param turn integer
+function Prompts:drop_turn(session, turn)
+  if not session or session.turn ~= turn then
+    return
+  end
+  session.pending_user = nil
+  session:finish_turn("error")
+end
+
 ---Send a message to `session`, queueing it when a turn is already active.
 ---@param session table
 ---@param text string
 ---@param attachments table[]|nil
+---@param hooks table|nil
+---@param retrying boolean|nil reuse the existing user block (login retry)
 ---@return boolean accepted
-function Prompts:send(session, text, attachments, hooks)
+function Prompts:send(session, text, attachments, hooks, retrying)
   if not session then
     self.notify("No active session", vim.log.levels.WARN)
     return false
@@ -139,7 +153,13 @@ function Prompts:send(session, text, attachments, hooks)
     return false
   end
 
-  local turn = runtime:begin_turn(session, text, attachments)
+  local turn
+  if retrying then
+    -- The user block is already in the transcript from the failed attempt.
+    turn = runtime:rebegin_turn(session)
+  else
+    turn = runtime:begin_turn(session, text, attachments)
+  end
   self.on_turn_start(session)
   self.on_changed()
 
@@ -160,18 +180,23 @@ function Prompts:send(session, text, attachments, hooks)
       local handled = auth
         and auth:require(result, {
           retry = function()
-            -- A terminal login reconnects, so the session object captured by
-            -- this turn is stale. Ask the owner to resolve it by id (and to
-            -- queue the message if a replay is still in flight).
-            local retried = self.retry and self.retry(session.id, text, attachments)
-            if retried == false then
-              self.notify("logged in; send the message again", vim.log.levels.INFO)
+            -- A terminal login replaces the client, so this turn cannot
+            -- continue: park the message and let the owner replay it.
+            if self.retry then
+              self.retry(session.id, text, attachments, true)
             end
           end,
         })
       if handled then
-        -- The login flow owns the user-facing message and the retry; the
-        -- transcript should not also grow an error block.
+        -- The login flow owns the message and the retry; the transcript must
+        -- not keep an optimistic user block that would then appear twice.
+        self:drop_turn(session, turn)
+        self.prune()
+        self.on_turn_end(session)
+        self.on_changed()
+        self.on_render(session)
+        self.dispatch_queued(session)
+        return
       elseif lowered:match("already has an active") then
         -- The agent still has a turn running that this client does not know
         -- about (for example another editor sharing the session). Do not

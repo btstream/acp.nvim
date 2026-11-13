@@ -270,6 +270,7 @@ picker、会话浏览器等自绘浮窗内部的按键不在 keymaps 管辖范�
         elicitation = { form = true, url = false },
         auth_terminal = true,
         terminal_output_meta = false,
+        boolean_config_options = true,
         fs = false,
         terminal = false,
       },

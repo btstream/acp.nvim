@@ -278,7 +278,7 @@ function Client:request(method, params, timeout, extendable)
           end
           Log.warn("request %s timed out after %dms", method, timeout)
           rpc:cancel(id)
-          settle(false, { code = -32000, message = "request timed out: " .. method })
+          settle(false, { code = rpcmod.LOCAL_ERROR, message = "request timed out: " .. method })
         end)
       end)
     end

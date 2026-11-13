@@ -44,6 +44,10 @@ local S = {
   interactions = nil,
   pending_selections = nil,
   replaying = false,
+  -- Parked message and timer used while a login flow retries a failed prompt.
+  pending_auth_retry = nil,
+  auth_retry_timer = nil,
+  auth_after_ready = nil,
 }
 local operations = Tasks.new(function()
   return S
@@ -115,6 +119,9 @@ local function invalidate_operations()
     S.sessions_service.replaying = false
     S.sessions_service.creating = false
   end
+  -- A queued retry belongs to the connection that failed; dropping the timer
+  -- without its payload is worse than dropping both.
+  S.pending_auth_retry, S.auth_after_ready = nil, nil
 end
 
 ---Resolve the session working directory.
@@ -542,6 +549,9 @@ function M.disconnect()
   pcall(function()
     require("acp.inline").stop()
   end)
+  if S.auth then
+    S.auth:cancel()
+  end
   S.connection_service:disconnect()
 end
 
@@ -586,7 +596,7 @@ function M.flush_auth_retry()
     end
     return false
   end
-  if S.prompts:send(session, pending.text, pending.attachments) then
+  if S.prompts:send(session, pending.text, pending.attachments, nil, pending.retrying ~= false) then
     S.pending_auth_retry = nil
     return true
   end
@@ -621,6 +631,11 @@ function M.login()
   if not S.auth then
     return
   end
+  if not S.client then
+    notify("Connect to the agent before logging in", vim.log.levels.WARN)
+    return
+  end
+  S.auth:reset()
   S.auth:login(nil, function()
     M.connect()
   end)
@@ -1474,12 +1489,13 @@ function M.setup(opts, action)
     end,
     retry = function(session_id, text, attachments)
       -- Never send from inside the failed turn: the client may be about to be
-      -- replaced (a terminal login reconnects) and the captured session is
+      -- replaced (a terminal login restarts it) and the captured session is
       -- stale. Park the message and flush it as soon as the session is usable.
       S.pending_auth_retry = {
         session_id = session_id,
         text = text,
         attachments = attachments,
+        retrying = true,
         deadline = vim.uv.now() + 30000,
       }
       M.schedule_auth_retry()
@@ -1517,8 +1533,8 @@ function M.setup(opts, action)
       return S.client
     end,
     notify = notify,
-    reconnect = function()
-      M.reconnect()
+    restart = function()
+      S.connection_service:restart()
     end,
     after_ready = function(fn)
       -- The reconnect may already have finished by the time the login terminal

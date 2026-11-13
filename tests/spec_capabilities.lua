@@ -15,11 +15,20 @@ return function(t)
     t.it("advertises notices, form elicitation and terminal auth by default", function()
       local caps = connection.client_capabilities(config.merge(config.defaults, {}))
       t.eq({
-        session = { notices = {} },
+        session = { notices = {}, configOptions = { boolean = {} } },
         elicitation = { form = {} },
         auth = { terminal = true },
         _meta = { ["terminal-auth"] = true },
       }, caps)
+    end)
+
+    t.it("advertises boolean config options", function()
+      local caps = connection.client_capabilities(config.merge(config.defaults, {}))
+      t.truthy(capabilities.supports(caps, "session.configOptions.boolean"))
+      local off = connection.client_capabilities(
+        config.merge(config.defaults, { capabilities = { boolean_config_options = false } })
+      )
+      t.falsy(capabilities.supports(off, "session.configOptions.boolean"))
     end)
 
     t.it("omits notices when disabled", function()
