@@ -5,7 +5,6 @@
 -- only need the shared state, the config and a couple of callbacks, so they are
 -- a module now.
 local context = require("acp.context")
-local capabilities = require("acp.protocol.capabilities")
 local drafts = require("acp.storage.drafts")
 local layout = require("acp.layout")
 local log = require("acp.log")
@@ -237,11 +236,13 @@ function M:add_selection()
   local source = layout.saved_focus()
   local bufnr = source and vim.api.nvim_win_is_valid(source) and vim.api.nvim_win_get_buf(source) or nil
   local line = source and vim.api.nvim_win_is_valid(source) and vim.api.nvim_win_get_cursor(source)[1] or nil
+  -- Whether the selection is embedded is decided when the message is sent: the
+  -- agent's `embeddedContext` capability is only authoritative then, and a
+  -- draft can outlive a reconnect or an agent switch.
   local attachment, err = context.selection(self:cfg(), {
     bufnr = bufnr,
     line = line,
     include_current_line = true,
-    embedded = S.conn.client and capabilities.prompt(S.conn.client, "embeddedContext") or false,
   })
   if not attachment then
     self:notify(err or "unable to attach selection", vim.log.levels.WARN)

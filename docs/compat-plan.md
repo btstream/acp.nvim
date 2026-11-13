@@ -485,15 +485,22 @@ replayed」；两者都不支持才新建会话。`session/close` 在切换会�
 `promptCapabilities.image` 时于编码前降级为 `resource_link`（不再读取字节），
 移除发送前的直接拒绝。cwd 去掉末尾 `/`（保留根目录的 `/`）。
 
+上下文块改为**发送时构建**（`context.block`），不再在附加时定型：未保存的 buffer 与
+Visual 选区在 agent 声明 `embeddedContext` 时发 `resource`，否则发 `resource_link` +
+一个携带同样文本的 `text` 块。这同时修复了两个缺陷——此前非 `embeddedContext` 的选区
+只发链接、选中文本从不进入 prompt（pi 就是这种 agent），而不支持 `embeddedContext` 的
+agent 仍会收到未声明的 `resource` 块。附带收益：`storage/drafts` 保存时会剥掉 `block`，
+旧实现在草稿恢复后把这些附件**静默丢弃**；现在发送时重新构建，附件不再丢失。
+
 过程中发现并修正一个真实缺陷：`capabilities.agent` 原先对「client 实现了
 `load_session`」一律视为支持，而真实 client 总是实现该方法，导致显式声明
 `loadSession: false` 的 agent 被误判为可加载。现在只在无法上报能力的轻量 double 上
 做这种推断。
 
-验证：1087 项单元/组件测试通过（阶段 8 新增 23 项，覆盖分页、mcp 过滤、图片降级、
-能力探测、resume 回退与 close 三条路径）。mock 新增 `resumeonly` profile、
-`session/resume` 与 `session/close` 处理、`ACP_MOCK_CLOSE_LOG`。未在真实 agent 上
-手工验收。
+验证：1106 项单元/组件测试通过（阶段 8 新增 28 项，覆盖分页、mcp 过滤、图片降级、
+能力探测、resume 回退、close 三条路径，以及上下文块在两种 `embeddedContext` 下的形态
+与草稿恢复）。mock 新增 `resumeonly` profile、`session/resume` 与 `session/close` 处理、
+`ACP_MOCK_CLOSE_LOG`。未在真实 agent 上手工验收。
 
 ---
 

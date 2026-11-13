@@ -805,3 +805,31 @@ controller 从 1851 行降到 599 行。移出的职责：`app/bootstrap`（服�
 
 验证：1101 项单元/组件测试通过，0 失败，0 项 pending；`tests/integration_inline_safety.lua`
 3 项通过。行数与依赖约束由测试断言，不是一次性统计。
+
+## 上下文块改为发送时构建（2026-11-13）
+
+对照 `docs/compat-plan.md` 阶段 8 逐条核对时，发现 8.6 有两条实际未实现，另有一个更严重的
+既有缺陷：
+
+- **非 `embeddedContext` 的选区只发链接**：选中文本只留在 attachment 里，从不进入 prompt。
+  不支持 `embeddedContext` 的 agent（pi 就是）只拿到 `file://...#L10:20`，还得自己去读文件；
+  若文件有未保存修改，读到的还是磁盘旧内容。计划要求的是「链接 + 一段包含选中文本的 text 块」。
+- **未保存 buffer 不检查 `embeddedContext`**：只要有修改就无条件发 `resource` 块，等于向
+  未声明该能力的 agent 发送它没承诺处理的类型。
+- **草稿恢复会静默丢附件**（核对时新发现）：`storage/drafts` 保存时会剥掉 `block` 字段以控制
+  体积，而旧实现只在附加时构建 `block`，因此从草稿恢复的图片/文件附件在发送时直接消失。
+
+根因是「能力检查发生在附加时」。现在 `context.block(att, config, opts)` 在发送时按
+`promptCapabilities.embeddedContext` 决定形态：
+
+| 附件 | 有 `embeddedContext` | 没有 |
+|---|---|---|
+| 未保存 buffer | `resource`（内嵌文本） | `resource_link` + `text` |
+| Visual 选区 | `resource`（内嵌文本） | `resource_link` + `text` |
+| 普通文件 | `resource_link` | `resource_link` |
+
+`context.selection` 不再接受 `embedded` 参数，`app/attachments` 也不再在附加时查询能力——
+附加与发送之间可能隔着重连、agent 切换或草稿恢复，那时的能力判断已经过期。
+
+验证：1106 项测试通过，0 失败（新增 5 项，覆盖两种能力下未保存 buffer 与选区的块形态、
+以及草稿恢复后附件仍被发送）。图片降级与 inline 安全集成（3 项）回归正常。

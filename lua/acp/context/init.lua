@@ -82,6 +82,8 @@ function M.file(path, config)
     if #text > limit then
       return nil, "buffer is too large to attach"
     end
+    -- `block` is built at send time: whether the text can be embedded depends
+    -- on the agent's `embeddedContext`, which is only known then.
     return {
       kind = "file",
       label = vim.fn.fnamemodify(abs, ":t"),
@@ -89,10 +91,6 @@ function M.file(path, config)
       uri = to_uri(abs),
       text = text,
       unsaved = true,
-      block = {
-        type = "resource",
-        resource = { uri = to_uri(abs), mimeType = "text/plain", text = text },
-      },
     }
   end
 
@@ -110,17 +108,16 @@ function M.file(path, config)
     label = vim.fn.fnamemodify(abs, ":t"),
     path = abs,
     uri = to_uri(abs),
-    block = { type = "resource_link", uri = to_uri(abs), name = vim.fn.fnamemodify(abs, ":t") },
   }
 end
 
 ---Build an attachment for the last visual selection.
 ---
 ---With `include_current_line` and no selection the cursor's line is used
----instead. `embedded` picks an embedded resource for agents that advertise
----`promptCapabilities.embeddedContext`, otherwise a link plus the text block.
+---instead. The block itself is built at send time by `M.block`, because only
+---then is it known whether the agent accepts an embedded resource.
 ---@param config table
----@param opts {bufnr?: integer, include_current_line?: boolean, embedded?: boolean}|nil
+---@param opts {bufnr?: integer, include_current_line?: boolean}|nil
 ---@return table|nil attachment
 ---@return string|nil err
 function M.selection(config, opts)
@@ -171,24 +168,17 @@ function M.selection(config, opts)
   local fragment = string.format("#L%d:%d", start_line, end_line)
   local uri = to_uri(path) .. fragment
   local label = string.format("%s:%d-%d", vim.fn.fnamemodify(path, ":t"), start_line, end_line)
-  local block
-  if opts.embedded then
-    block = {
-      type = "resource",
-      resource = { uri = uri, mimeType = "text/plain", text = text },
-      annotations = { audience = { "assistant" } },
-    }
-  else
-    block = { type = "resource_link", uri = uri, name = label, mimeType = "text/plain", size = #text }
-  end
+  -- `block` is left to `M.block` at send time: an embedded resource is only
+  -- valid if the agent advertised `embeddedContext`, and a link alone loses the
+  -- selection text on agents that cannot read the file themselves.
   return {
     kind = "selection",
     label = label,
     path = path,
     uri = uri,
     text = text,
+    mime = "text/plain",
     range = { start_line = start_line, end_line = end_line },
-    block = block,
   }
 end
 
@@ -351,14 +341,60 @@ end
 ---Image bytes are read here rather than at attach time: the composer, the
 ---draft file and the local queue only ever hold the path, so a 3 MiB
 ---screenshot does not become 4 MiB of base64 in three places.
+---
+---Text attachments (an unsaved buffer, a Visual selection) also resolve here.
+---Their text can only be sent as an embedded `resource` when the agent
+---advertised `promptCapabilities.embeddedContext`; otherwise they go out as a
+---`resource_link` plus a text block carrying the same bytes, so the agent still
+---sees what the user sees instead of having to read a file that may not match.
 ---@param att table
 ---@param config table|nil
----@return table|nil block
+---@param opts {supports?: fun(name: string): boolean}|nil capability probe
+---@return table|table[]|nil block one block, or several to insert in order
 ---@return string|nil err
-function M.block(att, config)
-  if att.kind ~= "image" or att.block then
+function M.block(att, config, opts)
+  local supports = opts and opts.supports or nil
+  -- Embedding a `resource` is only valid when the agent advertised
+  -- `embeddedContext`. An unknown capability takes the universally safe form:
+  -- a link (baseline) plus the text itself.
+  local function embeds()
+    return supports ~= nil and supports("embeddedContext")
+  end
+
+  if att.block then
     return att.block
   end
+
+  if att.kind == "selection" or (att.kind == "file" and att.text) then
+    -- The text travels with the message either way; only the envelope changes.
+    if embeds() then
+      return {
+        type = "resource",
+        resource = { uri = att.uri, mimeType = att.mime or "text/plain", text = att.text },
+        annotations = { audience = { "assistant" } },
+      }
+    end
+    return {
+      {
+        type = "resource_link",
+        uri = att.uri,
+        name = att.label,
+        mimeType = att.mime or "text/plain",
+        size = #att.text,
+      },
+      { type = "text", text = att.text },
+    }
+  end
+
+  if att.kind == "file" then
+    local name = att.label or vim.fn.fnamemodify(att.path or "", ":t")
+    return { type = "resource_link", uri = att.uri, name = name }
+  end
+
+  if att.kind ~= "image" then
+    return att.block
+  end
+
   local images = (config and config.context and config.context.images) or {}
   -- `att.inline` is an explicit decision made when the attachment was created:
   -- clipboard bytes must be embedded (the agent cannot read our cache), while
@@ -483,12 +519,13 @@ function M.to_prompt(text, attachments, config, opts)
           size = att.bytes,
         }
       else
-        local block, err = M.block(att, config)
-        if block and block.type == "image" and unsupported_image then
-          block = { type = "resource_link", uri = att.uri, name = att.label, mimeType = block.mimeType }
-        end
+        local block, err = M.block(att, config, { supports = supports })
         if block then
-          blocks[#blocks + 1] = block
+          -- `block` may be several blocks: a text attachment that cannot be
+          -- embedded goes out as a link plus the text itself.
+          for _, one in ipairs(block.type and { block } or block) do
+            blocks[#blocks + 1] = one
+          end
         elseif err and not problem then
           problem = err
         end

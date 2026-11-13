@@ -174,23 +174,31 @@ return function(t)
       vim.bo[buf].buftype = ""
       vim.fn.setpos("'<", { 0, 2, 1, 0 })
       vim.fn.setpos("'>", { 0, 2, 4, 0 })
-      local att, err = context.selection(cfg(), { bufnr = buf, embedded = false })
+      local att, err = context.selection(cfg(), { bufnr = buf })
       t.eq(nil, err)
-      t.eq("resource_link", att.block.type)
-      t.match("#L2:2$", att.block.uri)
+      t.match("#L2:2$", att.uri)
       t.eq("beta", att.text)
+      -- The block is decided at send time, so a draft can survive a reconnect.
+      t.eq(nil, att.block)
       local input = require("acp.ui.input").new({ config = cfg() })
       input:restore("before after")
       vim.api.nvim_win_set_cursor(win, { 1, 6 })
       input:add_attachment(att, { 0, 6 })
       t.eq("before[file.lua:2-2] after", vim.api.nvim_buf_get_lines(input.buf, 0, 1, false)[1])
       t.eq("before after", input:text())
-      local blocks = context.to_prompt(input:text(), input.attachments, cfg())
+      -- Without an `embeddedContext` capability the selection travels as a link
+      -- plus the selected text, so the agent still sees it.
+      local blocks = context.to_prompt(input:text(), input.attachments, cfg(), {
+        supports = function()
+          return false
+        end,
+      })
       t.eq("text", blocks[1].type)
       t.eq("before", blocks[1].text)
       t.eq("resource_link", blocks[2].type)
-      t.eq("text", blocks[3].type)
-      t.eq(" after", blocks[3].text)
+      t.eq("beta", blocks[3].text)
+      t.eq("text", blocks[4].type)
+      t.eq(" after", blocks[4].text)
       input:destroy()
       vim.fn.delete(dir, "rf")
       vim.api.nvim_buf_delete(buf, { force = true })
@@ -229,9 +237,14 @@ return function(t)
       vim.bo[buf].buftype = ""
       vim.fn.setpos("'<", { 0, 1, 1, 0 })
       vim.fn.setpos("'>", { 0, 1, 5, 0 })
-      local att = assert(context.selection(cfg(), { bufnr = buf, embedded = true }))
-      t.eq("resource", att.block.type)
-      t.eq("alpha", att.block.resource.text)
+      local att = assert(context.selection(cfg(), { bufnr = buf }))
+      local blocks = context.to_prompt("", { att }, cfg(), {
+        supports = function()
+          return true
+        end,
+      })
+      t.eq("resource", blocks[1].type)
+      t.eq("alpha", blocks[1].resource.text)
       vim.fn.delete(dir, "rf")
       vim.api.nvim_buf_delete(buf, { force = true })
     end)
