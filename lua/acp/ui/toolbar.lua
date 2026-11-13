@@ -285,6 +285,16 @@ function M.render(info, width)
     local pct = math.floor((info.usage.used or 0) / info.usage.size * 100 + 0.5)
     push_left("Context" .. " " .. pct .. "%", "AcpMuted")
   end
+  -- Some agents report the monetary cost of the turn; it is small and useful,
+  -- so it follows the context marker rather than needing its own command.
+  if info.show_usage and info.usage and type(info.usage.cost) == "table" then
+    local amount = info.usage.cost.amount
+    local currency = info.usage.cost.currency or ""
+    if type(amount) == "number" and amount > 0 then
+      local text = currency ~= "" and string.format("%.4f %s", amount, currency) or string.format("%.4f", amount)
+      push_left(text, "AcpMuted")
+    end
+  end
 
   local right_plain = {}
   local right_parts = {}

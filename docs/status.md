@@ -690,3 +690,22 @@ agent profile 与规范化 controls：
   安装提示接线的单元与 controller 级测试。
 
 验证：1006 项单元/组件测试通过，0 失败，2 项 pending（终端输出 ×2）。
+
+## 多 agent 兼容阶段 6（2026-11-13）
+
+呈现补全：
+
+- 声明 `_meta.terminal_output`（`capabilities.terminal_output_meta` 默认开）。reducer 解析
+  `_meta` 的 `terminal_info` / `terminal_output` / `terminal_output_delta` / `terminal_exit`，
+  output 是全量快照、delta 是追加，两者可同时出现；tool card 展开后显示输出与退出码，
+  非零退出用错误色。`terminal` content 不再渲染成 `terminal: <id>` 占位。
+- tool card：`rawOutput` 在没有其它 content 时显示（不再只在 failed 时）；content 里的
+  `resource` / `resource_link` 显示为 URI 摘要；标题两侧反引号被去掉；Claude 的
+  `rawInput.edits[]` 每个 hunk 都还原为 diff（此前只看第一个）。
+- plan：以 turn 号为界复用同一块，agent 文本不再打断查找；`priority = high` 显示标记。
+- 停止原因：`max_tokens`、`max_turn_requests`、`refusal` 在回合末尾追加一条 notice，
+  同一回合重复结算不会重复插入。
+- 其它：工具栏显示 usage 的 `cost`；记录 `session_info_update.updatedAt`；音频 content 显示
+  为 `[audio]`；`notice` 的块 id 改为单调计数器（此前用 `#blocks`，裁剪后会重用）。
+
+验证：1027 项单元/组件测试通过，0 失败，0 项 pending。

@@ -21,8 +21,14 @@ function M.render_plan(block, ctx)
     else
       mark, hl = ic.tool_pending, "AcpPlanPending"
     end
+    local text = "  " .. mark .. " " .. one_line(entry.content or "")
+    -- `priority` is advisory, but "high" is worth showing: it is the agent
+    -- saying what it will do first.
+    if entry.priority == "high" then
+      text = text .. "  (high)"
+    end
     out[#out + 1] = {
-      text = "  " .. mark .. " " .. one_line(entry.content or ""),
+      text = text,
       segments = { { s = 2, e = 2 + #mark, group = hl } },
     }
   end

@@ -86,6 +86,29 @@ local function from_raw_input(block)
     return { { path = path, oldText = "", newText = "", patch = input.patchText, synthetic = true } }
   end
 
+  -- Claude's MultiEdit carries one entry per hunk instead of a single
+  -- old/new pair. Rendering only the first would silently hide the rest.
+  if type(input.edits) == "table" and #input.edits > 0 then
+    local out = {}
+    for _, edit in ipairs(input.edits) do
+      if type(edit) == "table" then
+        local old = pick(edit, OLD_KEYS)
+        local new = pick(edit, NEW_KEYS)
+        if new ~= nil then
+          out[#out + 1] = {
+            path = as_string(edit.path) or path,
+            oldText = old or "",
+            newText = new,
+            synthetic = true,
+          }
+        end
+      end
+    end
+    if #out > 0 then
+      return out
+    end
+  end
+
   if kind == "write" or kind == "edit" then
     local new = pick(input, NEW_KEYS)
     if new == nil then

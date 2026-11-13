@@ -712,7 +712,7 @@ require("acp").setup({
     -- 声明给 Agent 的客户端能力；不能用的能力不要打开
     elicitation = { form = true, url = false },
     auth_terminal = true,      -- 终端登录（:Acp login）
-    terminal_output_meta = false,
+    terminal_output_meta = true,   -- 读取 Agent 的终端输出 _meta
     boolean_config_options = true,
     fs = false,
     terminal = false,

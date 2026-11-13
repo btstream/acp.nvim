@@ -130,7 +130,9 @@ end
 local function tool_title(block)
   local title = block.title
   if type(title) == "string" and title ~= "" then
-    return one_line(title)
+    -- Agents often wrap the title in backticks (`Edit `src/a.lua``); the card
+    -- already renders it as a label, so the delimiters are noise.
+    return one_line((title:gsub("^`+", ""):gsub("`+$", "")))
   end
   -- The agent's own tool name (Claude's `MultiEdit`, for example) is more
   -- specific than the protocol `name`, which may only say "Edit".
@@ -316,10 +318,43 @@ function M.render_tool(block, ctx)
       body_lines[#body_lines + 1] = line
     end
   end
+  -- Terminal output that only travelled in `_meta` (pi, and Claude once it
+  -- advertises `_meta.terminal_output`). Without this the card showed nothing
+  -- for a shell command that plainly ran.
+  if block.expanded and block.terminal_output and block.terminal_output ~= "" then
+    if #body_lines > 0 then
+      body_lines[#body_lines + 1] = { text = "", segments = nil }
+    end
+    local output = block.terminal_output:gsub("\r\n", "\n"):gsub("\r", "\n")
+    for _, line in ipairs(vim.split(output, "\n", { plain = true })) do
+      body_lines[#body_lines + 1] = {
+        text = line,
+        segments = { { s = 0, e = -1, group = "AcpMdCode" } },
+      }
+    end
+  end
+  if block.expanded and block.terminal_exit ~= nil then
+    local signal = block.terminal_signal
+    local text = signal and string.format("exited with signal %s", tostring(signal))
+      or string.format("exited with %d", block.terminal_exit)
+    body_lines[#body_lines + 1] = {
+      text = text,
+      segments = { { s = 0, e = -1, group = block.terminal_exit == 0 and "AcpMuted" or "AcpToolError" } },
+    }
+  end
   if block.status == "failed" and block.raw_output then
     local dump = type(block.raw_output) == "string" and block.raw_output or vim.inspect(block.raw_output)
     for _, line in ipairs(render_text(dump, "AcpToolError", ctx.width - 4)) do
       body_lines[#body_lines + 1] = line
+    end
+  elseif block.raw_output and block.detail == "" and (block.content == nil or #block.content == 0) then
+    -- An agent that reports only structured output (no text content) would
+    -- otherwise show an empty card. `failed` keeps its error styling above.
+    local dump = type(block.raw_output) == "string" and block.raw_output or vim.inspect(block.raw_output)
+    if dump ~= "" then
+      for _, line in ipairs(render_text("```\n" .. dump .. "\n```", nil, ctx.width - 4)) do
+        body_lines[#body_lines + 1] = line
+      end
     end
   end
 

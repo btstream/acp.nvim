@@ -182,7 +182,7 @@ return function(t)
       t.truthy(caps._meta and caps._meta["terminal-auth"], vim.inspect(caps))
     end)
 
-    t.pending("advertises terminal output metadata", "phase 6: terminal output", function()
+    t.it("advertises terminal output metadata", function()
       local caps = advertised()
       t.truthy(caps._meta and caps._meta.terminal_output, vim.inspect(caps))
     end)
@@ -358,7 +358,7 @@ return function(t)
       client:shutdown(true)
     end)
 
-    t.pending("shows pi shell output that only travels in _meta", "phase 6: terminal output", function()
+    t.it("shows pi shell output that only travels in _meta", function()
       local client, ctx = start("pi")
       local session = prompt(client, ctx, "@bash")
       local tool

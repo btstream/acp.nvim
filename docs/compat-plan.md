@@ -408,6 +408,13 @@ configOptions 优先并忽略重复的 `modes`，只有 `modes` 时按 profile �
 
 **测试**：`@bash`（pi 和 claude 两种形式）；rawOutput；plan 去重；停止原因的渲染。
 
+**状态**：已完成。声明 `_meta.terminal_output`；reducer 解析 `terminal_info`/`terminal_output`/
+`terminal_output_delta`/`terminal_exit` 并在卡片里显示输出与退出码，`terminal` content 不再
+退化成 `terminal: <id>`。`rawOutput` 在无其它 content 时显示，`resource`/`resource_link` 有摘要，
+标题去反引号，`edits[]` 逐条还原 diff。plan 以 turn 号为界复用同一块并显示 `priority`。
+`max_tokens`/`max_turn_requests`/`refusal` 追加一条 notice。工具栏显示 usage cost，记录
+`updatedAt`，音频显示 `[audio]`，notice 块 id 改为单调计数器。
+
 ---
 
 ## 阶段 7：inline 安全与提问（里程碑 M3）

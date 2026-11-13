@@ -36,7 +36,7 @@ M.defaults = {
   capabilities = {
     elicitation = { form = true, url = false },
     auth_terminal = true,
-    terminal_output_meta = false,
+    terminal_output_meta = true,
     boolean_config_options = true,
     fs = false,
     terminal = false,

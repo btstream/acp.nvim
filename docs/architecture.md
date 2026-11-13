@@ -60,6 +60,9 @@ Controller 只保留公开入口、会话选择、服务装配和跨模块协调
 - `agents` 模块承载每个 agent 的专属知识（模式语义、工具名、`_meta` 扩展、提问识别），
   `generic` 不做任何推断。`session/controls` 把 configOptions、`modes` 与 profile 归类成
   统一的 mode/model/thinking/extras，UI 只读这一份派生状态。
+- 终端输出有两条来源：客户端通过 `terminal/create` 创建的终端，以及 agent 直接放进 `_meta`
+  的 `terminal_info`/`terminal_output`/`terminal_exit`（pi，或声明了 `_meta.terminal_output`
+  的 Claude）。后者由 reducer 归入 tool block，卡片直接渲染，不依赖客户端终端。
 - `session/update` 解码时把 JSON null 归一化为 nil；reducer 用变更日志包围一条更新，
   失败时整体回滚，不留下半更新的 block，也不破坏 UI 持有的 block 身份。
 - 创建会话期间，sessionId 尚未知晓的更新先进入有界缓冲（256 条 / 1 MiB），创建成功后

@@ -1,0 +1,347 @@
+return function(t)
+  local state = require("acp.session.state")
+  local reducer = require("acp.session.reducer")
+  local agents = require("acp.agents")
+  local blocks = require("acp.ui.blocks")
+
+  local function ctx(overrides)
+    return vim.tbl_extend("force", {
+      icons = blocks.icon_set(true),
+      width = 80,
+      cwd = "/proj",
+      show_thoughts = false,
+    }, overrides or {})
+  end
+
+  local function text_of(lines)
+    local out = {}
+    for _, line in ipairs(lines) do
+      out[#out + 1] = line.text
+    end
+    return table.concat(out, "\n")
+  end
+
+  local function tool_session(profile)
+    local s = state.new("s", "/proj")
+    if profile then
+      s.profile = agents.get({ profile = profile })
+    end
+    return s
+  end
+
+  t.describe("terminal output metadata", function()
+    t.it("accumulates terminal_output and terminal_exit from _meta", function()
+      local s = tool_session("pi")
+      reducer.apply(s, {
+        sessionUpdate = "tool_call",
+        toolCallId = "bash_1",
+        title = "ls",
+        kind = "execute",
+        content = { { type = "terminal", terminalId = "bash_1" } },
+        _meta = { terminal_info = { terminal_id = "bash_1", cwd = "/proj" } },
+      })
+      reducer.apply(s, {
+        sessionUpdate = "tool_call_update",
+        toolCallId = "bash_1",
+        _meta = { terminal_output = { terminal_id = "bash_1", data = "a.ts\nb.ts\n" } },
+      })
+      reducer.apply(s, {
+        sessionUpdate = "tool_call_update",
+        toolCallId = "bash_1",
+        status = "completed",
+        _meta = { terminal_exit = { terminal_id = "bash_1", exit_code = 0 } },
+      })
+      local block = s.tools.bash_1
+      t.eq("a.ts\nb.ts\n", block.terminal_output)
+      t.eq(0, block.terminal_exit)
+      t.eq("/proj", block.terminal_cwd)
+      block.expanded = true
+      local rendered = text_of(blocks.render_block(block, ctx()))
+      t.match("a%.ts", rendered)
+      t.match("exited with 0", rendered)
+    end)
+
+    t.it("appends deltas instead of replacing the buffer", function()
+      local s = tool_session("pi")
+      reducer.apply(s, {
+        sessionUpdate = "tool_call",
+        toolCallId = "t1",
+        kind = "execute",
+        title = "ls",
+        status = "in_progress",
+      })
+      reducer.apply(s, {
+        sessionUpdate = "tool_call_update",
+        toolCallId = "t1",
+        _meta = { terminal_output_delta = { terminal_id = "t1", data = "one\n" } },
+      })
+      reducer.apply(s, {
+        sessionUpdate = "tool_call_update",
+        toolCallId = "t1",
+        _meta = { terminal_output_delta = { terminal_id = "t1", data = "two\n" } },
+      })
+      t.eq("one\ntwo\n", s.tools.t1.terminal_output)
+    end)
+
+    t.it("shows a non-zero exit code as an error", function()
+      local s = tool_session("pi")
+      reducer.apply(s, {
+        sessionUpdate = "tool_call",
+        toolCallId = "t1",
+        kind = "execute",
+        title = "false",
+        status = "completed",
+        _meta = { terminal_exit = { terminal_id = "t1", exit_code = 2 } },
+      })
+      local block = s.tools.t1
+      block.expanded = true
+      local lines = blocks.render_block(block, ctx())
+      local found
+      for _, line in ipairs(lines) do
+        if line.text:find("exited with 2", 1, true) then
+          found = line
+        end
+      end
+      t.truthy(found)
+      local group
+      for _, seg in ipairs(found.segments or {}) do
+        if seg.group then
+          group = seg.group
+        end
+      end
+      t.eq("AcpToolError", group)
+    end)
+
+    t.it("does not print a bare terminal id", function()
+      local s = tool_session("pi")
+      reducer.apply(s, {
+        sessionUpdate = "tool_call",
+        toolCallId = "t1",
+        kind = "execute",
+        title = "ls",
+        status = "completed",
+        content = { { type = "terminal", terminalId = "t1" } },
+      })
+      t.falsy((s.tools.t1.detail or ""):find("terminal:", 1, true))
+    end)
+  end)
+
+  t.describe("tool card details", function()
+    t.it("shows rawOutput when there is no other content", function()
+      local s = tool_session()
+      reducer.apply(s, {
+        sessionUpdate = "tool_call",
+        toolCallId = "t1",
+        kind = "read",
+        title = "Read",
+        status = "completed",
+        rawOutput = "line one\nline two",
+      })
+      local block = s.tools.t1
+      block.expanded = true
+      local rendered = text_of(blocks.render_block(block, ctx()))
+      t.match("line one", rendered)
+    end)
+
+    t.it("does not duplicate rawOutput when content already renders it", function()
+      local s = tool_session()
+      reducer.apply(s, {
+        sessionUpdate = "tool_call",
+        toolCallId = "t1",
+        kind = "read",
+        title = "Read",
+        status = "completed",
+        content = { { type = "content", content = { type = "text", text = "the text" } } },
+        rawOutput = "the text",
+      })
+      local block = s.tools.t1
+      block.expanded = true
+      local rendered = text_of(blocks.render_block(block, ctx()))
+      t.eq(1, select(2, rendered:gsub("the text", "")))
+    end)
+
+    t.it("renders resource and resource_link content", function()
+      local s = tool_session()
+      reducer.apply(s, {
+        sessionUpdate = "tool_call",
+        toolCallId = "t1",
+        kind = "read",
+        title = "Read",
+        status = "completed",
+        content = {
+          { type = "resource", resource = { uri = "file:///a.lua", text = "one\ntwo" } },
+          { type = "resource_link", uri = "file:///b.lua", name = "b.lua" },
+        },
+      })
+      local detail = s.tools.t1.detail or ""
+      t.match("file:///a%.lua", detail)
+      t.match("%[b%.lua%]", detail)
+    end)
+
+    t.it("strips backticks from a tool title", function()
+      local s = tool_session()
+      reducer.apply(s, {
+        sessionUpdate = "tool_call",
+        toolCallId = "t1",
+        kind = "edit",
+        title = "`src/a.lua`",
+        status = "completed",
+      })
+      local rendered = text_of(blocks.render_block(s.tools.t1, ctx()))
+      t.match("src/a%.lua", rendered)
+      t.falsy(rendered:find("`", 1, true), "backticks survived in the header")
+    end)
+
+    t.it("reconstructs every hunk of a MultiEdit", function()
+      local diff = require("acp.ui.diff")
+      local s = tool_session("claude")
+      reducer.apply(s, {
+        sessionUpdate = "tool_call",
+        toolCallId = "t1",
+        kind = "edit",
+        title = "MultiEdit",
+        status = "completed",
+        rawInput = {
+          file_path = "/proj/a.lua",
+          edits = {
+            { oldString = "a", newString = "A" },
+            { oldString = "b", newString = "B" },
+          },
+        },
+      })
+      local entries = diff.from_block(s.tools.t1)
+      t.eq(2, #entries)
+      t.eq("a", entries[1].oldText)
+      t.eq("B", entries[2].newText)
+      t.eq("/proj/a.lua", entries[1].path)
+    end)
+
+    t.it("renders audio content as a placeholder", function()
+      local s = tool_session()
+      reducer.apply(s, {
+        sessionUpdate = "tool_call",
+        toolCallId = "t1",
+        kind = "read",
+        title = "Listen",
+        status = "completed",
+        content = { { type = "content", content = { type = "audio" } } },
+      })
+      t.match("%[audio%]", s.tools.t1.detail or "")
+      local ok = reducer.apply(s, {
+        sessionUpdate = "agent_message_chunk",
+        content = { type = "audio" },
+      })
+      t.truthy(ok)
+      local agent_block = s.blocks[#s.blocks]
+      t.match("%[audio%]", agent_block.text or "")
+    end)
+  end)
+
+  t.describe("plans", function()
+    t.it("reuses one plan block across interleaved messages", function()
+      local s = tool_session()
+      s:begin_turn()
+      reducer.apply(s, { sessionUpdate = "plan", entries = { { content = "one", status = "pending" } } })
+      reducer.apply(s, {
+        sessionUpdate = "agent_message_chunk",
+        content = { type = "text", text = "working" },
+      })
+      reducer.apply(s, {
+        sessionUpdate = "plan",
+        entries = { { content = "one", status = "completed" }, { content = "two", status = "pending" } },
+      })
+      local plans = 0
+      for _, block in ipairs(s.blocks) do
+        if block.kind == "plan" then
+          plans = plans + 1
+        end
+      end
+      t.eq(1, plans, "the plan was appended again after an agent message")
+      t.eq(2, #s.blocks[1].entries)
+    end)
+
+    t.it("starts a new plan in the next turn", function()
+      local s = tool_session()
+      s:begin_turn()
+      reducer.apply(s, { sessionUpdate = "plan", entries = { { content = "first" } } })
+      s:begin_turn()
+      reducer.apply(s, { sessionUpdate = "plan", entries = { { content = "second" } } })
+      local plans = 0
+      for _, block in ipairs(s.blocks) do
+        if block.kind == "plan" then
+          plans = plans + 1
+        end
+      end
+      t.eq(2, plans)
+    end)
+
+    t.it("shows a high priority entry", function()
+      local s = tool_session()
+      reducer.apply(s, {
+        sessionUpdate = "plan",
+        entries = { { content = "urgent", status = "pending", priority = "high" } },
+      })
+      local rendered = text_of(blocks.render_block(s.blocks[1], ctx()))
+      t.match("%(high%)", rendered)
+    end)
+  end)
+
+  t.describe("stop reasons", function()
+    t.it("explains the reasons that end a turn early", function()
+      t.truthy(state.stop_reason_notice("max_tokens"))
+      t.truthy(state.stop_reason_notice("max_turn_requests"))
+      t.truthy(state.stop_reason_notice("refusal"))
+      t.eq(nil, state.stop_reason_notice("end_turn"))
+      t.eq(nil, state.stop_reason_notice("cancelled"))
+      t.eq(nil, state.stop_reason_notice(nil))
+    end)
+
+    t.it("appends one notice per truncated turn", function()
+      local s = tool_session()
+      s:begin_turn()
+      s:finish_turn("max_tokens")
+      local notices = 0
+      for _, block in ipairs(s.blocks) do
+        if block.kind == "notice" then
+          notices = notices + 1
+        end
+      end
+      t.eq(1, notices)
+      -- Settlement can close the same turn twice; the transcript must not grow.
+      s:finish_turn("max_tokens")
+      notices = 0
+      for _, block in ipairs(s.blocks) do
+        if block.kind == "notice" then
+          notices = notices + 1
+        end
+      end
+      t.eq(1, notices)
+    end)
+
+    t.it("stays silent for a normal turn", function()
+      local s = tool_session()
+      s:begin_turn()
+      s:finish_turn("end_turn")
+      t.eq(0, #s.blocks)
+    end)
+  end)
+
+  t.describe("misc presentation", function()
+    t.it("keeps notice ids monotonic across trimming", function()
+      local s = tool_session()
+      -- Do not mutate `s.limits`: `state.new` falls back to the shared config
+      -- default, and changing it would leak into every later test.
+      reducer.apply(s, { sessionUpdate = "notice", description = "first" })
+      local first = s.blocks[#s.blocks].id
+      reducer.apply(s, { sessionUpdate = "notice", description = "second" })
+      local second = s.blocks[#s.blocks].id
+      t.truthy(first ~= second, "notice ids were reused")
+    end)
+
+    t.it("records the agent's updatedAt", function()
+      local s = tool_session()
+      reducer.apply(s, { sessionUpdate = "session_info_update", updatedAt = "2026-01-01T00:00:00Z" })
+      t.eq("2026-01-01T00:00:00Z", s.updated_at)
+    end)
+  end)
+end

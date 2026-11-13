@@ -26,7 +26,21 @@ local function text_of(content)
   if t == "image" then
     return "[image]"
   end
+  if t == "audio" then
+    return "[audio]"
+  end
   return ""
+end
+
+---Summary line for an embedded resource, preferring its URI over a text dump.
+---@param resource table
+---@return string
+local function resource_summary(resource)
+  local uri = resource.uri or ""
+  if type(resource.text) == "string" then
+    return string.format("`%s` (%d lines)", uri, select(2, resource.text:gsub("\n", "")) + 1)
+  end
+  return uri ~= "" and string.format("`%s`", uri) or "[resource]"
 end
 
 local function tool_content_text(content)
@@ -38,6 +52,8 @@ local function tool_content_text(content)
         parts[#parts + 1] = inner.text or ""
       elseif inner.type == "image" then
         parts[#parts + 1] = "[image]"
+      elseif inner.type == "audio" then
+        parts[#parts + 1] = "[audio]"
       end
     elseif item.type == "diff" then
       -- A diff with text is rendered as a diff; only the path-only form has to
@@ -47,7 +63,14 @@ local function tool_content_text(content)
         parts[#parts + 1] = string.format("diff: %s", item.path)
       end
     elseif item.type == "terminal" then
-      parts[#parts + 1] = string.format("terminal: %s", item.terminalId or "?")
+      -- A terminal the client created is rendered from its own buffer. Agents
+      -- that never called `terminal/create` (pi) only send an id and put the
+      -- output in `_meta`, so a bare id is not worth a line.
+      parts[#parts + 1] = item.terminalId and "" or ""
+    elseif item.type == "resource" and type(item.resource) == "table" then
+      parts[#parts + 1] = resource_summary(item.resource)
+    elseif item.type == "resource_link" then
+      parts[#parts + 1] = string.format("[%s](%s)", item.name or item.uri or "", item.uri or "")
     end
   end
   return table.concat(parts, "\n")
@@ -132,6 +155,62 @@ local function profile_tool_name(session, update)
     end
   end
   return nil
+end
+
+---Terminal state carried in `_meta`, for agents that never call `terminal/create`.
+---
+---pi sends `terminal_info` / `terminal_output` / `terminal_exit` and no text
+---content at all; Claude does the same once the client advertises
+---`_meta.terminal_output`. `output` accumulates across deltas, so the reducer
+---appends instead of replacing.
+---@param update table
+---@return table|nil state
+local function terminal_meta(update)
+  local meta = type(update) == "table" and update._meta or nil
+  if type(meta) ~= "table" then
+    return nil
+  end
+  local info = type(meta.terminal_info) == "table" and meta.terminal_info or nil
+  local output = type(meta.terminal_output) == "table" and meta.terminal_output or nil
+  local delta = type(meta.terminal_output_delta) == "table" and meta.terminal_output_delta or nil
+  local exit = type(meta.terminal_exit) == "table" and meta.terminal_exit or nil
+  if not (info or output or delta or exit) then
+    return nil
+  end
+  return { info = info, output = output, delta = delta, exit = exit }
+end
+
+---Apply the terminal `_meta` state to a tool block.
+---@param block AcpBlock
+---@param update table
+---@param tx table
+local function apply_terminal_meta(block, update, tx)
+  local state = terminal_meta(update)
+  if not state then
+    return
+  end
+  if state.info then
+    tx:set(block, "terminal_id", state.info.terminal_id or state.info.terminalId or block.terminal_id)
+    tx:set(block, "terminal_cwd", state.info.cwd or block.terminal_cwd)
+    tx:set(block, "terminal_command", state.info.command or block.terminal_command)
+  end
+  -- `output` is a full snapshot; `delta` is an append. Agents use one or the
+  -- other, and both may arrive in the same update.
+  if state.output and type(state.output.data) == "string" then
+    tx:set(block, "terminal_output", state.output.data)
+  elseif state.delta and type(state.delta.data) == "string" then
+    tx:set(block, "terminal_output", (block.terminal_output or "") .. state.delta.data)
+  end
+  if state.output then
+    tx:set(block, "terminal_id", state.output.terminal_id or block.terminal_id)
+  elseif state.delta then
+    tx:set(block, "terminal_id", state.delta.terminal_id or block.terminal_id)
+  end
+  if state.exit then
+    tx:set(block, "terminal_exit", state.exit.exit_code or state.exit.exitCode)
+    tx:set(block, "terminal_signal", state.exit.signal)
+    tx:set(block, "terminal_id", state.exit.terminal_id or block.terminal_id)
+  end
 end
 
 ---Ask the agent profile what an update carries beyond the protocol core.
@@ -329,6 +408,7 @@ local function reduce(session, update, tx)
           return seen and seen.child or nil
         end)(),
       }, tx)
+      apply_terminal_meta(block, update, tx)
       tx:set(session.tools, id, block)
     end
     tx:block(block)
@@ -341,6 +421,7 @@ local function reduce(session, update, tx)
     block.content = merge_list(block.content, update.content)
     block.raw_input = merge_list(block.raw_input, update.rawInput)
     block.raw_output = merge_list(block.raw_output, update.rawOutput)
+    apply_terminal_meta(block, update, tx)
     if update.content ~= nil or block.detail == nil then
       block.detail = tool_content_text(block.content)
     end
@@ -390,6 +471,7 @@ local function reduce(session, update, tx)
     block.content = merge_list(block.content, update.content)
     block.raw_input = merge_list(block.raw_input, update.rawInput)
     block.raw_output = merge_list(block.raw_output, update.rawOutput)
+    apply_terminal_meta(block, update, tx)
     if update.content ~= nil or block.detail == nil then
       block.detail = tool_content_text(block.content)
     end
@@ -398,17 +480,17 @@ local function reduce(session, update, tx)
   end
 
   if kind == "plan" then
-    -- Plans can be interspersed with agent chunks, so looking only at the last
-    -- block appended a fresh plan block on every update and grew without bound.
-    -- Reuse the active plan of the current turn instead.
+    -- Plans can be interspersed with agent chunks, and agents often restate
+    -- the whole list after every step. Reuse the plan of the current turn even
+    -- when messages arrived in between. The turn number is the boundary: a new
+    -- turn starts a new plan, whatever block kinds are in between.
     local active
     for i = #session.blocks, 1, -1 do
       local candidate = session.blocks[i]
       if candidate.kind == "plan" then
-        active = candidate
-        break
-      end
-      if candidate.kind == "user" or candidate.kind == "agent" then
+        if candidate.turn == session.turn then
+          active = candidate
+        end
         break
       end
     end
@@ -417,7 +499,13 @@ local function reduce(session, update, tx)
       active.entries = update.entries or {}
       return true
     end
-    session:append({ id = "plan:" .. session.turn, kind = "plan", text = "", entries = update.entries or {} }, tx)
+    session:append({
+      id = "plan:" .. session.turn,
+      kind = "plan",
+      text = "",
+      entries = update.entries or {},
+      turn = session.turn,
+    }, tx)
     return true
   end
 
@@ -464,6 +552,11 @@ local function reduce(session, update, tx)
     if update.title then
       tx:set(session, "title", update.title)
     end
+    -- `updatedAt` (and `createdAt`) are ISO-8601 strings from the agent; the
+    -- session picker shows them so a replayed session is identifiable.
+    if type(update.updatedAt) == "string" and update.updatedAt ~= "" then
+      tx:set(session, "updated_at", update.updatedAt)
+    end
     -- Agent-specific metadata is read by the profile: the reducer knows what
     -- to do with a retry marker or a compaction marker, not where an agent
     -- happens to store them.
@@ -502,7 +595,7 @@ local function reduce(session, update, tx)
       end
       return true
     end
-    return update.title ~= nil
+    return update.title ~= nil or type(update.updatedAt) == "string" and update.updatedAt ~= ""
   end
 
   if kind == "usage_update" then
@@ -516,7 +609,7 @@ local function reduce(session, update, tx)
 
   if kind == "notice" then
     session:append({
-      id = "notice:" .. tostring(#session.blocks),
+      id = state.next_id("notice"),
       kind = "notice",
       text = update.description or "",
       title = update.title,

@@ -18,7 +18,7 @@ return function(t)
         session = { notices = {}, configOptions = { boolean = {} } },
         elicitation = { form = {} },
         auth = { terminal = true },
-        _meta = { ["terminal-auth"] = true },
+        _meta = { ["terminal-auth"] = true, terminal_output = true },
       }, caps)
     end)
 
@@ -43,7 +43,7 @@ return function(t)
       t.falsy(capabilities.supports(caps, "elicitation.url"))
       t.truthy(capabilities.supports(caps, "auth.terminal"))
       t.truthy(capabilities.supports(caps, "_meta.terminal-auth"))
-      t.falsy(capabilities.supports(caps, "_meta.terminal_output"))
+      t.truthy(capabilities.supports(caps, "_meta.terminal_output"))
     end)
 
     t.it("honours the auth switch", function()

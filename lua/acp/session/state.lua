@@ -24,12 +24,28 @@ local memory = require("acp.session.memory")
 ---@field severity string|nil
 ---@field awaiting "approval"|"answer"|nil
 ---@field interaction_id string|nil
+---@field terminal_id string|nil
+---@field terminal_output string|nil
+---@field terminal_exit integer|nil
+---@field terminal_signal string|nil
+---@field terminal_cwd string|nil
+---@field terminal_command string|nil
 
 local counter = 0
 
 local function next_id(prefix)
   counter = counter + 1
   return (prefix or "b") .. counter
+end
+
+---A run-scoped monotonic id.
+---
+---Block ids must be unique even after trimming: deriving one from `#blocks`
+---reused ids once old blocks were dropped, and a reused id broke tool lookups.
+---@param prefix string
+---@return string
+function M.next_id(prefix)
+  return next_id(prefix)
 end
 
 -- Long-running sessions used to keep every block forever, so a session left
@@ -108,6 +124,7 @@ end
 ---@field id string
 ---@field cwd string
 ---@field title string|nil
+---@field updated_at string|nil agent-provided ISO-8601 timestamp
 ---@field blocks AcpBlock[]
 ---@field tools table<string, AcpBlock>
 ---@field status string idle|running|cancelling
@@ -497,9 +514,38 @@ function Session:finish_turn(stop_reason)
       self:touch(block, false)
     end
   end
+  -- A turn that stopped early leaves the answer incomplete; say why instead of
+  -- ending the transcript on a half-finished tool card. `finish_turn` may run
+  -- more than once for one turn (settlement plus the task's finalizer), so the
+  -- last block is consulted before appending.
+  local notice = M.stop_reason_notice(stop_reason)
+  if notice then
+    local last = self.blocks[#self.blocks]
+    if not (last and last.kind == "notice" and last.text == notice) then
+      self:append({ id = next_id("stop"), kind = "notice", text = notice, severity = "warning" })
+    end
+  end
   self.status = "idle"
   self.pending_user = nil
   self.stop_reason = stop_reason
+end
+
+---Human explanation for a stop reason that ended the turn early.
+---
+---`end_turn` and `cancelled` are self-explanatory (the latter already shows on
+---the tool cards), so only the reasons that leave the answer incomplete get a
+---trailing line.
+---@param reason string|nil
+---@return string|nil
+function M.stop_reason_notice(reason)
+  if reason == "max_tokens" then
+    return "The agent stopped because it reached its token limit. Continue the conversation to let it finish."
+  elseif reason == "max_turn_requests" then
+    return "The agent stopped after reaching its per-turn request limit. Continue to let it keep working."
+  elseif reason == "refusal" then
+    return "The agent declined to continue this request."
+  end
+  return nil
 end
 
 return M
