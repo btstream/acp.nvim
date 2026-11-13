@@ -20,6 +20,34 @@ local function ensure()
   return controller
 end
 
+---Open the agent manager (install, update and choose agents).
+function M.manage_agents()
+  ensure().manage_agents()
+end
+
+---Install one managed agent. Nothing is downloaded without user confirmation.
+---@param id string
+---@param opts {version?: string}|nil
+---@return boolean started
+function M.install_agent(id, opts)
+  return ensure().install_agent(id, opts)
+end
+
+---Update one managed agent.
+---@param id string
+---@param opts {version?: string}|nil
+---@return boolean started
+function M.update_agent(id, opts)
+  return ensure().update_agent(id, opts)
+end
+
+---Remove the manager-owned copy of one agent.
+---@param id string
+---@return boolean started
+function M.uninstall_agent(id)
+  return ensure().uninstall_agent(id)
+end
+
 function M.open()
   ensure().open()
 end

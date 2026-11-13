@@ -144,6 +144,46 @@ return function(t)
       t.eq(nil, s.controls.mode)
     end)
 
+    t.it("marks plan and unsafe modes without _meta.kind", function()
+      -- claude-agent-acp 0.107 no longer puts `_meta.kind` on its mode options;
+      -- the profile hook has to carry the meaning on its own.
+      local s = session_with({
+        configOptions = {
+          {
+            id = "mode",
+            category = "mode",
+            type = "select",
+            currentValue = "plan",
+            options = {
+              { value = "default", name = "Default" },
+              { value = "plan", name = "Plan" },
+              { value = "bypassPermissions", name = "Bypass" },
+            },
+          },
+        },
+      }, "claude")
+      t.truthy(s.controls.mode)
+      t.truthy(s.controls.mode.plan, "plan must be recognised from the value id")
+      t.falsy(s.controls.mode.unsafe)
+    end)
+
+    t.it("prefers _meta.kind when the agent sends it", function()
+      local s = session_with({
+        configOptions = {
+          {
+            id = "mode",
+            category = "mode",
+            type = "select",
+            currentValue = "custom-plan",
+            options = {
+              { value = "custom-plan", name = "Whatever", _meta = { kind = "plan" } },
+            },
+          },
+        },
+      }, "generic")
+      t.truthy(s.controls.mode.plan, "_meta.kind must win over an unrecognised id")
+    end)
+
     t.it("builds a work mode and a thinking level from modes alone", function()
       local s = session_with({
         modes = {

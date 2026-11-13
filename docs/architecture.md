@@ -9,7 +9,10 @@ transport/process + framing
   └─ 有界、有序、按时间片分发完整协议行
        └─ protocol/client + jsonrpc
             ├─ RPC 匹配、超时、初始化与权限协议
-            └─ controller：公开入口、状态与跨模块协调（< 600 行）
+            └─ controller：公开入口、状态与跨模块协调（约 640 行；预算 700，由测试守护）
+                 ├─ app/agent_manager：托管安装的用户动作与确认
+                 ├─ manager/*：registry、store、lock、npm、install、resolve
+                 ├─ ui/agent_manager：安装管理浮窗
                  ├─ app/bootstrap：构造服务并接线（原先 500 行的 setup）
                  ├─ app/stores：connection / session / view 三个状态存储
                  ├─ app/events：client 事件分发表，按名字路由
@@ -146,6 +149,14 @@ Controller 只保留公开入口、会话选择、服务装配和跨模块协调
 - `ui/paste_image` 覆盖 `vim.paste`，仅在光标位于输入区且粘贴内容是单个存在的图像路径时
   接管，其余一律交还原处理器；`app/prompts` 把 `promptCapabilities` 的查询函数交给
   `context.to_prompt`，由它在发送时决定降级，不再于附加/发送前直接拒绝整条消息。
+- 托管安装由 `manager/*` 承担，与协议知识分离：`registry` 只有包元数据，`store` 负责
+  每 agent 独立的指针与 receipt（校验 schema、路径归属与 symlink 越界），`lock` 提供
+  跨进程互斥（原子 mkdir）与 release lease，`npm`/`install` 在最终 release 目录内安装、
+  验证真实安装版本与入口后才原子替换 `current.json`。`resolve` 是唯一的启动来源判定点，
+  对话、终端登录与 health 都走它，因此登录与对话永远使用同一个 release。
+- 启动来源不能由合并后的配置推断：`config.merge` 会把预设字段填进去，值比较也无法区分
+  「用户写了和预设相同的字符串」。所以 provenance 从**原始 setup 输入**采集，保存在
+  `config.launch_origin`。
 - 会话列表由 `app/catalog` 跟随 `nextCursor` 翻页，`app/sessions` 按能力在
   `session/load`、`session/resume`、新建三者间选择；`session/close` 只在 agent 声明
   `sessionCapabilities.close` 且 client 实现该方法时发送。`protocol/client` 的

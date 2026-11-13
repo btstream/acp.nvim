@@ -31,6 +31,10 @@ acp.nvim 是一个 Neovim 原生的 Agent Client Protocol 客户端。
     mode         切换模式
     config       汇总切换全部会话选项（含布尔开关与思考级别）
     agent        切换 Agent；带名称时直接切换
+    agents       打开 Agent 管理界面：安装 / 更新 / 卸载 / 切换
+    install      安装托管 Agent：:Acp install <id> [version]
+    update       更新托管 Agent：:Acp update <id> [version]
+    uninstall    移除托管副本：:Acp uninstall <id>
     reconnect    重连并恢复当前会话
     login        按 Agent 提供的登录方式登录（终端或 authenticate）
     logout       退出登录；仅当 Agent 声明支持时可用
@@ -268,6 +272,13 @@ picker、会话浏览器等自绘浮窗内部的按键不在 keymaps 管辖范�
       },
       permissions = { prompt = "select", show_details = true },
       notices = true,
+      manager = {            -- 托管安装，见 |acp-install|
+        root = nil,          -- 默认 stdpath("data") .. "/acp/agents"
+        node = "node",
+        npm = "npm",
+        install_timeout = 300000,
+        max_log_bytes = 1024 * 1024,
+      },
       mcp_servers = {},   -- { { type = "stdio", command = "..." }, ... } 见 |acp-mcp-servers|
       capabilities = {
         elicitation = { form = true, url = false },
@@ -397,7 +408,43 @@ ACP 的两个窗口默认锁定到自己的 buffer（'winfixbuf'），:edit、:b
 会发送 session/close 释放 Agent 端资源。退出时同步等待响应后再终止进程。
 
 ==============================================================================
-12. MCP 服务器                                        *acp-mcp-servers*
+12. 安装 Agent                                          *acp-install*
+
+不需要 npm install -g：Acp.nvim 可以把 ACP adapter 装到 Neovim 数据目录。
+
+    :Acp agents              管理界面：状态、安装、更新、卸载、切换
+    :Acp install claude      安装（先显示包名、版本与目标目录，确认后开始）
+    :Acp install pi 0.4.0    安装指定精确版本
+    :Acp update claude       更新已安装副本
+    :Acp uninstall pi        移除托管副本
+
+安装位置：stdpath("data")/acp/agents/<id>/releases/<版本>/。
+该目录与插件、项目、全局 npm 目录分开。安装完成不会自动切换 Agent、开会话或登录。
+
+首版托管：
+    claude   @agentclientprotocol/claude-agent-acp   Node.js 22+
+    pi       @geohar/pi-acp（georgeharker/pi-acp）   需另装 pi CLI v0.80.4+
+OpenCode 以独立 CLI 分发，仍自行安装；管理界面只报告它是否在 PATH 上。
+
+注意：
+  - 安装会运行 npm，第三方包可执行安装脚本，不是沙箱。
+  - 更新失败或取消时旧版本保持可用；半成品目录会被清理。
+  - 凭据、会话历史、Agent 自己的配置都不受安装或卸载影响。
+
+启动来源： >lua
+    require("acp").setup({
+      agents = { claude = { source = "auto" } },
+    })
+<
+    auto      有健康托管安装就用它，否则用预设命令（默认）
+    managed   只用托管安装；缺失或损坏时明确报错，不回退
+    external  只用配置的命令，不看托管安装
+
+显式写了 command 或 args 的 Agent 始终按 external 处理，不会被托管安装覆盖；
+只改 env 或 profile 不算覆盖。
+
+==============================================================================
+13. MCP 服务器                                        *acp-mcp-servers*
 
 通过 mcp_servers 把 MCP 服务器交给 Agent，同一份配置用于 session/new、
 session/load 和 session/resume：
@@ -413,7 +460,7 @@ stdio 是 ACP 基线能力，总会被发送；http / sse 需要 Agent 在 mcpCa
 声明，否则会被丢弃，而不是发出去让 Agent 报错。
 
 ==============================================================================
-13. 面板尺寸                                                    *acp-sizing*
+14. 面板尺寸                                                    *acp-sizing*
 
 原生布局中 layout.width 为 0.05~1 时按编辑器宽度取比例，>1 时为绝对列数。
 先应用 min_width / max_width，再限制为编辑器宽度的 60%；空间不足时可能小于
@@ -432,7 +479,7 @@ edgy 调整宽度均适用。连续调整采用 100ms 防抖，期间流式内�
 并不要求包含 a。设为空字符串会关闭鼠标支持。无法点击时也可用 <M-m>/<M-b>。
 
 ==============================================================================
-14. 会话标题与删除                                      *acp-session-titles*
+15. 会话标题与删除                                      *acp-session-titles*
 
 标题显示在对话记录窗口的 winbar 中。为兼容未推送 session_info_update 的 Agent，
 acp.nvim 在会话创建后、切换会话后及每回合结束后查询 session/list 来同步标题，
@@ -462,7 +509,7 @@ q 关闭，gg/G 跳到首项/末项；需要搜索保留字母 j/k/q 时用大�
 sessionCapabilities.delete 时给出提示，不弹出无法兑现的确认框。
 
 ==============================================================================
-15. 行为细节                                                *acp-behavior*
+16. 行为细节                                                *acp-behavior*
 
 同一会话同时只运行一个 prompt；生成中提交的消息本地排队。
 默认最多排队 16 条、估算载荷 4 MiB，超过时拒绝入队并保留输入。
@@ -576,7 +623,7 @@ spill_bytes 默认 64 MiB，是完整 JSON 行异步落盘的工作集目标；�
 cancelled。
 
 ==============================================================================
-16. 轮次分隔符                                          *acp-separator*
+17. 轮次分隔符                                          *acp-separator*
 
 每两轮对话之间画一条细分隔线。默认中间一个圆点：
 
@@ -596,7 +643,7 @@ ui.separator.form 控制样式：
 上面时 <Tab> 不会误展开相邻的卡片。
 
 ==============================================================================
-17. 高亮                                                    *acp-highlights*
+18. 高亮                                                    *acp-highlights*
 
 样式为静态定义，多数组链接到 Neovim / Tree-sitter 组；模式徽标默认使用固定颜色，
 可通过 ui.highlights 覆盖。插件不会在运行时混合主题颜色。
@@ -676,14 +723,14 @@ AcpUserIcon；助手的两组均链接到 Keyword。想区分时
 ui.icons = false 会改用 ASCII 图标。
 
 ==============================================================================
-18. 健康检查                                                 *acp-health*
+19. 健康检查                                                 *acp-health*
 
     :checkhealth acp
 
 检查 Neovim 版本、Agent 可执行文件、edgy 与日志路径。
 
 ==============================================================================
-19. 输入区补全                                               *acp-completion*
+20. 输入区补全                                               *acp-completion*
 
 默认用 <C-x><C-u> 补全 /命令 和 @文件；索引异步建立，完成后显示原生菜单。
 可选 blink.cmp / nvim-cmp 原生 source（选择一个），只在 acp_input 中生效。
@@ -738,7 +785,7 @@ picker 可选 vim（vim.ui.select）、fzf-lua、snacks、telescope，不设强�
 取消、会话切换、buffer 销毁或查询过期后，旧结果不会修改输入。
 
 ==============================================================================
-20. 图像附件                                             *acp-images*
+21. 图像附件                                             *acp-images*
 
 输入区可附加图像，以 ACP image 内容块发送，要求 Agent 声明
 promptCapabilities.image（OpenCode 支持）。未声明的 Agent 不会让消息失败：
@@ -794,7 +841,7 @@ path_mode = "inline" 时 @shot.png 会内嵌字节；默认 link 只发引用。
 可能使缓存超过配置预算。文件被外部删除后，发送会明确报错，而不是静默丢掉图像。
 
 ==============================================================================
-21. 选区与未保存的 buffer                       *acp-context-blocks*
+22. 选区与未保存的 buffer                       *acp-context-blocks*
 
 @文件、S（附加选区）和 R（附加诊断）的内容能否内嵌，取决于 Agent 是否声明
 promptCapabilities.embeddedContext：
@@ -807,7 +854,7 @@ promptCapabilities.embeddedContext：
 ——附件可能长期留在草稿里，期间可能重连或切换 Agent。
 
 ==============================================================================
-22. 内联编辑                                            *acp-inline*
+23. 内联编辑                                            *acp-inline*
 
 require("acp").inline() 在光标处或 Visual 选区打开输入框，由 Agent 修改当前
 buffer。默认绑定 <leader>ai（普通和 Visual 模式）。Visual 选区按整行处理；

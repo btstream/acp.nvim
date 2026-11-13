@@ -47,11 +47,15 @@ end
 local Client = {}
 Client.__index = Client
 
----@param opts {agent: table, cwd: string, client_capabilities: table, limits?: table, scheduler?: table, interactions?: table, mcp_servers?: table[], on_event: fun(name: string, payload: any)}
+---@param opts {agent: table, cwd: string, client_capabilities: table, limits?: table, scheduler?: table, interactions?: table, mcp_servers?: table[], launch?: table, on_event: fun(name: string, payload: any)}
 ---@return AcpClient
 function M.new(opts)
   local self = setmetatable({
     agent = opts.agent,
+    -- The exact spec this client was started with. The terminal login reads it
+    -- so it runs the same release as the conversation, even if a newer one was
+    -- installed in between.
+    launch = opts.launch,
     cwd = opts.cwd,
     limits = opts.limits,
     declared_mcp_servers = opts.mcp_servers,

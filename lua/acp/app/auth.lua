@@ -64,16 +64,25 @@ end
 ---authentication"). Only `args` and `env` come from the agent. Both are merged
 ---onto the configured launch: args are appended, env overrides same-named
 ---variables.
+---
+---`launch` is the spec the running client was actually started with. It takes
+---precedence over the configuration so a managed install logs in through the
+---same release it is running: reconfiguring or installing a newer version
+---mid-login must not make the login terminal talk to a different binary.
 ---@param method table
 ---@param agent table
----@return {command: string, args: string[], env: table<string,string>|nil}
-function M.terminal_spec(method, agent)
-  local args = vim.list_extend(vim.list_extend({}, agent.args or {}), method.args or {})
+---@param launch table|nil resolved launch spec of the live client
+---@return {command: string, args: string[], env: table<string,string>|nil, source: string|nil}
+function M.terminal_spec(method, agent, launch)
+  local base = launch or agent or {}
+  local base_args = base.args or {}
+  local base_env = base.env
+  local args = vim.list_extend(vim.list_extend({}, base_args), method.args or {})
   local env
-  if type(agent.env) == "table" or type(method.env) == "table" then
-    env = vim.tbl_extend("force", agent.env or {}, method.env or {})
+  if type(base_env) == "table" or type(method.env) == "table" then
+    env = vim.tbl_extend("force", base_env or {}, method.env or {})
   end
-  return { command = agent.command, args = args, env = env }
+  return { command = base.command, args = args, env = env, source = base.source }
 end
 
 ---@param spec {command: string, args: string[], env: table<string,string>|nil}
@@ -268,7 +277,12 @@ function Auth:run(method, retry)
   end
 
   local agent = self.config().agents[self.config().agent] or {}
-  local spec = M.terminal_spec(method, agent)
+  -- Prefer the live client's launch spec: a terminal login must run the exact
+  -- release the conversation is using, not whatever the config would resolve to
+  -- after a mid-session install.
+  local client = self.get_client and self.get_client() or nil
+  local launch = client and client.launch or nil
+  local spec = M.terminal_spec(method, agent, launch)
   local command = M.command_line(spec)
   -- The protocol asks clients to show what they are about to run: the args and
   -- env come from the agent, not from the user's own configuration.

@@ -358,7 +358,7 @@ agent 类型调用 `authenticate`。连续失败最多重试 2 次后停止；`:
   ```lua
   opencode = { command = "opencode", args = { "acp" }, profile = "opencode" },
   claude   = { command = "claude-agent-acp", args = {}, profile = "claude" },
-  pi       = { command = "npx", args = { "-y", "pi-acp" }, profile = "pi" },
+  pi       = { command = "npx", args = { "-y", "@geohar/pi-acp" }, profile = "pi" },
   ```
   `profile` 省略时按 agent 名称推断，推断不出时使用 `generic`。
 - 新增 `:Acp agent [name]`：切换 agent（关闭当前连接，用新 agent 连接；会话按 agent 分开记录）。
@@ -550,9 +550,9 @@ agent 仍会收到未声明的 `resource` 块。附带收益：`storage/drafts` 
 | 9.7 | 更新 `docs/architecture.md`、`docs/status.md` | 每个阶段结束时 |
 
 **验收（M4）**：没有循环 require（加一个测试：遍历模块的 require 图，断言没有环）；
-protocol 和 session 两层不 require `ui/*`；controller 少于 600 行。
+protocol 和 session 两层不 require `ui/*`；controller 不超过 700 行（预算由测试守护）。
 
-**状态**：已完成，验收条件全部由 `tests/spec_architecture.lua` 守护（14 项）。
+**状态**：已完成，验收条件全部由 `tests/spec_architecture.lua` 守护（15 项，含 controller 行数预算）。
 
 - 9.1 已完成：`app/events` 是事件分发表（`handlers[name]`），`dispatch` 忽略未知事件，
   `register` 允许服务或测试替换单个处理器。controller 的 `on_client_event` 只剩一次转发。
@@ -569,7 +569,7 @@ protocol 和 session 两层不 require `ui/*`；controller 少于 600 行。
   `health` 只在需要运行时事实（活动 client 的登录方法）时才访问 controller。
 - 9.7 已完成：`docs/architecture.md` 与 `docs/status.md` 已更新。
 
-controller 拆到 599 行。为了守住这个数字，同时把原先内联在它里面的职责移出：
+controller 拆到 599 行（现在约 640 行，见下面的行数预算说明）。拆出的职责：
 
 | 新模块 | 原职责 |
 |---|---|
@@ -582,6 +582,11 @@ controller 拆到 599 行。为了守住这个数字，同时把原先内联在�
 | `app/connection_flow` | 登录后重发、agent 切换 |
 | `app/events` | client 事件分发 |
 | `app/presenter` | `app/*` → UI 的单向出口 |
+
+当时的行数目标写成「少于 600」，但没有任何测试断言它——那个数字只是文档承诺。
+后来托管安装又加了几个入口，实际到达约 640 行。现在预算是 700 行，**由
+`tests/spec_architecture.lua` 实际断言**，超出时报错并提示把功能移进 `app/*`。
+不再为凑行数把代码写成难以阅读的元编程。
 
 验证：1101 项单元/组件测试通过，0 失败，0 项 pending（阶段 9 新增 14 项架构门禁与状态存储测试）。
 `tests/integration_inline_safety.lua` 3 项通过。后续修复上下文块时又加了 5 项，当前总量见 §4。

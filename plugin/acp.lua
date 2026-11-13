@@ -47,6 +47,28 @@ local function setup()
         acp.logout()
       elseif sub == "agent" then
         acp.pick_agent(rest ~= "" and rest or nil)
+      elseif sub == "agents" then
+        acp.manage_agents()
+      elseif sub == "install" then
+        local id, version = rest:match("^(%S+)%s*(%S*)$")
+        if not id then
+          vim.notify("acp.nvim: usage: :Acp install <agent> [version]", vim.log.levels.WARN)
+          return
+        end
+        acp.install_agent(id, version ~= "" and { version = version } or nil)
+      elseif sub == "update" then
+        local id, version = rest:match("^(%S+)%s*(%S*)$")
+        if not id then
+          vim.notify("acp.nvim: usage: :Acp update <agent> [version]", vim.log.levels.WARN)
+          return
+        end
+        acp.update_agent(id, version ~= "" and { version = version } or nil)
+      elseif sub == "uninstall" then
+        if rest == "" then
+          vim.notify("acp.nvim: usage: :Acp uninstall <agent>", vim.log.levels.WARN)
+          return
+        end
+        acp.uninstall_agent(rest)
       elseif sub == "config" then
         acp.pick_config()
       elseif sub == "disconnect" then
@@ -88,7 +110,7 @@ local function setup()
         vim.notify("acp.nvim: unknown subcommand " .. sub, vim.log.levels.WARN)
       end
     end,
-    "open|hide|toggle|new|stop|reconnect|login|logout|agent|config|disconnect|permission|sessions|delete|model|mode|file|files|image|inline|inline-stop|inline-reset|diagnostics",
+    "open|hide|toggle|new|stop|reconnect|login|logout|agent|agents|install|update|uninstall|config|disconnect|permission|sessions|delete|model|mode|file|files|image|inline|inline-stop|inline-reset|diagnostics",
     true
   )
 

@@ -5,6 +5,7 @@ local log = require("acp.log")
 local client_mod = require("acp.protocol.client")
 local capabilities = require("acp.protocol.capabilities")
 local work_scheduler = require("acp.ui.work_scheduler")
+local Resolve = require("acp.manager.resolve")
 
 local Connection = {}
 Connection.__index = Connection
@@ -15,7 +16,8 @@ Connection.__index = Connection
 ---  notify: fun(message: string, level: integer|nil), on_changed: fun(),
 ---  on_ready: fun(), on_start_failed: fun(err: any), on_stopped: fun(),
 ---  runtime_lost: fun(), reset_permissions: fun(), stop_animation: fun(),
----  interactions: fun(): table|nil, on_render: fun()}
+---  interactions: fun(): table|nil, on_render: fun(), store: fun(): table|nil,
+---  locks: table|nil}
 function Connection.new(opts)
   return setmetatable({
     config = opts.config,
@@ -34,6 +36,9 @@ function Connection.new(opts)
     stop_animation = opts.stop_animation,
     interactions = opts.interactions,
     on_render = opts.on_render,
+    store = opts.store,
+    locks = opts.locks,
+    lease = nil,
     pending_reload = nil,
   }, Connection)
 end
@@ -44,6 +49,37 @@ end
 
 -- Exposed for the protocol conformance tests.
 Connection.client_capabilities = build_client_capabilities
+
+---Take a lease on the release this launch uses, if it is a managed one.
+---
+---External installs are not owned by the manager, so there is nothing to
+---protect; managed installs are pinned so update/uninstall in any instance can
+---see that the release is live.
+---@param launch table|nil
+function Connection:hold_lease(launch)
+  if not launch or launch.source ~= "managed" or not launch.install_id then
+    return
+  end
+  if not self.locks then
+    return
+  end
+  if self.lease and self.lease.install_id == launch.install_id then
+    return
+  end
+  self:release_lease()
+  local lease = self.locks:lease(launch.agent_id or "", launch.install_id)
+  if lease then
+    self.lease = lease
+  end
+end
+
+---Drop the lease held for the running client.
+function Connection:release_lease()
+  if self.lease and self.locks then
+    self.locks:unlease(self.lease)
+  end
+  self.lease = nil
+end
 
 ---Open the panel's agent process, starting it when needed.
 function Connection:connect()
@@ -67,8 +103,22 @@ function Connection:connect()
   if not S.conn.client then
     local client
     local generation = self.generation()
+    -- Resolve once, here: the conversation, the terminal login and the health
+    -- check all use this spec, so a managed install never runs two versions.
+    local launch, launch_err = Resolve.resolve(cfg, cfg.agent, cfg.launch_origin, self.store and self.store())
+    if not launch then
+      S.conn.phase = "disconnected"
+      self.on_changed()
+      self.on_start_failed({ message = launch_err })
+      return
+    end
     client = client_mod.new({
-      agent = cfg.agents[cfg.agent],
+      agent = vim.tbl_extend("force", {}, cfg.agents[cfg.agent], {
+        command = launch.command,
+        args = launch.args,
+        env = launch.env or cfg.agents[cfg.agent].env,
+      }),
+      launch = launch,
       cwd = self.resolve_cwd(),
       client_capabilities = build_client_capabilities(cfg),
       mcp_servers = cfg.mcp_servers,
@@ -105,6 +155,9 @@ function Connection:connect()
         end
         if ok then
           self.state().conn.phase = "ready"
+          -- Pin the exact release this client runs: an install or update in any
+          -- instance must not delete files under a live conversation.
+          self:hold_lease(client.launch)
           self.on_changed()
           self.on_ready()
         else
@@ -116,6 +169,7 @@ function Connection:connect()
     end)
   else
     S.conn.phase = "ready"
+    self:hold_lease(S.conn.client and S.conn.client.launch)
     self.on_changed()
     self.on_ready()
   end
@@ -132,6 +186,7 @@ function Connection:disconnect()
   if client then
     client:shutdown()
   end
+  self:release_lease()
   S.conn.phase = "stopped"
   self.stop_animation()
   self.on_render()
@@ -188,6 +243,7 @@ function Connection:lost(payload)
   self.reset_operations()
   self.runtime_lost()
   S.conn.phase = "disconnected"
+  self:release_lease()
   self.stop_animation()
   -- The agent is gone: its pending permission prompts can never be answered,
   -- so clear them instead of leaving the picker (and the toolbar badge) up.
@@ -206,6 +262,7 @@ function Connection:terminate()
     S.conn.client:shutdown(true)
     S.conn.client = nil
   end
+  self:release_lease()
   log.debug("agent process terminated")
 end
 

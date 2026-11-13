@@ -35,15 +35,44 @@ function M.check()
     if cfg then
       local agent = cfg.agents[cfg.agent]
       local profile = require("acp.agents").get(agent, cfg.agent)
-      health.info(string.format("agent: %s (%s %s)", cfg.agent, agent.command, table.concat(agent.args or {}, " ")))
-      if vim.fn.executable(agent.command) == 1 then
-        health.ok("agent executable found: " .. vim.fn.exepath(agent.command))
+      -- Report what would actually run, not what the preset says: a managed
+      -- install replaces the command entirely.
+      local Resolve = require("acp.manager.resolve")
+      local launch, launch_err = Resolve.resolve(cfg, cfg.agent, cfg.launch_origin)
+      if launch then
+        health.info(string.format("agent: %s (%s, %s)", cfg.agent, launch.source, launch.command))
+        if launch.version then
+          health.info("managed version: " .. launch.version)
+        end
+        local executable = launch.command
+        if vim.fn.executable(executable) == 1 then
+          health.ok("agent executable found: " .. vim.fn.exepath(executable))
+        else
+          health.error("agent executable not found: " .. executable)
+        end
       else
-        health.error("agent executable not found: " .. agent.command)
-        -- The profile knows how this agent is installed; a generic client can
-        -- only point at the documentation.
+        health.error("agent: " .. cfg.agent .. " cannot start: " .. tostring(launch_err))
         if profile.install_hint then
           health.info(profile.install_hint)
+        end
+      end
+      -- Managed installs are listed separately: "installed" and "runnable" are
+      -- different claims, and a missing pi CLI is neither.
+      local ok_manager, Registry = pcall(require, "acp.manager.registry")
+      if ok_manager then
+        local store = Resolve.new_store(cfg)
+        for _, id in ipairs(Registry.ids()) do
+          local entry = Registry.get(id)
+          if entry.installable then
+            local state = store:state(id)
+            if state.status == "installed" then
+              health.ok(string.format("managed %s: %s", id, state.install.version))
+            elseif state.status == "broken" then
+              health.error(string.format("managed %s is broken: %s", id, tostring(state.error)))
+            else
+              health.info(string.format("managed %s: not installed (:Acp install %s)", id, id))
+            end
+          end
         end
       end
       local client = st.client
@@ -67,9 +96,16 @@ function M.check()
       end
       table.sort(others)
       for _, name in ipairs(others) do
-        local other = cfg.agents[name]
-        local label = string.format("configured agent %s (%s)", name, other.command)
-        if vim.fn.executable(other.command) == 1 then
+        -- Resolve each agent too: a managed install means the preset command
+        -- is not what runs, so checking it would report a false warning.
+        local other_launch, other_err = Resolve.resolve(cfg, name, cfg.launch_origin)
+        local label
+        if other_launch then
+          label = string.format("configured agent %s (%s, %s)", name, other_launch.source, other_launch.command)
+        else
+          label = string.format("configured agent %s: %s", name, tostring(other_err))
+        end
+        if other_launch and vim.fn.executable(other_launch.command) == 1 then
           health.ok(label)
         else
           health.warn(label .. ": not found")

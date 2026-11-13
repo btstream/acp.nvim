@@ -26,9 +26,27 @@ M.defaults = {
     },
     pi = {
       command = "npx",
-      args = { "-y", "pi-acp" },
+      -- The pi adapter is the georgeharker fork (`@geohar/pi-acp`), not the
+      -- unscoped upstream `pi-acp` package: the fork carries the resume/close
+      -- and MCP behaviour this plugin targets.
+      args = { "-y", "@geohar/pi-acp" },
       profile = "pi",
     },
+  },
+
+  -- Managed agent installs (Mason-style). Empty by default: nothing is
+  -- downloaded until the user runs `:Acp install <id>`.
+  manager = {
+    -- Where agent packages live. A dedicated data directory, never the plugin
+    -- or the project.
+    root = nil, -- defaults to stdpath("data") .. "/acp/agents"
+    -- Executables used for installs. Absolute paths are allowed.
+    node = "node",
+    npm = "npm",
+    -- Milliseconds before an install is abandoned.
+    install_timeout = 300000,
+    -- Bytes of npm output kept per install for the log view.
+    max_log_bytes = 1024 * 1024,
   },
 
   -- Client capabilities. Each switch exists so a capability can be turned off
@@ -880,6 +898,40 @@ function M.validate(cfg)
   end
 
   check_number(cfg.ui.toolbar.animation_interval, 10, 60000, "ui.toolbar.animation_interval")
+
+  -- Managed installs. Validation stays local: nothing here may become a shell
+  -- string, so a command may not carry its own arguments.
+  local manager = cfg.manager
+  if type(manager) ~= "table" then
+    fail("manager must be a table, got %s", type(manager))
+  end
+  if manager.root ~= nil and manager.root ~= "" then
+    if type(manager.root) ~= "string" then
+      fail("manager.root must be a string or nil")
+    end
+  end
+  for _, key in ipairs({ "node", "npm" }) do
+    local value = manager[key]
+    if type(value) ~= "string" or value == "" then
+      fail("manager.%s must be a non-empty string", key)
+    end
+    if value:find("%s") and not vim.startswith(value, "/") then
+      fail("manager.%s must be a single executable, not a command line", key)
+    end
+  end
+  check_number(manager.install_timeout, 1000, 3600000, "manager.install_timeout")
+  check_number(manager.max_log_bytes, 1024, 64 * 1024 * 1024, "manager.max_log_bytes")
+
+  -- Per-agent install source. A typo here silently changes which binary runs,
+  -- so unknown values are rejected rather than defaulted.
+  for name, agent in pairs(cfg.agents) do
+    if type(agent) == "table" and agent.source ~= nil then
+      local allowed = { auto = true, managed = true, external = true }
+      if not allowed[agent.source] then
+        fail("agents.%s.source must be auto, managed or external, got %s", name, vim.inspect(agent.source))
+      end
+    end
+  end
 
   if type(cfg.mcp_servers) ~= "table" or (next(cfg.mcp_servers) ~= nil and not vim.islist(cfg.mcp_servers)) then
     fail("mcp_servers must be a list")

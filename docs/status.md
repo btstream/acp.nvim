@@ -801,7 +801,7 @@ mock 新增 `resumeonly` profile（可 resume、不可 load）、`session/resume
 - **health 解耦**：`config.remember()` / `config.effective()` 保存并读取最近一次有效配置，
   health 只在需要运行时事实时才访问 controller。
 
-controller 从 1851 行降到 599 行。移出的职责：`app/bootstrap`（服务构造与接线，原 ~550 行
+controller 从 1851 行降到 599 行（后来托管安装又加了入口，现约 640 行，预算 700）。移出的职责：`app/bootstrap`（服务构造与接线，原 ~550 行
 `setup`）、`app/turn`、`app/window`、`app/status`、`app/attachments`、`app/runtime_ops`、
 `app/connection_flow`、`app/events`、`app/presenter`。
 
@@ -839,3 +839,47 @@ controller 从 1851 行降到 599 行。移出的职责：`app/bootstrap`（服�
 
 验证：1106 项测试通过，0 失败（新增 5 项，覆盖两种能力下未保存 buffer 与选区的块形态、
 以及草稿恢复后附件仍被发送）。图片降级与 inline 安全集成（3 项）回归正常。
+
+## 托管 Agent 安装（2026-11-14）
+
+按 `docs/agent-manager-plan.md` 实现了阶段 1–5：内置包清单、每 agent 独立安装记录、
+跨进程锁与运行租约、npm 安装事务、启动来源解析、管理界面与文档。
+
+**装的在哪里**：`stdpath("data")/acp/agents/<id>/releases/<install-id>/`。不写插件目录、
+不写项目目录、不做全局 npm 安装。每个 agent 独立的 `current.json` 指针，所以两个 agent
+可以并行更新，同一个 agent 串行。
+
+**事务规则**：安装直接写最终的 release 目录（不搬 node_modules，避免绝对路径失效），
+验证通过后才原子替换指针；npm 报的版本、实际 package.json 的版本与请求版本三者必须一致，
+入口文件必须存在于该 release 内。失败或取消时删除本次创建的目录，旧指针不动。
+
+**启动来源**：`source = auto|managed|external`。explicit `command`/`args` 永远优先；
+`managed` 缺失或损坏时报错而不回退。来源不能由合并后的配置推断——`config.merge` 会把
+预设填进去，值比较也无法区分「用户写了和预设相同的字符串」——因此 provenance 采集自
+**原始 setup 输入**，存为 `config.launch_origin`。那处 `ctx` metatable 会对未知键返回函数，
+`rawget` 是必需的，否则可选钩子会被误判为已提供。
+
+**登录与对话同版本**：`resolve` 解析一次的 LaunchSpec 存入 client，`client.launch` 由终端
+登录读取，所以登录与对话不会跨版本。运行中的 client 会在 `.leases/<id>/` 写租约并定时心跳，
+更新/卸载发现租约有存活进程时拒绝执行，而不是杀掉用户正在用的会话。
+
+**pi 的来源**：按用户指定只用 `georgeharker/pi-acp`（npm `@geohar/pi-acp`），默认预设同步
+改为 `npx -y @geohar/pi-acp`。不安装无 scope 的 `pi-acp`，下载失败也不回退到其他 fork。
+
+**真实环境验证**（非 mock）：
+- `npm view` 确认 `@geohar/pi-acp@0.4.0`、`@agentclientprotocol/claude-agent-acp@0.107.0`。
+- 两个包都真实安装成功，`scripts/probe_agent.py` 完成 ACP 握手：Claude 报
+  `embeddedContext: true`、两个 terminal 登录方式；pi fork 报 `resume`/`close`/HTTP MCP，
+  `modes` 与 `thought_level` 重复（预期的 pi 形态）。
+- 经插件自身连接托管 pi：`launch.source == "managed"`，命令为
+  `node <release>/node_modules/@geohar/pi-acp/dist/index.js`，不再经过 npx。
+- 租约生命周期：运行中 1 个存活租约，断开后归零。
+- `:checkhealth acp` 按实际启动来源报告（`agent: pi (managed, node)`）。
+- 发现并修正：真实 Claude 0.107 不再在 mode 选项上带 `_meta.kind`，徽章依赖 profile 的
+  id 匹配兜底（已补回归测试）。
+
+**测试**：1187 项通过，0 失败，0 pending（新增 81 项：store/lock/registry、install 事务与
+假 npm、启动解析与 provenance、服务层与窗口、client 携带 launch）。
+
+**未做**：Windows 与 macOS 的真实安装/进程树清理未验证；`fs/*`、`terminal/*` 仍不实现；
+OpenCode 没有托管安装（以独立 CLI 分发）。真实模型对话（消耗额度）没有在自动化里执行。

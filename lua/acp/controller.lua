@@ -275,15 +275,13 @@ function M.reload_session(session_id)
   end
   S.sess.service:restore(session_id)
 end
----Send a message that was waiting for the session to come back after a login.
+---Send a message parked while a login was in progress.
+---
+---`schedule_auth_retry` is internal: the flow schedules itself, so a caller only
+---ever needs to flush.
 ---@return boolean sent
 function M.flush_auth_retry()
   return S.conn.flow:flush_auth_retry()
-end
-
----Poll for a session that can accept the parked message.
-function M.schedule_auth_retry()
-  S.conn.flow:schedule_auth_retry()
 end
 
 ---Log in with the agent's offered method.
@@ -312,6 +310,42 @@ end
 ---@param name string|nil
 function M.pick_agent(name)
   S.conn.flow:pick_agent(name)
+end
+
+-- Managed installs. Every decision (confirmation, locking, npm) belongs to the
+-- service; these only forward, and return false when setup has not run.
+
+---Install one managed agent. Does not switch to it or start it.
+---@param id string
+---@param opts {version?: string}|nil
+---@return boolean started
+function M.install_agent(id, opts)
+  local service = S.view.agent_manager_service
+  return service ~= nil and service:install(id, opts) or false
+end
+
+---Update one managed agent to the latest (or a given) version.
+---@param id string
+---@param opts {version?: string}|nil
+---@return boolean started
+function M.update_agent(id, opts)
+  local service = S.view.agent_manager_service
+  return service ~= nil and service:update(id, opts) or false
+end
+
+---Remove the manager-owned copy of one agent.
+---@param id string
+---@return boolean started
+function M.uninstall_agent(id)
+  local service = S.view.agent_manager_service
+  return service ~= nil and service:uninstall(id) or false
+end
+
+---Open the agent manager window. Never connects or downloads.
+function M.manage_agents()
+  if S.view.agent_manager then
+    S.view.agent_manager:open()
+  end
 end
 
 ---Open the picker for every session control the agent offers.
@@ -465,11 +499,7 @@ end
 -- config option pickers
 ---------------------------------------------------------------------------
 
----@param category string
----@param title string
-function M.pick_option(category, title)
-  S.view.options:pick(category, title)
-end
+-- Thin forwards: the options service owns the pickers and the choice logic.
 
 function M.pick_model()
   S.view.options:pick_model()
@@ -479,8 +509,15 @@ function M.pick_mode()
   S.view.options:pick_mode()
 end
 
+---Every session control in one picker, including boolean switches.
 function M.pick_config()
   S.view.options:pick_config()
+end
+
+---@param category string
+---@param title string
+function M.pick_option(category, title)
+  S.view.options:pick(category, title)
 end
 
 ---------------------------------------------------------------------------
@@ -546,6 +583,10 @@ function M.setup(opts, action)
     refresh_session_title = refresh_session_title,
     install_window = install_window,
     is_question = Permissions.question,
+    -- Explicit nil: the metatable below answers every unknown key with a
+    -- function, so an optional hook must be present here to stay absent.
+    resolve_store = nil,
+    locks = nil,
   }
   -- Public entry points, resolved on use.
   setmetatable(ctx, {

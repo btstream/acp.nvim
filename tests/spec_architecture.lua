@@ -37,6 +37,33 @@ return function(t)
     return out
   end
 
+  t.describe("controller size", function()
+    t.it("stays a thin coordinator rather than collecting every feature", function()
+      -- A budget, not a target: it catches "just one more branch" growth without
+      -- forcing callers to contort the wiring. Raise it only with a note in
+      -- docs/architecture.md explaining what earned the extra room.
+      local budget = 700
+      local count = 0
+      local handle = io.open(root .. "acp/controller.lua", "r")
+      if not handle then
+        error("cannot find the controller")
+      end
+      for _ in handle:lines() do
+        count = count + 1
+      end
+      handle:close()
+      t.truthy(
+        count <= budget,
+        string.format(
+          "acp/controller.lua is %d lines, over the %d-line budget: move the feature into app/* "
+            .. "or raise the budget deliberately (and say why in docs/architecture.md)",
+          count,
+          budget
+        )
+      )
+    end)
+  end)
+
   t.describe("module graph", function()
     t.it("has no require cycles", function()
       local mods = modules()

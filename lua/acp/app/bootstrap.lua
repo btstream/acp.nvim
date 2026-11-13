@@ -17,6 +17,10 @@ local Elicitation = require("acp.app.elicitation")
 local Interactions = require("acp.app.interactions")
 local Options = require("acp.app.options")
 local Chrome = require("acp.ui.chrome")
+local Resolve = require("acp.manager.resolve")
+local Lock = require("acp.manager.lock")
+local AgentManager = require("acp.app.agent_manager")
+local AgentManagerUI = require("acp.ui.agent_manager")
 local Sessions = require("acp.app.sessions")
 local Prompts = require("acp.app.prompts")
 local Auth = require("acp.app.auth")
@@ -41,7 +45,12 @@ function M.build(ctx, opts, action)
   local cfg = ctx.cfg
   local notify = ctx.notify
 
+  -- Provenance comes from the raw input, before `merge` erases which fields the
+  -- user actually wrote. Without it a preset command is indistinguishable from
+  -- an override.
+  local launch_origin = Resolve.provenance(opts)
   local merged = config_mod.merge(config_mod.defaults, opts or {})
+  merged.launch_origin = launch_origin
   local ok, err = pcall(config_mod.validate, merged)
   if not ok then
     error(err, 0)
@@ -384,8 +393,25 @@ function M.build(ctx, opts, action)
     end,
     on_changed = ctx.refresh_chrome,
   })
+  -- The manager owns installer state and launch leases; the connection only
+  -- asks it what to start. `rawget` is required here: the controller's ctx
+  -- metatable answers every unknown key with a function, so a plain
+  -- `ctx.resolve_store and ...` would always take the "provided" branch.
+  local provided_store = rawget(ctx, "resolve_store")
+  local provided_locks = rawget(ctx, "locks")
+  S.conn.store = provided_store and provided_store() or Resolve.new_store(merged)
+  S.conn.locks = provided_locks and provided_locks()
+    or Lock.new({
+      root = function()
+        return Resolve.manager_root(merged)
+      end,
+    })
   S.conn.service = Connection.new({
     config = cfg,
+    store = function()
+      return S.conn.store
+    end,
+    locks = S.conn.locks,
     resolve_cwd = ctx.resolve_cwd,
     state = function()
       return S
@@ -450,6 +476,30 @@ function M.build(ctx, opts, action)
   S.conn.phase = "stopped"
   S.conn.replaying = false
   S.conn.creating_session = false
+
+  -- The manager service and its window. The window is created lazily on first
+  -- open, so a user who never runs `:Acp agents` pays nothing for it.
+  local manager_presenter = require("acp.app.presenter")
+  S.view.agent_manager_service = AgentManager.new({
+    config = cfg,
+    notify = notify,
+    presenter = manager_presenter,
+    store = rawget(ctx, "resolve_store") and rawget(ctx, "resolve_store")() or nil,
+    locks = S.conn.locks,
+    npm = rawget(ctx, "manager_npm") and rawget(ctx, "manager_npm")() or nil,
+    on_changed = function()
+      if S.view.agent_manager and S.view.agent_manager:is_open() then
+        S.view.agent_manager:refresh()
+      end
+    end,
+  })
+  S.view.agent_manager = AgentManagerUI.new({
+    manager = S.view.agent_manager_service,
+    config = cfg,
+    on_use = function(id)
+      ctx.pick_agent(id)
+    end,
+  })
 
   S.view.attachments = Attachments.new({
     state = function()

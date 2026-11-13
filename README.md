@@ -611,6 +611,65 @@ require("acp").setup({
 按键必须写在其所属视图下。`keymaps.send` 这类扁平写法会直接报错，并在报错里指出
 应该写成 `keymaps.input.send`——静默忽略一个写错位置的按键最难排查。
 
+## 安装 Agent
+
+不需要 `npm install -g`：acp.nvim 可以把 ACP adapter 装到 Neovim 的数据目录里。
+
+```vim
+:Acp agents           " 打开管理界面
+:Acp install claude
+:Acp install pi
+:Acp update claude
+:Acp uninstall pi
+```
+
+安装位置是 `stdpath("data")/acp/agents/<agent>/releases/<版本>/`，与插件目录、项目目录
+和全局 npm 目录都分开。安装完成**不会**自动切换 Agent、打开会话或登录。
+
+| 命令 | 说明 |
+|---|---|
+| `:Acp agents` | 管理界面：状态、安装、更新、卸载、切换。只读磁盘，不联网 |
+| `:Acp install <id> [version]` | 安装；版本可写精确版本或省略（用 latest） |
+| `:Acp update <id> [version]` | 更新已安装的副本；未安装时提示用 install |
+| `:Acp uninstall <id>` | 移除托管副本；凭据和会话历史不受影响 |
+
+首版只托管 Claude（`@agentclientprotocol/claude-agent-acp`）和 pi
+（`@geohar/pi-acp`，即 [georgeharker/pi-acp](https://github.com/georgeharker/pi-acp)）。
+OpenCode 以独立 CLI 分发，仍需自行安装，管理器只报告它是否在 PATH 上。
+
+### 安装前需要知道的
+
+- 需要 **Node.js 22+** 和 npm；管理器不安装它们。
+- 安装会运行 npm，第三方包因此可以执行安装脚本，**不是沙箱**。每次安装都会先显示
+  包名、精确版本、目标目录和来源，确认后才开始。
+- pi 的 adapter 还需要 **pi CLI v0.80.4+** 单独安装：只装 adapter 无法运行。
+- 更新失败或取消时旧版本保持可用；安装到一半的目录会被清理。
+
+### 三种启动来源
+
+每个 Agent 可以用 `source` 指定从哪里启动：
+
+```lua
+require("acp").setup({
+  agent = "claude",
+  agents = {
+    claude = { source = "auto" },   -- 默认
+  },
+})
+```
+
+| `source` | 行为 |
+|---|---|
+| `"auto"`（默认） | 有健康的托管安装就用它；否则用预设命令 |
+| `"managed"` | 只用托管安装；没有或损坏时明确报错，**不会**悄悄回退 |
+| `"external"` | 只用配置的命令，完全不看托管安装 |
+
+你自己写过 `command` 或 `args` 时，该 Agent 始终按 external 处理——显式配置不会被
+托管安装覆盖。只改 `env` 或 `profile` 不算覆盖启动命令。
+
+托管安装损坏时 `auto` 会报错而不是换一个版本运行；想严格禁止 npx 回退时用
+`source = "managed"`。
+
 ## 配置
 
 ```lua
@@ -620,7 +679,7 @@ require("acp").setup({
     -- 内置预设；只覆盖你想改的字段
     opencode = { command = "opencode", args = { "acp" }, profile = "opencode" },
     claude = { command = "claude-agent-acp", args = {}, profile = "claude" },
-    pi = { command = "npx", args = { "-y", "pi-acp" }, profile = "pi" },
+    pi = { command = "npx", args = { "-y", "@geohar/pi-acp" }, profile = "pi" },
     -- 任何 ACP Agent 都可以这样接入；profile 省略时按名称推断，否则用 generic
     other = { command = "my-agent", args = { "--acp" } },
   },
@@ -630,6 +689,15 @@ require("acp").setup({
 
   -- 传给 agent 的 MCP 服务器（ACP McpServer）。stdio 总会被发送；
   -- http/sse 只有 agent 在 mcpCapabilities 中声明时才发送。
+  -- 托管安装（见「安装 Agent」）
+  manager = {
+    root = nil,              -- 默认 stdpath("data") .. "/acp/agents"
+    node = "node",
+    npm = "npm",
+    install_timeout = 300000,
+    max_log_bytes = 1024 * 1024,
+  },
+
   mcp_servers = {},
   -- 例：
   -- mcp_servers = {
