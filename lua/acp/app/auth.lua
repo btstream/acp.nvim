@@ -86,25 +86,46 @@ function M.command_line(spec)
   return table.concat(parts, " ")
 end
 
----Default terminal runner: a new split with a real `:terminal`.
----
----The split is opened below the panel rather than on top of it: a login is a
----side errand, and replacing the composer would lose the user's draft. A
----failure to split (very small editor) is reported instead of thrown.
+---Windows that belong to the panel. A login terminal must neither replace
+---them nor be counted as the "focus to return to" when the panel closes.
+---@param win integer
+---@return boolean
+local function is_panel_window(win)
+  local buf = vim.api.nvim_win_get_buf(win)
+  local ft = vim.bo[buf].filetype
+  return ft == "acp_chat" or ft == "acp_input"
+end
+
+---Pick where to put the login terminal: an editor window when there is one,
+---otherwise the current window. The panel keeps its layout either way.
+---@return integer win
+local function login_base_window()
+  local current = vim.api.nvim_get_current_win()
+  if not is_panel_window(current) then
+    return current
+  end
+  local fallback
+  for _, win in ipairs(vim.api.nvim_list_wins()) do
+    if not is_panel_window(win) then
+      if not fallback or vim.api.nvim_win_get_height(win) > vim.api.nvim_win_get_height(fallback) then
+        fallback = win
+      end
+    end
+  end
+  return fallback or current
+end
+
+---Open a terminal buffer and run `command` in it.
 ---@param command string
 ---@param opts {cwd: string|nil, env: table<string,string>|nil, on_exit: fun(code: integer)}
-function M.open_terminal(command, opts)
-  local cwd = opts.cwd or vim.fn.getcwd()
-  local ok, reason = pcall(vim.cmd, "botright split")
-  if not ok then
-    error(reason)
-  end
+---@return integer|nil buf
+local function start_terminal(command, opts)
   local buf = vim.api.nvim_create_buf(true, true)
   vim.api.nvim_win_set_buf(0, buf)
   vim.bo[buf].bufhidden = "wipe"
   vim.bo[buf].filetype = "acp_login"
   local job = vim.fn.termopen(command, {
-    cwd = cwd,
+    cwd = opts.cwd,
     env = opts.env,
     on_exit = function(_, code)
       vim.schedule(function()
@@ -120,6 +141,30 @@ function M.open_terminal(command, opts)
   end
   vim.cmd("startinsert")
   return buf
+end
+
+---Default terminal runner: a split under an editor window, or a new tab.
+---
+---A login is a side errand: it must not replace the composer or the chat view,
+---and a small editor must still be able to show it. When no split fits, a tab
+---is opened instead of failing.
+---@param command string
+---@param opts {cwd: string|nil, env: table<string,string>|nil, on_exit: fun(code: integer)}
+function M.open_terminal(command, opts)
+  local cwd = opts.cwd or vim.fn.getcwd()
+  local base = login_base_window()
+  local split = pcall(function()
+    vim.api.nvim_set_current_win(base)
+    vim.cmd("belowright split")
+  end)
+  if not split then
+    -- No room for a horizontal split: use a tab rather than failing the login.
+    local tabbed = pcall(vim.cmd, "tabnew")
+    if not tabbed then
+      error("no window available for the login terminal")
+    end
+  end
+  return start_terminal(command, { cwd = cwd, env = opts.env, on_exit = opts.on_exit })
 end
 
 ---@param opts {config: fun(): table, client: fun(): table|nil,
@@ -341,11 +386,12 @@ function Auth:logout()
   async.run(function()
     local ok, err = client:logout()
     if ok then
-      self.notify("Logged out", vim.log.levels.INFO)
+      self.notify("Logged out; new sessions will require logging in again (:Acp login)", vim.log.levels.INFO)
     else
       local message = type(err) == "table" and (err.message or vim.inspect(err)) or tostring(err)
       self.notify("logout failed: " .. message, vim.log.levels.ERROR)
     end
+    self.on_changed()
   end)
   return true
 end

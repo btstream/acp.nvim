@@ -95,11 +95,19 @@ return function(t)
       end, 20)
       t.eq(0, #runs, "a generic error started a login")
 
-      -- A crash while a turn is in flight.
+      -- A crash while a turn is in flight. Wait for the connection to report
+      -- the loss instead of sleeping for a fixed period.
       controller.submit("slow", {})
-      vim.wait(1200)
+      vim.wait(2000, function()
+        return S.session and S.session.status == "running"
+      end, 20)
       S.client.proc:stop(true)
-      vim.wait(2500)
+      local settled = vim.wait(10000, function()
+        return S.connection == "disconnected" and (S.session == nil or S.session.status == "idle")
+      end, 20)
+      t.truthy(settled, "the agent crash was not observed")
+      -- Give any (wrong) login decision a chance to run before asserting.
+      vim.wait(300)
       t.eq(0, #runs, "an agent crash started a login")
       vim.fn.delete(marker)
       controller.hide()

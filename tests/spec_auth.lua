@@ -190,6 +190,32 @@ return function(t)
       t.match("unable to open", h.notices[#h.notices].message)
     end)
 
+    t.it("falls back to a tab when a split does not fit", function()
+      -- The real runner, not the stub: force the horizontal split to fail.
+      local original = vim.cmd
+      local failed = false
+      vim.cmd = function(cmd)
+        if cmd == "belowright split" and not failed then
+          failed = true
+          error("E36: Not enough room")
+        end
+        return original(cmd)
+      end
+      local tabs = vim.fn.tabpagenr("$")
+      local ok, buf = pcall(auth.open_terminal, "sleep 1", { cwd = "/tmp", on_exit = function() end })
+      vim.cmd = original
+      local opened = ok and buf or nil
+      -- Read the tab count before cleanup: deleting the only buffer of a tab
+      -- also closes that tab.
+      local tabs_after = vim.fn.tabpagenr("$")
+      if opened and vim.api.nvim_buf_is_valid(opened) then
+        pcall(vim.api.nvim_buf_delete, opened, { force = true })
+      end
+      t.truthy(ok, "open_terminal raised: " .. tostring(buf))
+      t.truthy(opened, "no terminal buffer was created")
+      t.eq(tabs + 1, tabs_after, "a tab was not opened as the fallback")
+    end)
+
     t.it("shows the command and env before launching", function()
       local h = harness()
       h.client.auth_methods = {
@@ -273,6 +299,14 @@ return function(t)
         return #h.calls > 0
       end)
       t.truthy(h.calls[1].logout)
+      -- Logging out means the next session needs a new login; say so.
+      local told
+      for _, notice in ipairs(h.notices) do
+        if notice.message:find("require logging in again", 1, true) then
+          told = notice.message
+        end
+      end
+      t.truthy(told, "logout did not explain that new sessions need a login")
     end)
   end)
 end

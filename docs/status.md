@@ -648,10 +648,11 @@ native/edgy/reconnect、性能 smoke、tail/spinner 附加 UI 回归通过。
   配置），启动前展示命令与 env。退出码 0 后**强制重启** agent 进程（`Connection:restart`，因为
   `reconnect` 在连接健康时是 no-op），再重发失败的消息；`agent` 类型调用 `authenticate`。
 - 同一登录流程连续成功后 agent 仍拒绝时，最多重试 2 次后停止并提示；`:Acp login` 会重置计数。
-  登录终端打开失败（例如窗口太小）会报告错误而不是留下 `running` 状态。
+  登录终端打开失败（例如窗口太小）会报告错误而不是留下 `running` 状态；横向分屏放不下时改用
+  新 tab，登录窗口从编辑器窗口切分，不会替换面板的聊天区或输入框。
 - 重试保留原用户消息，不重复插入；失败的那一轮不再留下错误块。
 - 新增 `:Acp login` 与 `:Acp logout`（后者仅当 agent 声明 `auth.logout`）；未连接时 `:Acp login`
-  明确提示先连接。
+  明确提示先连接，logout 成功后提示下次新建会话需要重新登录。
 - 删除 `prompts.lua`、`controller.lua` 里写死的 OpenCode 提示；没有登录方式时提示查看 agent
   文档。`health` 报告当前登录方式。
 - 修复 `Sessions:create` 的 `creating` 守卫：创建任务被重连取消后不再永久卡住后续创建。
@@ -660,4 +661,4 @@ native/edgy/reconnect、性能 smoke、tail/spinner 附加 UI 回归通过。
   controller 级登录全流程与「超时/崩溃不触发登录」「重试不重复消息」测试；mock 增加 `@auth`
   场景与 `logout`，并把非认证失败从 `-32000` 改为 `-32099`。
 
-验证：975 项单元/组件测试通过，0 失败，3 项 pending（终端输出 ×2、controls）。
+验证：976 项单元/组件测试通过，0 失败，3 项 pending（终端输出 ×2、controls）。

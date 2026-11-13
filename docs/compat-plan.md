@@ -313,9 +313,10 @@ agent 方式会调用 `authenticate`；登录后重试成功。
 `session/new` / `session/load` / `session/prompt` 失败都会进入登录并在成功后重试。单一方式
 直接执行，多个用 picker；terminal 类型在新 `:terminal` 分屏运行客户端自己配置的 agent 命令
 （只采用方法给的 args/env，启动前展示），退出 0 后强制重启进程、恢复会话并重发失败的消息；
-agent 类型调用 `authenticate`。连续失败最多重试 2 次后停止；`:Acp login` 重置计数。新增
-`:Acp login` / `:Acp logout`（后者仅在 agent 声明 `auth.logout` 时可用）。删除写死的 OpenCode
-提示，无登录方式时提示查看 agent 文档；`health` 列出登录方式。顺带修复创建会话的 `creating`
+agent 类型调用 `authenticate`。连续失败最多重试 2 次后停止；`:Acp login` 重置计数。登录终端从
+编辑器窗口切分（面板布局不变），放不下时改用新 tab。新增 `:Acp login` / `:Acp logout`（后者仅
+在 agent 声明 `auth.logout` 时可用）。删除写死的 OpenCode 提示，无登录方式时提示查看 agent
+文档；`health` 列出登录方式。顺带修复创建会话的 `creating`
 守卫在任务被取消后永久卡住的问题，并声明 `session.configOptions.boolean`。mock 增加 `@auth`
 场景与 `logout`。
 
