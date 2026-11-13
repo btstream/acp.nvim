@@ -268,7 +268,7 @@ picker、会话浏览器等自绘浮窗内部的按键不在 keymaps 管辖范�
       },
       permissions = { prompt = "select", show_details = true },
       notices = true,
-      mcp_servers = {},   -- { { type = "stdio", command = "..." }, ... } 见 *acp-mcp-servers*
+      mcp_servers = {},   -- { { type = "stdio", command = "..." }, ... } 见 |acp-mcp-servers|
       capabilities = {
         elicitation = { form = true, url = false },
         auth_terminal = true,
@@ -794,7 +794,20 @@ path_mode = "inline" 时 @shot.png 会内嵌字节；默认 link 只发引用。
 可能使缓存超过配置预算。文件被外部删除后，发送会明确报错，而不是静默丢掉图像。
 
 ==============================================================================
-21. 内联编辑                                            *acp-inline*
+21. 选区与未保存的 buffer                       *acp-context-blocks*
+
+@文件、S（附加选区）和 R（附加诊断）的内容能否内嵌，取决于 Agent 是否声明
+promptCapabilities.embeddedContext：
+
+    Agent 声明     未保存 buffer / 选区 ->  resource（内嵌文本）
+    Agent 未声明   同上                ->  resource_link + 一段 text 块
+
+未声明时仍然把文本发过去，而不是只发一个 file://...#L10:20 链接：否则 Agent
+得自己去读文件，而你未保存的修改它根本看不到。这个判断发生在发送时，不是附加时
+——附件可能长期留在草稿里，期间可能重连或切换 Agent。
+
+==============================================================================
+22. 内联编辑                                            *acp-inline*
 
 require("acp").inline() 在光标处或 Visual 选区打开输入框，由 Agent 修改当前
 buffer。默认绑定 <leader>ai（普通和 Visual 模式）。Visual 选区按整行处理；

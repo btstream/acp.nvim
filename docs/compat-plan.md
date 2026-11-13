@@ -1,6 +1,15 @@
 # 多 agent 兼容与架构重整计划
 
-更新：2026-11-12。状态：待确认。本文是实施计划，不是对当前实现的描述。
+更新：2026-11-13。状态：阶段 0–9 已实现，自动化测试全部通过；**真实 agent 的手工验收（M1–M4）
+尚未进行**，见 §7。本文是实施计划与验收记录，不是对当前实现的完整描述；实现细节以
+`docs/architecture.md` 与 `docs/status.md` 为准。
+
+## 阅读提示
+
+- §0.1、§1 是**实施前的快照**（2026-11-12 的审计结论），保留下来是为了说明当时的判断依据。
+  其中提到的文件、行号与「现状」大多已被后续重构改变，不要当作当前实现来读。
+- 每个阶段末尾的「状态」段记录实际做了什么、与计划哪里不同。
+- §6 的决策多数已在实现中定案，未定的会明确标注。
 
 ## 0. 目标与原则
 
@@ -16,35 +25,42 @@
 - 测试先行：每个阶段开始前，先在 mock agent 中加入对应 agent 的行为场景。
 - 用户配置向后兼容：旧配置项保留含义；新配置项都有安全的默认值。
 
-## 0.1 探测记录（2026-11-12）
+## 0.1 探测记录（2026-11-12 快照）
+
+> 这一节是实施前的调研记录，保留作为依据。除 OpenCode 外都没有真实握手确认，见 §5、§7。
 
 - OpenCode 2.2.7 真实握手：与下表一致。`session/new` 只返回 configOptions：`model`、`effort`（category
   thought_level：off/low/high/max/default）、`mode`（build/plan）；登录方式为 terminal 类型 `opencode-login`，
   带 `_meta["terminal-auth"]`（`opencode auth login`）。
 - Claude 与 pi 的报文形态取自上游源码与 claude-agent-acp 录制的协议场景
-  （`src/tests/acp-scenarios/origin-main/plain/*.jsonl`）。尚未用真实 adapter 握手（需要 npx 下载）。
+  （`src/tests/acp-scenarios/origin-main/plain/*.jsonl`）。截至本文更新时仍**未**用真实 adapter 握手
+  （需要 npx 下载）。
 - ExitPlanMode 的实际形态：`toolCall.kind = "switch_mode"`、`toolCall.name = "ExitPlanMode"`、
   `toolCall.title = "Approve Plan"`，"Ready to code?" 在 `_meta.permission.title`；选项依次为
   `exit-plan-default`(allow_once)、`exit-plan-clear-auto`、`exit-plan-auto`、`exit-plan-bypass`(allow_always)、`reject`(reject_once)。
 - Claude 的权限请求标题统一放在 `_meta.permission.title`；工具名同时出现在 `toolCall.name` 与 `_meta.claudeCode.toolName`。
 
-## 1. 现状摘要（依据：2026-11-12 的三份审计）
+## 1. 现状摘要（实施前快照：2026-11-12 的三份审计）
 
-| 领域 | 现状 | 影响 |
+> **已过时。** 下表描述的是本项目开始改造**之前**的状态，用于说明为什么需要这份计划。
+> 现在每一条都已被后续阶段改变，行号引用全部失效。当前实现请读 `docs/architecture.md`。
+> 若要看每条问题的结局，对照各阶段的「状态」段。
+
+| 领域 | 当时的现状 | 当时的影响 |
 |---|---|---|
-| 客户端能力声明 | 只有 `session.notices`（`app/connection.lua:38`） | Claude 禁用 AskUserQuestion；OpenCode 取消提问；三个 agent 都不下发登录方式 |
+| 客户端能力声明 | 只有 `session.notices` | Claude 禁用 AskUserQuestion；OpenCode 取消提问；三个 agent 都不下发登录方式 |
 | agent → 客户端请求 | 只处理 `session/request_permission`；elicitation、fs、terminal 都返回 -32601 | 没有提问通道 |
-| 权限状态 | 存了三份：`client.permissions`、`S.pending_permissions`、`app/permissions` | `$/cancel_request` 后会重复回复；picker 没有排队 |
+| 权限状态 | 存了三份（client、控制器、`app/permissions`） | `$/cancel_request` 后会重复回复；picker 没有排队 |
 | 权限 UI | 不显示 `toolCall.content`、`rawInput`；关闭时默认选 reject；`auto_allow` 按 kind 匹配 | 批准时看不到内容；pi 的提问可能被自动回答 |
-| JSON `null` | 解码后变成 `vim.NIL` 漏进 reducer（`client.lua:260`） | 块只更新一半 |
-| 模式与配置 | 只认 configOptions；`currentModeId` 读错层级（`state.lua:221`）；boolean 配置项无法选择 | pi 无法切换；Claude 徽章不准确 |
+| JSON `null` | 解码后变成 `vim.NIL` 漏进 reducer | 块只更新一半 |
+| 模式与配置 | 只认 configOptions；`currentModeId` 读错层级；boolean 配置项无法选择 | pi 无法切换；Claude 徽章不准确 |
 | 认证 | `authenticate` 没有调用方；错误提示写死 OpenCode | Claude 和 pi 首次使用无法在插件里登录 |
 | agent 专属逻辑 | OpenCode `_meta` 写在 reducer 里；徽章只认 plan/build；错误提示按字符串匹配 | 每接入一个 agent 都要改核心代码 |
 | inline | 依赖 agent 写文件前请求权限；提问被自动拒绝 | Claude 在 acceptEdits/bypass 模式下、pi 可能直接改原文件 |
-| controller | 1446 行，全局表 `S`，和 inline 循环依赖 | 改动成本高，难以测试 |
+| controller | 当时 1446 行，全局表 `S`，和 inline 循环依赖 | 改动成本高，难以测试 |
 | 测试 | mock agent 只模拟 OpenCode | 其它 agent 的行为没有回归保障 |
 
-三个 agent 的关键差异（详见审计报告）：
+三个 agent 的关键差异（实施前调研结论，仍可作为参考；行为已由 mock profile 复现）：
 
 | | OpenCode | Claude Code | pi |
 |---|---|---|---|
@@ -78,7 +94,18 @@
 预估工作量（单人，含测试和文档）：阶段 0–2 约 4–5 天；阶段 3–4 约 4 天；阶段 5 约 3 天；
 阶段 6–8 约 5 天；阶段 9 穿插进行，收尾约 2 天。
 
+实际执行与计划的两点差异：
+
+- **阶段 9 并非「穿插进行」**：1–8 各阶段只做了各自的改动，架构收尾（状态拆分为三个
+  store、事件分发表、注入化）是一次性完成后提交的。计划原本想把它摊平到每个阶段，实际没有。
+- **里程碑 M1–M4 的手工验收全部未做**：所有自动化门禁都通过，但没有在真实 OpenCode /
+  Claude Code / pi 上跑过。这是本计划唯一未完成的验收项，见 §7。
+
 ---
+
+> **以下各阶段的「改动」清单是实施前的计划原文，保留作为历史记录。** 其中出现的行号
+> （如 `controller.lua:676`）与部分文件名已被后续重构改变，读的时候请以每个阶段末尾的
+> 「状态」段为准；那里写的是实际做了什么，以及和计划不同的地方。
 
 ## 阶段 0：测试地基
 
@@ -105,18 +132,19 @@
 
 **状态**：已完成。mock 支持 `ACP_MOCK_PROFILE`、`ACP_MOCK_LOG`、`ACP_MOCK_EARLY_UPDATE`、
 `ACP_MOCK_AUTH_REQUIRED`/`ACP_MOCK_AUTH_MARKER`（`--mock-login`）与 `@ask`/`@plan-approve`/`@bash`/`@null`/`@cancel-request`；
-`t.pending` + `ACP_TEST_PENDING=1`；`tests/spec_protocol_conformance.lua` 共 16 项（8 项 pending）。
-`@early-update` 与 `@auth` 的用例需要 controller 级测试，分别在阶段 1、阶段 4 加入。
+`t.pending` + `ACP_TEST_PENDING=1` 的机制保留在 harness 里，但当前已无 pending 用例。
+`tests/spec_protocol_conformance.lua` 现为 19 项，全部通过；阶段 0 时原本有 8 项 pending，
+已按计划在后续阶段逐项转为普通断言。`@early-update` 与 `@auth` 的用例是后续阶段补的
+controller 级测试。
 
-**验收**：现有 863 项测试不变并全部通过；新的一致性测试对 4 个 profile 运行。
-其中预期失败的项目以 `pending` 标记，在后续阶段逐项转为通过。
+**验收**：新的一致性测试对 4 个 profile 运行，无 -32601、无重复回复、无丢弃更新。
 
 ---
 
 ## 阶段 1：协议地基
 
 ### 1.1 `null` 规范化
-- `protocol/client.lua:260` 改为 `vim.json.decode(line, { luanil = { object = true, array = true } })`。
+- `protocol/client.lua` 的解码处改为 `vim.json.decode(line, { luanil = { object = true, array = true } })`。
 - 全仓库搜索 `vim.NIL`：保留确实需要区分「显式 null」的地方（例如 diff 的 `oldText = null` 表示新文件；
   解码后这里得到 nil，需要确认 `ui/diff.lua` 已经把 nil 视为新建文件）。
 - reducer 的 `apply` 改为先计算新值、成功后整体替换：出错时整条更新丢弃并记录日志，不留下只更新一半的块。
@@ -132,7 +160,7 @@ M.supports(agent_caps, "prompt.image" | "prompt.embeddedContext" | "session.list
 - 能力声明随阶段逐步打开：阶段 3 加 `elicitation.form`，阶段 4 加 `auth.terminal` 和
   `_meta["terminal-auth"]`，阶段 6 加 `_meta.terminal_output`。每个能力都有对应的配置开关，
   默认开启，用于排查问题。
-- 把散落的检查改成调用 `supports`：`app/prompts.lua`（image）、`controller.lua:968`（embeddedContext）、
+- 把散落的检查改成调用 `supports`：`app/prompts.lua`（image）、`app/attachments.lua`（embeddedContext）、
   `app/sessions.lua`（loadSession、delete）、`app/catalog.lua`（list）。
 
 ### 1.3 agent 请求注册表
@@ -143,14 +171,14 @@ M.supports(agent_caps, "prompt.image" | "prompt.embeddedContext" | "session.list
 ### 1.4 创建中的 session 先缓冲更新
 - `session/runtime`：发出 `session/new` 时登记一个「创建中」的占位；在响应到达前收到的、
   sessionId 未知的更新先缓冲（有上限），创建成功后按顺序重放，失败则丢弃。
-- `controller.lua:676` 不再直接丢弃这些更新。
+- 控制器不再直接丢弃这些更新。
 
 ### 1.5 超时与取消语义
 - 超时可以按方法配置：`transport.timeouts = { initialize = 120000, session_new = 60000, session_load = 120000 }`。
   `npx` 冷启动 claude-agent-acp 时，30 秒不够。
 - `session/load` 的超时在每收到一条回放更新时延长，而不是从发出请求时一次性计时。
 - prompt 超时、任务被取消时，先发 `session/cancel`，再发 `$/cancel_request`
-  （`client.lua:216,247`、`tasks.lua:44-49`）。
+  （`protocol/client.lua`、`tasks.lua`）。
 - `M.cancel` 处理 `cancelling` 状态：再次取消时强制在本地结束这一轮。
 
 **测试**：`@null`、`@early-update` 场景；超时会发出 `session/cancel`；回放较长时 load 不超时。
@@ -278,7 +306,8 @@ session 取消和断线时，所有请求各回复一次。现有权限相关测
 **验收（M1）**：用真实的 Claude Code 和 OpenCode 手工验证：AskUserQuestion / question 工具能提问并收到答案；
 ExitPlanMode 能看到计划正文并完成审批。
 
-**状态**：已完成。`elicitation.form` 默认开启；schema 解析拒绝嵌套对象与非 table 属性并回
+**状态**：已完成（**M1 未做**：没有在真实 Claude Code / OpenCode 上手工验证，见 §7）。
+`elicitation.form` 默认开启；schema 解析拒绝嵌套对象与非 table 属性并回
 `decline`；单字段选择简化为 picker，其余进入表单，`_custom` 同时支持「Other」和「选项 + 备注」。
 `<C-s>` 提交、`q` 取消、`d` 拒绝；关闭表单窗口、取消/断线都由交互中心回 `cancel`，迟到回调
 被忽略。提问型权限（`switch_mode`、pi select/confirm、或多个同 kind 选项）不再被 `auto_allow`
@@ -301,7 +330,7 @@ tool card 显示等待状态，`<CR>` 可直接重开请求。一致性套件中
     终端退出后自动重连并重试刚才的操作。
   - `type == "agent"`（或没有 type）：调用 `authenticate(methodId)`，成功后重试。
 - **新增 `:Acp login`**：手动触发登录；`:Acp logout` 仅在 agent 声明 `auth.logout` 时可用。
-- 删除 `prompts.lua:154`、`controller.lua:1318` 中写死的 OpenCode 提示，改为显示 agent 给出的登录方式；
+- 删除 `app/prompts.lua`、控制器中写死的 OpenCode 提示，改为显示 agent 给出的登录方式；
   完全没有提供登录方式时，提示查看 agent 文档。
 
 **测试**：`@auth` 场景下三个 profile 的 terminal 方式（mock 的「登录命令」写一个标记文件后退出）；
@@ -348,7 +377,7 @@ agent 类型调用 `authenticate`。连续失败最多重试 2 次后停止；`:
 ---@field is_question fun(permission_request): boolean|nil       -- 阶段 3.2 的扩展识别
 ---@field error_hint fun(err): string|nil
 ```
-- OpenCode 的 `_meta` 解析（`reducer.lua:156,190,309-341,452`）移到 `agents/opencode.lua` 的 `update_meta`。
+- OpenCode 的 `_meta` 解析（`session/reducer.lua`）移到 `agents/opencode.lua` 的 `update_meta`。
 - 错误提示改为：先按错误码分类，再调用 profile 的 `error_hint`。
 - 未知 agent 使用 `generic` profile：不做任何专属推断。
 
@@ -366,7 +395,7 @@ agent 类型调用 `authenticate`。连续失败最多重试 2 次后停止；`:
   pi 的 `modes` 只是 `thought_level` 配置项的重复表示。只有 `modes` 时才生成 mode，设置时调用 `session/set_mode`。
 - 模式语义优先读选项的 `_meta.kind`（Claude：plan → 计划模式；full_access/auto_review → 不安全模式），
   没有时再用 profile 钩子。注意 Claude 的 acceptEdits 的 kind 是 standard，inline 的模式保护仍需 profile 判断。
-- 修正 `state.lua:221`：从 `result.modes.currentModeId` 读取当前模式，`modes` 存的是
+- 修正 `session/state.lua`：从 `result.modes.currentModeId` 读取当前模式，`modes` 存的是
   `availableModes`。
 - 处理 `current_mode_update`：同时更新 controls（对应 ExitPlanMode 之后的模式变化）。
 - `app/options.lua` 按 control id 选择（不再按 category）；boolean 用开关切换；extras 用一个总的 picker。
@@ -378,7 +407,8 @@ agent 类型调用 `authenticate`。连续失败最多重试 2 次后停止；`:
 `current_mode_update` 后徽章更新；boolean 配置项可以切换。
 **验收（M2）**：用 pi 手工验证：模型和思考级别可以切换，提问可以回答，bash 输出可读（依赖阶段 6.1）。
 
-**状态**：已完成（bash 输出仍依赖阶段 6.1）。内置 `claude` / `pi` 预设并按 agent 名称推断
+**状态**：已完成（**M2 未做**：没有在真实 pi 上手工验证，见 §7；bash 输出依赖阶段 6.1，已完成）。
+内置 `claude` / `pi` 预设并按 agent 名称推断
 profile；新增 `agents` 模块承载模式语义、工具名、`_meta` 解析、提问识别、错误提示与安装提示，
 OpenCode 的 `retry`/`compaction`/`child-session` 从 reducer 移出。新增 `session/controls`：
 configOptions 优先并忽略重复的 `modes`，只有 `modes` 时按 profile 分出工作模式与思考级别，
@@ -395,16 +425,16 @@ configOptions 优先并忽略重复的 `modes`，只有 `modes` 时按 profile �
    - 声明 `_meta.terminal_output = true`。
    - tool card 渲染 `_meta.terminal_info`、`terminal_output`、`terminal_output_delta`（追加）和 `terminal_exit`（退出码）。
    - terminal content 对应的 terminal 不是客户端创建的（例如 pi）时，回退到 `_meta` 输出或文本，
-     不再只显示 "terminal: id"（`reducer.lua:49`）。
+     不再只显示 "terminal: id"。
 2. **tool card**：
    - `rawOutput` 在没有其它 content 时显示（不再只在 failed 时显示）。
    - 显示 tool content 里的 resource / resource_link。
    - 工具名称优先用 profile 的 `tool_name`；去掉标题两侧的反引号；补充 Claude MultiEdit `edits[]` 的 diff 还原。
-3. **plan**：同一回合内复用已有的 plan 块，修正 `reducer.lua:264` 遇到 agent 文本就停止查找的问题；
+3. **plan**：同一回合内复用已有的 plan 块，修正 `session/reducer.lua` 遇到 agent 文本就停止查找的问题；
    显示 `priority`。
 4. **停止原因**：`max_tokens`、`max_turn_requests`、`refusal` 在 transcript 末尾显示一条说明。
 5. **其它**：显示 usage 的 `cost`；使用 `session_info_update.updatedAt`；音频 content 显示为 `[audio]` 占位；
-   `notice` 的块 id 改用单调计数器（`reducer.lua:356`）。
+   `notice` 的块 id 改用单调计数器。
 
 **测试**：`@bash`（pi 和 claude 两种形式）；rawOutput；plan 去重；停止原因的渲染。
 
@@ -444,7 +474,7 @@ configOptions 优先并忽略重复的 `modes`，只有 `modes` 时按 profile �
 不安全模式会触发提示；`allow_commands` 的新范围。
 **验收（M3）**：在三个 agent 上手工跑一遍 inline 编辑，包括 agent 先提问再改文件的情况。
 
-**状态**：已完成（未在真实 agent 上手工验收）。新增 `inline/guard`：提交时记录源文件
+**状态**：已完成（**M3 未做**：没有在三个真实 agent 上跑过 inline，见 §7）。新增 `inline/guard`：提交时记录源文件
 mtime/大小/hash，回合结束后比对，直接写入时中止应用并提供重载/保留/查看差异。新增
 `inline.guard_mode`（默认 `ask`，另有 `switch`、`off`），按 profile 的 `unsafe_edit_mode`
 判定当前模式；`switch` 只切到语义中立的模式，不会切进 plan。inline 策略不再回答
@@ -467,7 +497,7 @@ elicitation 与提问型权限。`allow_commands` 收窄到 `execute`，其余 k
    - 未保存的 buffer 在不支持 `embeddedContext` 时同样改用 text 块。
    - 剪贴板图片在 agent 不支持图片时，退化为保存成文件后发 `resource_link`。
    - 能力在发送时检查，而不是在附加时检查。
-7. cwd 去掉末尾的 `/`（`controller.lua:116-121`）。
+7. cwd 去掉末尾的 `/`（`resolve_cwd`）。
 8. （可选）实现 `fs/read_text_file` / `fs/write_text_file`：读写 Neovim buffer，写入要经过交互中心确认。
    三个主力 agent 都不使用，只对通用 agent 有价值，排在最后，并由配置开关控制。
 9. （可选）实现 `terminal/*`：Neovim 的 job 加只读输出 buffer。同上，由配置开关控制，排在最后。
@@ -500,13 +530,14 @@ agent 仍会收到未声明的 `resource` 块。附带收益：`storage/drafts` 
 验证：1106 项单元/组件测试通过（阶段 8 新增 28 项，覆盖分页、mcp 过滤、图片降级、
 能力探测、resume 回退、close 三条路径，以及上下文块在两种 `embeddedContext` 下的形态
 与草稿恢复）。mock 新增 `resumeonly` profile、`session/resume` 与 `session/close` 处理、
-`ACP_MOCK_CLOSE_LOG`。未在真实 agent 上手工验收。
+`ACP_MOCK_CLOSE_LOG`。未在真实 agent 上手工验收（不单独设里程碑，随 M1–M3 覆盖）。
 
 ---
 
-## 阶段 9：架构收尾（穿插进行）
+## 阶段 9：架构收尾
 
-每个阶段改到哪里，就顺手完成对应的拆分；不安排单独的大重构。
+计划原本想把每个步骤摊到前面的阶段里顺手做，实际没有做到：阶段 1–8 各自只改了自己的
+功能，架构收尾是一次性完成的（见下方「状态」）。下表保留当初的分工设想。
 
 | 步骤 | 内容 | 建议在哪个阶段一并完成 |
 |---|---|---|
@@ -553,11 +584,13 @@ controller 拆到 599 行。为了守住这个数字，同时把原先内联在�
 | `app/presenter` | `app/*` → UI 的单向出口 |
 
 验证：1101 项单元/组件测试通过，0 失败，0 项 pending（阶段 9 新增 14 项架构门禁与状态存储测试）。
-`tests/integration_inline_safety.lua` 3 项通过。
+`tests/integration_inline_safety.lua` 3 项通过。后续修复上下文块时又加了 5 项，当前总量见 §4。
 
 ---
 
 ## 3. 新增与变更的配置项
+
+实际默认值（与实现一致）：
 
 ```lua
 {
@@ -569,8 +602,9 @@ controller 拆到 599 行。为了守住这个数字，同时把原先内联在�
     elicitation = { form = true, url = false },
     auth_terminal = true,
     terminal_output_meta = true,
-    fs = false,                  -- 阶段 8 可选
-    terminal = false,            -- 阶段 8 可选
+    boolean_config_options = true,  -- 声明 session.configOptions.boolean
+    fs = false,                  -- 保留开关，但没有实现（见 §6 决策 3）
+    terminal = false,            -- 同上
   },
   transport = {
     timeouts = { initialize = 120000, session_new = 60000, session_load = 120000 },  -- 新增
@@ -585,47 +619,81 @@ controller 拆到 599 行。为了守住这个数字，同时把原先内联在�
     allow_commands = false,      -- 含义收窄：只对 execute 生效
     allow_kinds = {},            -- 新增：显式放开其它 kind
     guard_mode = "ask",          -- 新增："ask" | "switch" | "off"（见 §6 决策 1）
+    copy_dir = "sibling",        -- "sibling" | "state"（见 §6 决策 2）
   },
 }
 ```
 
+旧配置项的含义都没有改变；`auto_allow` 是唯一一处行为收窄（不再回答提问型请求），
+这种请求本来也不该被静默批准。
+
 ## 4. 测试策略
 
-| 层次 | 内容 |
-|---|---|
-| 单元 | schema 解析、controls 推导、能力查询、交互中心的生命周期（只回复一次、取消、过期）、profile 钩子 |
-| 一致性 | 4 个 mock profile × 标准流程（initialize/new/prompt/cancel/load/auth），断言没有 -32601、没有重复回复、没有丢弃更新 |
-| 场景 | `@ask`、`@plan-approve`、`@null`、`@bash`、`@auth`、`@cancel-request`、`@early-update` |
-| UI 集成 | 现有 pynvim 测试，加上表单窗口、权限详情、终端输出的屏幕断言 |
-| 结构 | require 图没有环；protocol/session 不依赖 ui |
-| 手工 | 每个里程碑用真实 agent 验证（清单见 §7） |
+| 层次 | 内容 | 现状 |
+|---|---|---|
+| 单元 | schema 解析、controls 推导、能力查询、交互中心的生命周期（只回复一次、取消、过期）、profile 钩子 | 已实现 |
+| 一致性 | 4 个 mock profile × 标准流程（initialize/new/prompt/cancel/load/auth），断言没有 -32601、没有重复回复、没有丢弃更新 | 已实现，0 项 pending |
+| 场景 | `@ask`、`@plan-approve`、`@null`、`@bash`、`@auth`、`@cancel-request`、`@early-update` | 已实现 |
+| UI 集成 | 现有 pynvim 测试，加上表单窗口、权限详情、终端输出的屏幕断言 | 已实现，见 `tests/integration_*.lua`（`integration_inline.lua` 依赖交互式权限选择，headless 下不稳定，不作门禁） |
+| 结构 | require 图没有环；protocol/session 不依赖 ui | 已实现，由 `tests/spec_architecture.lua` 守护 |
+| 手工 | 每个里程碑用真实 agent 验证（清单见 §7） | **未做** |
+
+当前自动化总量：1106 项单元/组件测试，0 失败，0 pending；另有 inline 安全集成 3 项。
 
 ## 5. 风险
 
 - **上游变化快**：claude-agent-acp 两周就发一个版本；pi-acp 是第三方维护，并且有多个 fork。
-  应对：只依赖规范行为加 profile 钩子；mock 场景直接取自上游源码；在 profile 文件头部记录对应的上游版本号。
-- **未核实的信息**：OpenCode 是否发 `plan` 更新、有没有计划审批流程；Claude ExitPlanMode 的 tool kind；
-  Claude 在 `authMethods` 为空时能否使用环境变量中的 API key。应对：在阶段 0 前用真实 agent 抓一次协议日志
-  （`log.protocol = true`）确认，结果补充进本文。
-- **交互中心迁移时权限行为回退**：应对：阶段 2 只做行为不变的迁移；现有权限测试必须全部通过才能合并。
-- **inline 模式保护会改动用户的 session 状态**：见决策 1，默认只提示、不自动切换。
+  应对：只依赖规范行为加 profile 钩子；mock 场景直接取自上游源码；在 profile 文件头部记录
+  对应的上游版本号。**现状**：已按此实现，但没有持续跟踪上游变化的机制，升级后仍需人工复核
+  一次协议日志。
+- **未核实的信息（至今仍未核实）**：OpenCode 是否发 `plan` 更新、有没有计划审批流程；
+  Claude ExitPlanMode 的 tool kind 是否稳定；Claude 在 `authMethods` 为空时能否使用环境变量中
+  的 API key。这三条目前按「上游源码 + 录制的协议场景」推定实现，没有真实握手确认。
+  确认方法见 §7。
+- **交互中心迁移时权限行为回退**：应对：阶段 2 只做行为不变的迁移；现有权限测试必须全部通过
+  才能合并。**结果**：已按此执行，原有权限测试全部保留并通过。
+- **inline 模式保护会改动用户的 session 状态**：见 §6 决策 1，默认只提示、不自动切换。
+  **结果**：默认 `"ask"`，`"switch"` 也不会切进 plan。
 
-## 6. 需要确认的决策
+## 6. 决策记录
 
-1. **inline 遇到不安全的工作模式时怎么办**：
-   - 推荐 `"ask"`：提示用户，可以选择临时切换或继续。
-   - `"switch"`：自动临时切换到 default，结束后切回。
-   - `"off"`：不处理，只依赖磁盘变更检测兜底。
-2. **inline private copy 的默认位置**：同目录隐藏文件（现状，agent 容易理解项目上下文）还是 state 目录
-   （不会被格式化工具、LSP、git 看到）。推荐阶段 7 手工验证后再定，先保持现状。
-3. **fs/terminal 客户端能力是否实现**：三个主力 agent 都用不到。推荐作为阶段 8 的可选项，默认关闭。
-4. **elicitation url 模式**：推荐本次实现但默认关闭（主要用于 MCP OAuth）。
-5. **会话按 agent 分开记录**：切换 agent 后会话列表只显示当前 agent 的会话（推荐），还是混在一起显示。
+实施时定案的结论，以及仍未定的事：
 
-## 7. 手工验证清单（每个里程碑）
+1. **inline 遇到不安全的工作模式时怎么办** — **已定案**：默认 `"ask"`（提示用户，可选择
+   临时切换或继续）。另有 `"switch"`（自动临时切到语义中立的模式，结束后切回；**不会**切进
+   plan）与 `"off"`（只依赖磁盘变更检测兜底）。
+2. **inline private copy 的默认位置** — **已定案**：保持同目录隐藏文件（`copy_dir = "sibling"`），
+   同时提供 `copy_dir = "state"`。同目录副本让 agent 能通过相对路径找到项目上下文，代价是会被
+   格式化工具、LSP 与 git status 看到。这一项**没有**经过真实 agent 的手工对比验证，只是维持现状。
+3. **fs/terminal 客户端能力是否实现** — **已定案**：不实现。`capabilities.fs` 与
+   `capabilities.terminal` 保留为 `false` 且没有对应实现，三个主力 agent 都用不到。
+4. **elicitation url 模式** — **已定案**：实现但默认关闭（`elicitation.url = false`，主要用于
+   MCP OAuth）。`elicitation/complete` 到达时关闭提示。
+5. **会话按 agent 分开记录** — **已定案**：分开。切换 agent 后只显示当前 agent 的会话，
+   标题与 cwd 缓存也按 agent 分开保存（`agent_store`）。
 
-- [ ] **OpenCode**：提问（question 工具）、权限详情（diff、命令）、模型/思考级别/模式切换、会话 list/load/resume、inline 编辑。
-- [ ] **Claude Code**：首次登录、AskUserQuestion（单选、多选、Other）、ExitPlanMode 审批与之后的模式徽章、
-  acceptEdits 下的 inline 模式保护、TodoWrite 的 plan 不叠加、Bash 输出。
-- [ ] **pi**：首次登录、思考级别切换、select/confirm 提问、bash 伪终端输出、inline 时直接写文件被检测到。
+## 7. 手工验证清单（未完成）
+
+> **状态：一项都还没做。** 所有自动化门禁（1106 项单元/组件测试、架构门禁、inline 安全集成）
+> 都通过，但它们跑的是 mock agent。下面的清单需要在真实 agent 上手动跑一遍，才能认为
+> 里程碑 M1–M4 真正达成。这个缺口在各阶段的状态段里也逐条提到过。
+
+前置条件：装好对应的 agent（`opencode`、`claude-agent-acp`、`pi-acp`），用
+`log.protocol = true` 记录一次协议日志，便于对照实际报文。
+
+- [ ] **OpenCode**：提问（question 工具）、权限详情（diff、命令）、模型/思考级别/模式切换、
+  会话 list/load/resume、inline 编辑。
+- [ ] **Claude Code**：首次登录、AskUserQuestion（单选、多选、Other）、ExitPlanMode 审批与之后的
+  模式徽章、acceptEdits 下的 inline 模式保护、TodoWrite 的 plan 不叠加、Bash 输出。
+- [ ] **pi**：首次登录、思考级别切换、select/confirm 提问、bash 伪终端输出、inline 时直接写文件
+  被检测到；**以及 `embeddedContext: false` 下的选区与未保存 buffer**（pi 不声明该能力，
+  应该走「链接 + 文本块」路径）。
 - [ ] **generic**（Gemini CLI 或 Codex adapter 任选一个）：基本对话、权限、未知更新类型不报错。
+
+配套要确认的三条（§5 「未核实的信息」至今没有结论）：
+
+- [ ] OpenCode 是否发 `plan` 更新、有没有计划审批流程。
+- [ ] Claude ExitPlanMode 的 tool kind 是否稳定为 `switch_mode`（当前的提问识别依赖它）。
+- [ ] Claude 在 `authMethods` 为空时能否使用环境变量中的 API key。
+
+做完后请把结论写回对应阶段的状态段，并勾选这里的条目。

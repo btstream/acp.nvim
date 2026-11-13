@@ -135,12 +135,17 @@ Controller 只保留公开入口、会话选择、服务装配和跨模块协调
   无扩展名、UTF-8、空格和引号。picker 复用索引，通过 vim.ui.select/fzf-lua/Snacks/Telescope
   插入引用，不打开文件、不发请求；只在选中后校验原输入身份并应用编辑。
 - `context/image` 只做容器嗅探与内容寻址存储：附件带 path/mime/bytes/sha，不带 base64。
-  `context/init.to_prompt` 在发送时按 `inline` 决定 `image` 或 `resource_link` 块，读取失败
-  返回错误而不是省略该附件。`context/clipboard` 异步跑平台工具，返回“有图/无图/后端失败”
-  三态，避免空的 Wayland 剪贴板回落到 X11 的旧截图，并用 `vim.system` 超时兜住挂起的工具。
+  `context/block` 在**发送时**决定每个附件的块形态：图片按 `inline` 在 `image` 与
+  `resource_link` 之间选择（读取失败返回错误而不是省略该附件）；未保存 buffer 与 Visual
+  选区在 agent 声明 `promptCapabilities.embeddedContext` 时发 `resource`，否则发
+  `resource_link` 加一个携带同样文本的 `text` 块。附件本身只保存元数据与文本，绝不预先定型
+  成块——附加与发送之间可能隔着重连、agent 切换或草稿恢复，那时缓存的能力判断已经过期
+  （`storage/drafts` 还会剥掉 `block` 字段以控制体积）。`context/clipboard` 异步跑平台工具，
+  返回“有图/无图/后端失败”三态，避免空的 Wayland 剪贴板回落到 X11 的旧截图，并用
+  `vim.system` 超时兜住挂起的工具。
 - `ui/paste_image` 覆盖 `vim.paste`，仅在光标位于输入区且粘贴内容是单个存在的图像路径时
-  接管，其余一律交还原处理器；`app/prompts` 在发送时按 `promptCapabilities.image` 决定
-  是否降级为 `resource_link`（在读取字节之前判断），不再于附加/发送前直接拒绝整条消息。
+  接管，其余一律交还原处理器；`app/prompts` 把 `promptCapabilities` 的查询函数交给
+  `context.to_prompt`，由它在发送时决定降级，不再于附加/发送前直接拒绝整条消息。
 - 会话列表由 `app/catalog` 跟随 `nextCursor` 翻页，`app/sessions` 按能力在
   `session/load`、`session/resume`、新建三者间选择；`session/close` 只在 agent 声明
   `sessionCapabilities.close` 且 client 实现该方法时发送。`protocol/client` 的

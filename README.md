@@ -321,6 +321,21 @@ Neovim；OSC 5522 需要终端专用协商并改变普通粘贴处理，本插�
 `path_mode = "inline"` 时 `@shot.png` 会内嵌字节；默认 `link` 只发送引用，避免每次提及
 都把整张图重新编码。协议日志会把 base64 载荷替换为 `<base64 N bytes>`。
 
+### 选区与未保存的 buffer
+
+`@文件`、`S`（附加选区）和 `R`（附加诊断）的内容能否内嵌，取决于 Agent 是否声明
+`promptCapabilities.embeddedContext`（mock 的 OpenCode 与 Claude 声明，pi 不声明）：
+
+| 附件 | Agent 声明 `embeddedContext` | 未声明 |
+|---|---|---|
+| 未保存的 buffer | `resource`（内嵌文本） | `resource_link` + 一段包含同样文本的 `text` 块 |
+| Visual 选区 | `resource`（内嵌文本） | 同上 |
+| 普通文件（已保存） | `resource_link` | `resource_link` |
+
+关键是**未声明时仍然把文本发过去**：只发一个 `file://...#L10:20` 链接的话，Agent 得自己去
+读文件，而你未保存的修改它根本看不到。这个判断发生在**发送时**，不是附加时——附件可能在
+草稿里放很久，期间可能重连或切换 Agent，附加时的能力判断早就过期了。
+
 ### 内联编辑
 
 `require("acp").inline()`（默认 `<leader>ai`，普通和 Visual 模式）在光标处或选区上方
