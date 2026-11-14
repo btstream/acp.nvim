@@ -4,7 +4,60 @@ vim.opt.runtimepath:append(root)
 vim.opt.swapfile = false
 vim.opt.shadafile = "NONE"
 
+-- Safety net: the suite deletes drafts and writes logs. If minimal_init was
+-- skipped or its overrides were lost, refuse to run instead of touching the
+-- user's real state/cache/data.
+local real_home = vim.fs.normalize(vim.fn.expand("~")) .. "/.local"
+for _, kind in ipairs({ "data", "state", "cache" }) do
+  local path = vim.fs.normalize(vim.fn.stdpath(kind))
+  if path:sub(1, #real_home + 1) == real_home .. "/" or path == real_home then
+    error(string.format("tests are not isolated: stdpath(%q) is %s (run with tests/minimal_init.lua)", kind, path), 0)
+  end
+end
+-- Tripwire: a rename into the real state tree is a leak and shows up in the
+-- test output (drafts use rename for its atomicity).
+local real_rename = vim.uv.fs_rename
+vim.uv.fs_rename = function(from, to, ...)
+  if tostring(to):find(real_home .. "/state", 1, true) then
+    io.write("REAL RENAME " .. tostring(from) .. " -> " .. tostring(to) .. "\n")
+  end
+  return real_rename(from, to, ...)
+end
+
 local t = require("tests.harness")
+
+-- Baseline cleanup for every case. Specs replace globals, open windows, start
+-- processes and call setup; a failed assertion skips their hand-written
+-- teardown, so the harness restores all of it here.
+local controller = require("acp.controller")
+local drafts = require("acp.storage.drafts")
+local drafts_path = drafts.path
+local setup_calls, torn_down = 0, 0
+local raw_setup = controller.setup
+controller.setup = function(...)
+  setup_calls = setup_calls + 1
+  return raw_setup(...)
+end
+t.after_each(function()
+  -- Let callbacks scheduled by the test run before their state disappears.
+  vim.wait(1)
+  local inline = package.loaded["acp.inline"]
+  if inline then
+    pcall(inline.invalidate)
+  end
+  if setup_calls ~= torn_down then
+    torn_down = setup_calls
+    pcall(raw_setup, {}, { discard_queued = true })
+    -- The agent store caches session titles/cwds across setups; without a new
+    -- cache a later test sees a previous test's title for the same mock session.
+    pcall(function()
+      controller.state().sess.agent_store = {}
+    end)
+  end
+  drafts.clear()
+  drafts.path = drafts_path
+  vim.wait(1)
+end)
 
 require("tests.spec_framing")(t)
 require("tests.spec_jsonrpc")(t)

@@ -1,8 +1,14 @@
--- Isolate the data directory: the agent manager defaults to
--- stdpath("data")/acp/agents, and a test must never touch the user's real
--- installs. stdpath() reads XDG_DATA_HOME on every call.
-vim.env.XDG_DATA_HOME = string.format("/tmp/opencode/acp-test-data-%d", vim.uv.os_getpid())
-vim.fn.mkdir(vim.env.XDG_DATA_HOME, "p")
+-- Isolate every XDG directory a test can write: data holds agent installs,
+-- state holds drafts and the log, cache holds image previews. Without the
+-- state/cache overrides the suite clears the user's real drafts.json and
+-- rewrites their log.
+local isolated = string.format("/tmp/opencode/acp-test-%d", vim.uv.os_getpid())
+vim.env.XDG_DATA_HOME = isolated .. "/data"
+vim.env.XDG_STATE_HOME = isolated .. "/state"
+vim.env.XDG_CACHE_HOME = isolated .. "/cache"
+for _, dir in ipairs({ vim.env.XDG_DATA_HOME, vim.env.XDG_STATE_HOME, vim.env.XDG_CACHE_HOME }) do
+  vim.fn.mkdir(dir, "p")
+end
 
 vim.opt.runtimepath:append(vim.fn.fnamemodify(vim.fn.getcwd(), ":p"))
 
