@@ -403,7 +403,9 @@ function Session:decide(indices, accepted)
     self:finish()
     return true
   end
-  if review_opts(self.config).advance then
+  -- On by default: a review opened without a config (or without the key)
+  -- still advances, and only an explicit `false` pins the cursor.
+  if review_opts(self.config).advance ~= false then
     local target = self:next_pending(indices[#indices])
     if target then
       self:jump_to(target)
@@ -457,7 +459,25 @@ function Session:undo_decision()
   self:refresh()
 end
 
+---Display row a hunk starts on, or nil when the view has no row for it.
+---
+---The card renderer caps its output at `max_rows`, so a late hunk can be
+---pending yet invisible; jumping to it would put the cursor on a row that
+---belongs to another hunk.
+---@param index integer
+---@return integer|nil
+function Session:jump_row(index)
+  if self.native then
+    -- `hunk_rows` returns both ends of the span; the jump target is the first.
+    return (self:hunk_rows(index))
+  end
+  return self.view and self.view.rows and self.view.rows[index]
+end
+
 ---Next pending hunk after `index`, wrapping around.
+---
+---Hunks the view cannot show are skipped: with `advance` the cursor has to land
+---somewhere the user can see and decide.
 ---@param index integer|nil
 ---@return integer|nil
 function Session:next_pending(index)
@@ -465,7 +485,7 @@ function Session:next_pending(index)
   local start = (index or 0) + 1
   for step = 0, total - 1 do
     local candidate = ((start + step - 1) % total) + 1
-    if not self.hunks[candidate].decided then
+    if not self.hunks[candidate].decided and self:jump_row(candidate) then
       return candidate
     end
   end
@@ -500,7 +520,7 @@ function Session:jump_to(index)
     -- Rows are aligned, so the cursor stays in whichever column it is in.
     row = self:hunk_rows(index)
   else
-    row = self.view and self.view.rows and self.view.rows[index]
+    row = self:jump_row(index)
   end
   if row and row >= 1 then
     vim.api.nvim_set_current_win(win)

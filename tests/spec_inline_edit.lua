@@ -772,8 +772,8 @@ return function(t)
     local original = { "a", "b", "c", "d", "e" }
     local edited = { "A", "b", "c", "D", "e" }
 
-    local function open(over)
-      local _, buf = win_with(original)
+    local function open_lines(start, lines, over)
+      local _, buf = win_with(start)
       local cfg_now = cfg()
       -- Force the native layout regardless of the test screen width.
       cfg_now.inline.window.review.min_split_width = 20
@@ -783,13 +783,17 @@ return function(t)
       local finished = {}
       local ok, err = session_mod.open({
         bufnr = buf,
-        lines = edited,
+        lines = lines,
         config = cfg_now,
         on_finish = function(count)
           finished.count = count
         end,
       })
       return ok, err, buf, finished
+    end
+
+    local function open(over)
+      return open_lines(original, edited, over)
     end
 
     ---Review windows ordered left to right, with their buffers.
@@ -1538,6 +1542,228 @@ return function(t)
       vim.api.nvim_buf_delete(buf, { force = true })
     end)
 
+    t.it("advances to the next pending hunk on accept by default", function()
+      -- Three hunks, so a decision has somewhere to go: rows 1, 3 and 5.
+      local ok, err, buf = open_lines({ "a", "b", "c", "d", "e" }, { "A", "b", "C", "d", "E" })
+      t.truthy(ok, err)
+      t.truthy(cfg().inline.window.review.advance, "advance must default to true")
+      local win = vim.api.nvim_get_current_win()
+      vim.api.nvim_win_set_cursor(win, { 1, 0 })
+      vim.api.nvim_feedkeys("ga", "x", false)
+      t.eq(3, vim.api.nvim_win_get_cursor(win)[1])
+      -- Every column follows through `cursorbind`, so the next decision lands
+      -- on the same hunk whichever pane the user types in.
+      for _, pane in ipairs(sorted_panes()) do
+        t.eq(3, vim.api.nvim_win_get_cursor(pane.win)[1], "pane " .. pane.win)
+      end
+      vim.api.nvim_feedkeys("gr", "x", false)
+      t.eq(5, vim.api.nvim_win_get_cursor(win)[1])
+      session_mod.close_all()
+      vim.api.nvim_buf_delete(buf, { force = true })
+    end)
+
+    t.it("advances on reject as well", function()
+      local ok, err, buf = open_lines({ "a", "b", "c", "d", "e" }, { "A", "b", "C", "d", "E" })
+      t.truthy(ok, err)
+      local win = vim.api.nvim_get_current_win()
+      vim.api.nvim_win_set_cursor(win, { 1, 0 })
+      vim.api.nvim_feedkeys("gr", "x", false)
+      t.eq(3, vim.api.nvim_win_get_cursor(win)[1])
+      session_mod.close_all()
+      vim.api.nvim_buf_delete(buf, { force = true })
+    end)
+
+    t.it("wraps to the first pending hunk after the last one", function()
+      local ok, err, buf = open_lines({ "a", "b", "c", "d", "e" }, { "A", "b", "C", "d", "E" })
+      t.truthy(ok, err)
+      local win = vim.api.nvim_get_current_win()
+      vim.api.nvim_win_set_cursor(win, { 5, 0 })
+      vim.api.nvim_feedkeys("ga", "x", false)
+      t.eq(1, vim.api.nvim_win_get_cursor(win)[1])
+      -- The remaining pending hunk is now the one after the wrapped target.
+      vim.api.nvim_feedkeys("ga", "x", false)
+      t.eq(3, vim.api.nvim_win_get_cursor(win)[1])
+      session_mod.close_all()
+      vim.api.nvim_buf_delete(buf, { force = true })
+    end)
+
+    t.it("finishes instead of advancing when every hunk is decided", function()
+      local ok, err, buf, finished = open()
+      t.truthy(ok, err)
+      local win = vim.api.nvim_get_current_win()
+      vim.api.nvim_win_set_cursor(win, { 1, 0 })
+      vim.api.nvim_feedkeys("ga", "x", false)
+      t.truthy(session_mod.active(buf))
+      vim.api.nvim_feedkeys("gr", "x", false)
+      wait_close(buf)
+      t.eq(1, finished.count)
+      t.eq({ "A", "b", "c", "d", "e" }, vim.api.nvim_buf_get_lines(buf, 0, -1, false))
+      vim.api.nvim_buf_delete(buf, { force = true })
+    end)
+
+    t.it("stays put when advance is explicitly false", function()
+      local ok, err, buf = open_lines({ "a", "b", "c", "d", "e" }, { "A", "b", "C", "d", "E" }, { advance = false })
+      t.truthy(ok, err)
+      local win = vim.api.nvim_get_current_win()
+      vim.api.nvim_win_set_cursor(win, { 1, 0 })
+      vim.api.nvim_feedkeys("ga", "x", false)
+      t.eq(1, vim.api.nvim_win_get_cursor(win)[1])
+      vim.api.nvim_feedkeys("gr", "x", false)
+      t.eq(1, vim.api.nvim_win_get_cursor(win)[1])
+      session_mod.close_all()
+      vim.api.nvim_buf_delete(buf, { force = true })
+    end)
+
+    t.it("advances past a Visual selection of several hunks", function()
+      local ok, err, buf = open_lines({ "a", "b", "c", "d", "e" }, { "A", "b", "C", "d", "E" })
+      t.truthy(ok, err)
+      local win = vim.api.nvim_get_current_win()
+      -- Rows 1 to 3 cover the first two hunks; the next one to decide is the
+      -- third, not the first row of the selection.
+      vim.api.nvim_win_set_cursor(win, { 1, 0 })
+      vim.api.nvim_feedkeys("V2jga", "x", false)
+      t.eq("n", vim.fn.mode())
+      t.eq(5, vim.api.nvim_win_get_cursor(win)[1])
+      session_mod.close_all()
+      vim.api.nvim_buf_delete(buf, { force = true })
+
+      _, buf = win_with({ "a", "b", "c", "d", "e" })
+      local c = cfg()
+      c.inline.window.review.min_split_width = 20
+      assert(session_mod.open({ bufnr = buf, lines = { "A", "b", "C", "d", "E" }, config = c }))
+      win = vim.api.nvim_get_current_win()
+      vim.api.nvim_win_set_cursor(win, { 3, 0 })
+      vim.api.nvim_feedkeys("V2jgr", "x", false)
+      -- The selection held the last two hunks, so it wraps to the first.
+      t.eq(1, vim.api.nvim_win_get_cursor(win)[1])
+      session_mod.close_all()
+      vim.api.nvim_buf_delete(buf, { force = true })
+    end)
+
+    t.it("advances past a Visual selection of several card hunks", function()
+      local ok, err, buf = open_lines(
+        { "a", "b", "c", "d", "e" },
+        { "A", "b", "C", "d", "E" },
+        { min_split_width = 10000, context = 0 }
+      )
+      t.truthy(ok, err)
+      local win = vim.api.nvim_get_current_win()
+      -- Each card hunk is a header plus two rows and a separator: rows 1-7
+      -- cover the first two, so the next decision is the third header at row 9.
+      vim.api.nvim_win_set_cursor(win, { 1, 0 })
+      vim.api.nvim_feedkeys("V6jga", "x", false)
+      t.eq(9, vim.api.nvim_win_get_cursor(win)[1])
+      session_mod.close_all()
+      vim.api.nvim_buf_delete(buf, { force = true })
+    end)
+
+    t.it("advances in the card fallback and in a float", function()
+      for _, target in ipairs({ "buffer", "float" }) do
+        local ok, err, buf = open_lines(
+          { "a", "b", "c", "d", "e" },
+          { "A", "b", "C", "d", "E" },
+          { min_split_width = 10000, context = 0, target = target }
+        )
+        t.truthy(ok, err)
+        local win = vim.api.nvim_get_current_win()
+        -- Card rows: hunk headers sit at rows 1, 5 and 9 with no context.
+        vim.api.nvim_win_set_cursor(win, { 1, 0 })
+        vim.api.nvim_feedkeys("ga", "x", false)
+        t.eq(5, vim.api.nvim_win_get_cursor(win)[1], target)
+        t.match("@@ Hunk 2/3", vim.api.nvim_buf_get_lines(0, 4, 5, false)[1])
+        vim.api.nvim_feedkeys("gr", "x", false)
+        t.eq(9, vim.api.nvim_win_get_cursor(win)[1], target)
+        session_mod.close_all()
+        vim.api.nvim_buf_delete(buf, { force = true })
+      end
+    end)
+
+    t.it("lands on the first row of the target hunk", function()
+      -- The first hunk spans two display rows: wrapping back to it must land on
+      -- its first row, not its last.
+      local ok, err, buf = open_lines({ "a", "b", "c", "d" }, { "a", "B1", "B2", "c", "D" }, { fold = false })
+      t.truthy(ok, err)
+      local win = vim.api.nvim_get_current_win()
+      vim.api.nvim_win_set_cursor(win, { 5, 0 })
+      vim.api.nvim_feedkeys("ga", "x", false)
+      t.eq(2, vim.api.nvim_win_get_cursor(win)[1])
+      -- The result column still shows the old side of a pending hunk, so read
+      -- the proposal column to confirm the row is the hunk's first one.
+      local proposal = sorted_panes()[3]
+      t.eq("B1", vim.api.nvim_buf_get_lines(proposal.buf, 1, 2, false)[1])
+      session_mod.close_all()
+      vim.api.nvim_buf_delete(buf, { force = true })
+    end)
+
+    t.it("wraps to a rendered hunk when the card tail is truncated", function()
+      local start, wanted = {}, {}
+      for i = 1, 10 do
+        start[i] = "line " .. i
+        wanted[i] = (i % 2 == 1) and ("CHANGED " .. i) or start[i]
+      end
+      -- `max_rows` cuts the card after the third hunk, so hunks 4 and 5 have no
+      -- rows to jump to. Deciding the last rendered one must wrap to a row the
+      -- user can actually see, not to an invisible hunk.
+      local ok, err, buf = open_lines(start, wanted, { min_split_width = 10000, context = 0, max_rows = 12 })
+      t.truthy(ok, err)
+      local win = vim.api.nvim_get_current_win()
+      vim.api.nvim_win_set_cursor(win, { 9, 0 })
+      vim.api.nvim_feedkeys("ga", "x", false)
+      t.eq(1, vim.api.nvim_win_get_cursor(win)[1])
+      -- From there the usual order resumes.
+      vim.api.nvim_feedkeys("ga", "x", false)
+      t.eq(5, vim.api.nvim_win_get_cursor(win)[1])
+      -- Once only unrendered hunks are left, the cursor stays put.
+      vim.api.nvim_feedkeys("ga", "x", false)
+      t.eq(5, vim.api.nvim_win_get_cursor(win)[1])
+      t.truthy(session_mod.active(buf), "the review must stay open while hunks are pending")
+      session_mod.close_all()
+      vim.api.nvim_buf_delete(buf, { force = true })
+    end)
+
+    t.it("advances when no config is passed at all", function()
+      local _, buf = win_with({ "a", "b", "c", "d", "e" })
+      -- No `config`: the narrow headless screen picks the card fallback, whose
+      -- rows differ from the columns, so assert on the hunk header instead of
+      -- a fixed row.
+      assert(session_mod.open({ bufnr = buf, lines = { "A", "b", "C", "d", "E" } }))
+      local win = vim.api.nvim_get_current_win()
+      vim.api.nvim_win_set_cursor(win, { 1, 0 })
+      vim.api.nvim_feedkeys("ga", "x", false)
+      local row = vim.api.nvim_win_get_cursor(win)[1]
+      t.match("@@ Hunk 2/3", vim.api.nvim_buf_get_lines(0, row - 1, row, false)[1])
+      session_mod.close_all()
+      vim.api.nvim_buf_delete(buf, { force = true })
+    end)
+
+    t.it("does not move on undo", function()
+      local ok, err, buf = open_lines({ "a", "b", "c", "d", "e" }, { "A", "b", "C", "d", "E" })
+      t.truthy(ok, err)
+      local win = vim.api.nvim_get_current_win()
+      vim.api.nvim_win_set_cursor(win, { 1, 0 })
+      vim.api.nvim_feedkeys("ga", "x", false)
+      t.eq(3, vim.api.nvim_win_get_cursor(win)[1])
+      -- `u` clears the decision under the cursor; it must not navigate.
+      vim.api.nvim_feedkeys("u", "x", false)
+      t.eq(3, vim.api.nvim_win_get_cursor(win)[1])
+      session_mod.close_all()
+      vim.api.nvim_buf_delete(buf, { force = true })
+    end)
+
+    t.it("keeps the cursor in the column it started from when advancing", function()
+      local ok, err, buf = open_lines({ "a", "b", "c", "d", "e" }, { "A", "b", "C", "d", "E" })
+      t.truthy(ok, err)
+      local panes = sorted_panes()
+      local proposal = panes[3].win
+      vim.api.nvim_set_current_win(proposal)
+      vim.api.nvim_win_set_cursor(proposal, { 1, 0 })
+      vim.api.nvim_feedkeys("ga", "x", false)
+      t.eq(proposal, vim.api.nvim_get_current_win())
+      t.eq(3, vim.api.nvim_win_get_cursor(proposal)[1])
+      session_mod.close_all()
+      vim.api.nvim_buf_delete(buf, { force = true })
+    end)
+
     t.it("writes accepted hunks on finish and rejects on close", function()
       local ok, err, buf, finished = open({ advance = true })
       t.truthy(ok, err)
@@ -1574,12 +1800,14 @@ return function(t)
       local _, buf = win_with(original)
       local c = cfg()
       c.inline.window.review.min_split_width = 20
+      -- Navigation only; `advance` has its own cases.
+      c.inline.window.review.advance = false
       local wide_edited = { "A", "b", "c", "d", "E" }
       assert(session_mod.open({ bufnr = buf, lines = wide_edited, config = c }))
       local win = vim.api.nvim_get_current_win()
       vim.api.nvim_win_set_cursor(win, { 5, 0 })
       vim.api.nvim_feedkeys("ga", "x", false)
-      -- `advance` is off, so the cursor stays put; the accepted hunk vanishes
+      -- With `advance` off the cursor stays put; the accepted hunk vanishes
       -- from the diff and `]c` must still reach the remaining pending hunk.
       t.eq(5, vim.api.nvim_win_get_cursor(win)[1])
       vim.api.nvim_feedkeys("]c", "x", false)
@@ -1603,6 +1831,9 @@ return function(t)
         local c = cfg()
         c.inline.window.review.layout = mode
         c.inline.window.review.min_split_width = 20
+        -- This case is about `]c`/`]h`/`[c`/`[h` ordering; `advance` is covered
+        -- separately, so keep decisions from moving the cursor here.
+        c.inline.window.review.advance = false
         assert(session_mod.open({ bufnr = buf, lines = new, config = c }))
         local function move(key, expected, win)
           win = win or vim.api.nvim_get_current_win()
