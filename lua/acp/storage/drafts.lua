@@ -9,6 +9,10 @@ local MAX_TEXT = 200 * 1024
 local MAX_DRAFTS = 50
 -- Attachments in a draft keep their metadata plus a bounded slice of text.
 local MAX_ATTACHMENT_TEXT = 2000
+-- Diagnostics have no other usable content: `block` is not persisted, so their
+-- text is what rebuilds it at send time. They are still clipped, at a much
+-- larger bound, to keep `drafts.json` from growing by whole LSP dumps.
+local MAX_DIAGNOSTICS_TEXT = 64 * 1024
 local MAX_DRAFT_ATTACHMENTS = 20
 local cached_path, cached_store, cached_stamp, dirty, timer
 local epoch = 0
@@ -222,11 +226,17 @@ local function trim_attachments(attachments)
         end
       end
       -- Text content is what makes attachments large; a draft only needs the
-      -- reference so the composer can show a chip again.
+      -- reference so the composer can show a chip again. Diagnostics are the
+      -- exception: their content lives only here, so it must be rebuildable.
       local text = att.text
       if type(text) == "string" then
-        copy.text = memory.clip(text, MAX_ATTACHMENT_TEXT)
-        copy.text_truncated = #text > MAX_ATTACHMENT_TEXT
+        if att.kind == "diagnostics" then
+          copy.text = memory.clip(text, MAX_DIAGNOSTICS_TEXT)
+          copy.text_truncated = #text > MAX_DIAGNOSTICS_TEXT
+        else
+          copy.text = memory.clip(text, MAX_ATTACHMENT_TEXT)
+          copy.text_truncated = #text > MAX_ATTACHMENT_TEXT
+        end
       end
       out[#out + 1] = copy
     end

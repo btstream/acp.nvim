@@ -383,15 +383,26 @@ end
 ---Returns false when the error is not an auth error, so callers can keep their
 ---normal error path.
 ---@param err any
----@param opts {retry: fun()|nil, methods: table[]|nil}|nil
+---@param opts {retry: fun()|nil, methods: table[]|nil, pending: fun(): boolean}|nil
 ---@return boolean handled
 function Auth:require(err, opts)
   if not M.is_auth_error(err) then
     return false
   end
+  local retry = opts and opts.retry or nil
+  -- A login already in flight (or a parked retry waiting for it) must not be
+  -- doubled: a second terminal would be torn down by the first one's restart
+  -- and its retry would overwrite the earlier message. Park behind it instead.
+  if self.running or (opts and opts.pending and opts.pending()) then
+    self.notify("a login is already in progress", vim.log.levels.INFO)
+    if retry then
+      retry()
+    end
+    return true
+  end
   local methods = (opts and opts.methods) or M.methods_from(err) or self:methods()
   self.notify("This agent requires a login", vim.log.levels.WARN)
-  return self:login(methods, opts and opts.retry or nil)
+  return self:login(methods, retry)
 end
 
 ---Log out, when the agent declares support.

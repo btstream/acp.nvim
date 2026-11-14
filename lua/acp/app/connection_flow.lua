@@ -8,7 +8,7 @@ local presenter = require("acp.app.presenter")
 local M = {}
 
 ---@param deps {state: fun(): table, config: fun(): table, notify: fun(message: string, level: integer|nil),
----  connect: fun(), open: fun(), setup: fun(opts: table, action: table|nil)}
+---  connect: fun(), open: fun(), setup: fun(opts: table, action: table|nil), dispatch: fun(session: table)|nil}
 ---@return table
 function M.new(deps)
   return setmetatable({ deps = deps }, { __index = M })
@@ -22,14 +22,48 @@ function M:notify(message, level)
   return self.deps.notify(message, level)
 end
 
----Send a message that was waiting for the session to come back after a login.
+---Handle a parked retry that could not be delivered: the queue behind it must
+---not stay stuck forever. The message itself has no user block yet when it is
+---parked, so it cannot be restored into the queue; tell the user instead.
 ---
----The message is kept until it is actually accepted: after a terminal login the
----session is replayed first, and sending during a replay is refused.
+---`retry_now` is set when the connection is up and only the session was slow
+---(deadline). During a teardown/rebuild the connection is not usable yet, so
+---the caller only notifies and leaves the queue for the next turn.
+---@param session_id string
+---@param retry_now boolean
+function M:abandon_parked(session_id, retry_now)
+  local S = self:state()
+  local session = S.sess.runtime and S.sess.runtime.sessions[session_id]
+  local queued = session and #session.queue or 0
+  if queued > 0 then
+    self:notify(
+      string.format("logged in; %d queued message(s) are still waiting and were not replayed", queued),
+      vim.log.levels.WARN
+    )
+  else
+    self:notify("logged in; send the message again", vim.log.levels.INFO)
+  end
+  local auth = S.view.auth
+  if
+    retry_now
+    and self.deps.dispatch
+    and session
+    and session.status == "idle"
+    and S.conn.phase == "ready"
+    and not (auth and auth:is_running())
+  then
+    self.deps.dispatch(session)
+  end
+end
+
+---Send the first message that was waiting for the session to come back after a login.
+---
+---The messages are kept until each is actually accepted: after a terminal login
+---the session is replayed first, and sending during a replay is refused.
 ---@return boolean sent
 function M:flush_auth_retry()
   local S = self:state()
-  local pending = S.conn.pending_auth_retry
+  local pending = S.conn.pending_auth_retries and S.conn.pending_auth_retries[1]
   if not pending then
     return false
   end
@@ -41,31 +75,39 @@ function M:flush_auth_retry()
     or session.needs_load
     or session.status ~= "idle"
     or session.prompt_task
-    or #session.queue > 0
     or (runtime and runtime.replays[pending.session_id])
   then
     if pending.deadline and vim.uv.now() > pending.deadline then
-      S.conn.pending_auth_retry = nil
-      self:notify("logged in; send the message again", vim.log.levels.INFO)
+      table.remove(S.conn.pending_auth_retries, 1)
+      if #S.conn.pending_auth_retries > 0 then
+        self:schedule_auth_retry()
+      else
+        self:abandon_parked(pending.session_id, true)
+      end
     end
     return false
   end
+  -- A queued message must not go first: the retry is the one that already
+  -- failed once, and the queue is only valid now that the login finished.
   if S.sess.prompts:send(session, pending.text, pending.attachments, nil, pending.retrying ~= false) then
-    S.conn.pending_auth_retry = nil
+    table.remove(S.conn.pending_auth_retries, 1)
+    if #S.conn.pending_auth_retries > 0 then
+      self:schedule_auth_retry()
+    end
     return true
   end
   return false
 end
 
----Poll for a session that can accept the parked message.
+---Poll for a session that can accept the parked messages.
 function M:schedule_auth_retry()
   local S = self:state()
-  if not S.conn.pending_auth_retry or S.conn.auth_retry_timer then
+  if not (S.conn.pending_auth_retries and S.conn.pending_auth_retries[1]) or S.conn.auth_retry_timer then
     return
   end
   S.conn.auth_retry_timer = vim.defer_fn(function()
     S.conn.auth_retry_timer = nil
-    local pending = S.conn.pending_auth_retry
+    local pending = S.conn.pending_auth_retries and S.conn.pending_auth_retries[1]
     if not pending then
       return
     end
@@ -73,21 +115,26 @@ function M:schedule_auth_retry()
       return
     end
     if vim.uv.now() > (pending.deadline or 0) then
-      S.conn.pending_auth_retry = nil
-      self:notify("logged in; send the message again", vim.log.levels.INFO)
+      table.remove(S.conn.pending_auth_retries, 1)
+      if #S.conn.pending_auth_retries > 0 then
+        self:schedule_auth_retry()
+      else
+        self:abandon_parked(pending.session_id, true)
+      end
       return
     end
     self:schedule_auth_retry()
   end, 200)
 end
 
----Park a message for `flush_auth_retry`, replacing any older one.
+---Park a message for `flush_auth_retry`, keeping older ones in order.
 ---@param session_id string
 ---@param text string
 ---@param attachments table[]
 function M:park_for_retry(session_id, text, attachments)
   local S = self:state()
-  S.conn.pending_auth_retry = {
+  S.conn.pending_auth_retries = S.conn.pending_auth_retries or {}
+  S.conn.pending_auth_retries[#S.conn.pending_auth_retries + 1] = {
     session_id = session_id,
     text = text,
     attachments = attachments,

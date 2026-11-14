@@ -32,7 +32,7 @@ local FLAT = {
   events = { "conn", "events" },
   replaying = { "conn", "replaying" },
   creating_session = { "conn", "creating_session" },
-  pending_auth_retry = { "conn", "pending_auth_retry" },
+  pending_auth_retries = { "conn", "pending_auth_retries" },
   auth_after_ready = { "conn", "auth_after_ready" },
   auth_retry_timer = { "conn", "auth_retry_timer" },
   -- session store
@@ -129,7 +129,7 @@ function M.new()
   conn.phase = "stopped" -- stopped | starting | ready | disconnected
   conn.replaying = false
   conn.creating_session = false
-  conn.pending_auth_retry = nil
+  conn.pending_auth_retries = nil
   conn.auth_after_ready = nil
   conn.auth_retry_timer = nil
   sess.all = {}

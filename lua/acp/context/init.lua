@@ -365,6 +365,28 @@ function M.block(att, config, opts)
     return att.block
   end
 
+  -- A restored draft drops `block` to keep the file small; diagnostics can be
+  -- rebuilt from their text, but only when that text itself survived intact.
+  if att.kind == "diagnostics" then
+    if att.text_truncated then
+      return nil,
+        (att.label or "diagnostics")
+          .. " was restored from a saved draft with truncated text; attach the diagnostics again"
+    end
+    if type(att.text) ~= "string" or att.text == "" then
+      return nil, (att.label or "diagnostics") .. " lost its content in the saved draft; run :Acp diagnostics again"
+    end
+    return { type = "text", text = att.text }
+  end
+
+  if att.text_truncated and (att.kind == "selection" or att.kind == "file") then
+    -- Sending the first 2000 bytes would look complete while silently missing
+    -- most of the selection; the draft is kept so the user can re-attach it.
+    return nil,
+      (att.label or att.kind)
+        .. " was restored from a saved draft with truncated text; attach it again or resend the full text"
+  end
+
   if att.kind == "selection" or (att.kind == "file" and att.text) then
     -- The text travels with the message either way; only the envelope changes.
     if embeds() then
