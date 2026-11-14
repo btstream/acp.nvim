@@ -31,18 +31,21 @@ end
 ---the caller only notifies and leaves the queue for the next turn.
 ---@param session_id string
 ---@param retry_now boolean
-function M:abandon_parked(session_id, retry_now)
+---@param reason "timeout"|"reset"
+function M:abandon_parked(session_id, retry_now, reason)
   local S = self:state()
   local session = S.sess.runtime and S.sess.runtime.sessions[session_id]
   local queued = session and #session.queue or 0
-  if queued > 0 then
-    self:notify(
-      string.format("logged in; %d queued message(s) are still waiting and were not replayed", queued),
-      vim.log.levels.WARN
-    )
+  local message
+  if reason == "reset" then
+    message = "the connection was reset before a parked message could be replayed; resend it"
   else
-    self:notify("logged in; send the message again", vim.log.levels.INFO)
+    message = "logged in, but a parked message could not be replayed in time; resend it"
   end
+  if queued > 0 then
+    message = message .. string.format(" (%d queued message(s) are still waiting)", queued)
+  end
+  self:notify(message, vim.log.levels.WARN)
   local auth = S.view.auth
   if
     retry_now
@@ -82,7 +85,7 @@ function M:flush_auth_retry()
       if #S.conn.pending_auth_retries > 0 then
         self:schedule_auth_retry()
       else
-        self:abandon_parked(pending.session_id, true)
+        self:abandon_parked(pending.session_id, true, "timeout")
       end
     end
     return false
@@ -119,7 +122,7 @@ function M:schedule_auth_retry()
       if #S.conn.pending_auth_retries > 0 then
         self:schedule_auth_retry()
       else
-        self:abandon_parked(pending.session_id, true)
+        self:abandon_parked(pending.session_id, true, "timeout")
       end
       return
     end

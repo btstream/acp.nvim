@@ -115,8 +115,12 @@ function M:invalidate_operations()
   local dropped = S.conn.pending_auth_retries
   S.conn.pending_auth_retries, S.conn.auth_after_ready = nil, nil
   if dropped and S.conn.flow then
+    local seen = {}
     for _, pending in ipairs(dropped) do
-      S.conn.flow:abandon_parked(pending.session_id, false)
+      if not seen[pending.session_id] then
+        seen[pending.session_id] = true
+        S.conn.flow:abandon_parked(pending.session_id, false, "reset")
+      end
     end
   end
 end

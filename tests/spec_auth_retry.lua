@@ -205,7 +205,124 @@ return function(t)
       vim.notify = notify
       t.truthy(sent, "the queued message stayed stuck after the parked retry timed out")
       t.eq("queued after timeout", session.blocks[1] and session.blocks[1].text)
-      t.match("queued message", table.concat(notes, "\n"))
+      local joined = table.concat(notes, "\n")
+      t.match("queued message", joined)
+      t.match("resend", joined)
+      t.match("in time", joined)
+      vim.fn.delete(marker)
+      controller.hide()
+    end)
+
+    t.it("explains a connection reset and notifies once per session", function()
+      vim.fn.writefile({}, marker)
+      local S = setup()
+      vim.wait(10000, function()
+        return S.sess.current ~= nil
+      end, 20)
+      t.truthy(S.sess.current, "session was not created")
+      vim.fn.delete(marker)
+      local session = S.sess.current
+      t.truthy(S.sess.runtime:enqueue(session, "queued after reset", {}))
+      S.conn.flow:park_for_retry(session.id, "lost one", {})
+      S.conn.flow:park_for_retry(session.id, "lost two", {})
+      local notes = {}
+      local notify = vim.notify
+      vim.notify = function(message)
+        notes[#notes + 1] = tostring(message)
+      end
+      local ops = require("acp.app.runtime_ops").new({
+        state = function()
+          return S
+        end,
+        send = function() end,
+        generation = function()
+          return 1
+        end,
+        reset_operations = function() end,
+      })
+      ops:invalidate_operations()
+      vim.notify = notify
+      t.eq(nil, S.conn.pending_auth_retries)
+      t.eq(1, #notes, "each dropped message notified separately")
+      t.match("connection was reset", notes[1])
+      t.match("resend", notes[1])
+      t.match("queued message", notes[1])
+      t.eq(1, #session.queue, "the queue was not kept for a manual resend")
+      controller.setup({}, { discard_queued = true })
+    end)
+
+    t.it("resets the login attempt counter after a successful retry", function()
+      vim.fn.writefile({}, marker)
+      local S = setup()
+      vim.wait(10000, function()
+        return S.sess.current ~= nil
+      end, 20)
+      t.truthy(S.sess.current, "session was not created")
+      vim.fn.delete(marker)
+      local runs = {}
+      S.view.auth.open_terminal = function(command, opts)
+        runs[#runs + 1] = { command = command, opts = opts }
+        return 1
+      end
+      controller.submit("@auth", {})
+      vim.wait(6000, function()
+        return #runs > 0
+      end, 20)
+      t.eq(1, #runs)
+      vim.fn.writefile({}, marker)
+      runs[1].opts.on_exit(0)
+      local done = vim.wait(15000, function()
+        local text = ""
+        for _, block in ipairs(S.sess.current and S.sess.current.blocks or {}) do
+          if block.kind == "agent" then
+            text = text .. (block.text or "")
+          end
+        end
+        return text:find("RESULT", 1, true) ~= nil and S.view.auth.attempts == 0
+      end, 20)
+      t.truthy(done, "the retried turn did not complete")
+      t.eq(0, S.view.auth.attempts, "the consecutive-login counter was not reset")
+      vim.fn.delete(marker)
+      controller.hide()
+    end)
+
+    t.it("resets the counter after a login triggered outside a prompt", function()
+      vim.fn.writefile({}, marker)
+      local S = setup()
+      vim.wait(10000, function()
+        return S.sess.current ~= nil
+      end, 20)
+      t.truthy(S.sess.current, "session was not created")
+      local runs = {}
+      S.view.auth.open_terminal = function(command, opts)
+        runs[#runs + 1] = { command = command, opts = opts }
+        return 1
+      end
+      -- A login started by something other than a failed prompt: there is no
+      -- message to replay when it finishes.
+      S.view.auth:run({ id = "terminal-login", type = "terminal" }, nil)
+      t.eq(1, #runs)
+      runs[1].opts.on_exit(0)
+      t.eq(1, S.view.auth.attempts)
+      vim.wait(10000, function()
+        local live = S.sess.current
+        return S.conn.phase == "ready"
+          and live
+          and live.status == "idle"
+          and not live.needs_load
+          and not S.sess.runtime.replays[live.id]
+      end, 20)
+      controller.submit("plain", {})
+      local done = vim.wait(15000, function()
+        local live = S.sess.current
+        return live ~= nil and live.status == "idle" and S.view.auth.attempts == 0 and count(live, "user") >= 1
+      end, 20)
+      t.truthy(done, "a normal successful turn did not reset the counter " .. vim.inspect({
+        attempts = S.view.auth.attempts,
+        status = S.sess.current and S.sess.current.status,
+        user = S.sess.current and count(S.sess.current, "user"),
+        queue = S.sess.current and #S.sess.current.queue,
+      }))
       vim.fn.delete(marker)
       controller.hide()
     end)

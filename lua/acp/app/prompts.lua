@@ -247,6 +247,15 @@ function Prompts:send(session, text, attachments, hooks, retrying)
       end
       runtime:finish_turn(session, turn, "error")
     else
+      -- Any successful turn proves the credentials work, whether it was a
+      -- parked retry or a normal turn after a login triggered elsewhere (a
+      -- connection or session-creation failure has no message to replay). The
+      -- counter is what bounds the automatic login loop, so it must not stay
+      -- at the limit for the rest of the session.
+      local auth = self.get_auth and self.get_auth()
+      if auth then
+        auth:reset()
+      end
       runtime:finish_turn(session, turn, result and result.stopReason or "end_turn")
     end
     if hooks and hooks.on_result then
