@@ -105,7 +105,10 @@ return function(t)
       -- A pointer is written after the receipt, and the phases are visible.
       local phases = {}
       for _, event in ipairs(env.progress) do
-        phases[#phases + 1] = event.phase
+        -- Output lines are a separate stream; only phase changes matter here.
+        if event.phase ~= "output" then
+          phases[#phases + 1] = event.phase
+        end
       end
       t.eq({ "checking", "installing", "verifying", "committed" }, phases)
       env.cleanup()

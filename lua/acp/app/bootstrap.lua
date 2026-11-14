@@ -48,7 +48,11 @@ function M.build(ctx, opts, action)
   -- Provenance comes from the raw input, before `merge` erases which fields the
   -- user actually wrote. Without it a preset command is indistinguishable from
   -- an override.
-  local launch_origin = Resolve.provenance(opts)
+  -- A reconfiguration from an already merged config (agent switch) carries the
+  -- provenance computed from the original input; recomputing it from the merged
+  -- table would mark every preset command as a user override.
+  local launch_origin = type(opts) == "table" and type(opts.launch_origin) == "table" and opts.launch_origin
+    or Resolve.provenance(opts)
   local merged = config_mod.merge(config_mod.defaults, opts or {})
   merged.launch_origin = launch_origin
   local ok, err = pcall(config_mod.validate, merged)
@@ -453,6 +457,17 @@ function M.build(ctx, opts, action)
         return
       end
       local message = type(err) == "table" and (err.message or vim.inspect(err)) or tostring(err)
+      -- The common first-run failure: the preset command is not on PATH and
+      -- the adapter has not been installed by the manager either.
+      local id = merged.agent
+      if
+        message:find("not executable", 1, true)
+        and require("acp.manager.registry").package_of(id)
+        and S.view.agent_manager_service
+        and S.view.agent_manager_service:store():state(id).status == "not_installed"
+      then
+        message = message .. string.format(" — install it with :Acp install %s (or press i in :Acp agents)", id)
+      end
       notify("failed to start agent: " .. message, vim.log.levels.ERROR)
     end,
     runtime_lost = function()
@@ -480,6 +495,7 @@ function M.build(ctx, opts, action)
   -- The manager service and its window. The window is created lazily on first
   -- open, so a user who never runs `:Acp agents` pays nothing for it.
   local manager_presenter = require("acp.app.presenter")
+  local previous_service = S.view.agent_manager_service
   S.view.agent_manager_service = AgentManager.new({
     config = cfg,
     notify = notify,
@@ -493,6 +509,20 @@ function M.build(ctx, opts, action)
       end
     end,
   })
+  -- A reconfiguration (switching agents) must not forget installs still
+  -- running: share the per-agent tables so their callbacks land in the window.
+  if previous_service then
+    S.view.agent_manager_service:adopt(previous_service)
+  end
+  local wanted = type(merged.manager) == "table" and merged.manager.ensure_installed or nil
+  if type(wanted) == "table" and #wanted > 0 then
+    local service = S.view.agent_manager_service
+    vim.schedule(function()
+      if S.view.agent_manager_service == service then
+        service:ensure_installed(wanted)
+      end
+    end)
+  end
   S.view.agent_manager = AgentManagerUI.new({
     manager = S.view.agent_manager_service,
     config = cfg,

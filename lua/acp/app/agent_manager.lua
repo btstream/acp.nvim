@@ -33,10 +33,31 @@ function M.new(opts)
     on_changed = opts.on_changed,
     injected = { store = opts.store, locks = opts.locks, npm = opts.npm },
     confirm = opts.confirm,
-    task = nil,
-    log_tail = {},
+    -- Per-agent state, Mason-style: several agents may install at once, each
+    -- with its own phase and live log. `progress` is the latest event overall.
+    tasks = {},
+    outcome = {},
+    logs = {},
+    latest = {},
+    checking = {},
   }, Manager)
   return self
+end
+
+---Take over the per-agent state of a service replaced by a reconfiguration.
+---
+---The tables are shared, not copied: an install started by the old service
+---still finishes through its own callbacks and must show up here.
+---@param previous table
+function Manager:adopt(previous)
+  for _, key in ipairs({ "tasks", "outcome", "logs", "latest", "checking" }) do
+    if type(previous[key]) == "table" then
+      self[key] = previous[key]
+    end
+  end
+  self.checked_at = previous.checked_at
+  local old_changed = previous.on_changed
+  previous.on_changed = self.on_changed or old_changed
 end
 
 ---The store for the current config, rebuilt after a reconfiguration.
@@ -110,10 +131,31 @@ end
 function Manager:_spawn(argv, opts, cb)
   local limit = opts.max_log_bytes or 1024 * 1024
   local collected = { stdout = {}, stderr = {}, bytes = 0 }
+  local on_output = opts.on_output
+  local partial = { stdout = "", stderr = "" }
+  local function emit(stream, data)
+    if not on_output then
+      return
+    end
+    local text = partial[stream] .. data
+    local lines = vim.split(text, "\n", { plain = true })
+    partial[stream] = table.remove(lines)
+    if #lines > 0 then
+      vim.schedule(function()
+        for _, line in ipairs(lines) do
+          line = line:gsub("\r", "")
+          if line ~= "" then
+            pcall(on_output, line)
+          end
+        end
+      end)
+    end
+  end
   local function add(stream, data)
     if type(data) ~= "string" or data == "" then
       return
     end
+    emit(stream, data)
     if collected.bytes >= limit then
       return
     end
@@ -141,6 +183,13 @@ function Manager:_spawn(argv, opts, cb)
     -- functions (including `vim.fn.delete`) are forbidden. Everything after an
     -- install needs those, so the result is handed back on the main loop.
     vim.schedule(function()
+      if on_output then
+        for _, rest in pairs(partial) do
+          if rest ~= "" then
+            pcall(on_output, (rest:gsub("\r", "")))
+          end
+        end
+      end
       local stdout = table.concat(collected.stdout)
       local stderr = table.concat(collected.stderr)
       local tail = stderr ~= "" and stderr or stdout
@@ -177,8 +226,7 @@ function Manager:installer()
     end,
     notify = self.notify,
     on_progress = function(event)
-      self.progress = event
-      self:changed()
+      self:record(event)
     end,
   })
 end
@@ -189,10 +237,76 @@ function Manager:changed()
   end
 end
 
----Whether an install/update/uninstall is in flight.
+local MAX_LOG_LINES = 200
+
+---Record one installer event: phase changes and live output lines.
+---@param event table
+function Manager:record(event)
+  local id = event.id
+  if not id then
+    return
+  end
+  if event.phase == "output" then
+    local log = self.logs[id] or {}
+    self.logs[id] = log
+    log[#log + 1] = event.line
+    if #log > MAX_LOG_LINES then
+      table.remove(log, 1)
+    end
+  else
+    local task = self.tasks[id]
+    if task then
+      task.phase = event.phase
+      task.version = event.version or task.version
+    end
+    self.progress = event
+  end
+  self:changed()
+end
+
+---Whether an operation is in flight, for one agent or for any.
+---@param id string|nil
 ---@return boolean
-function Manager:busy()
-  return self.task ~= nil
+function Manager:busy(id)
+  if id then
+    return self.tasks[id] ~= nil
+  end
+  return next(self.tasks) ~= nil
+end
+
+---The in-flight task for one agent, if any.
+---@param id string
+---@return table|nil
+function Manager:task_of(id)
+  return self.tasks[id]
+end
+
+---Start a task, refusing a second one for the same agent.
+---@param id string
+---@param action string
+---@return boolean
+function Manager:begin(id, action)
+  if self.tasks[id] then
+    self.notify(string.format("%s: %s is already running", id, self.tasks[id].action), vim.log.levels.WARN)
+    return false
+  end
+  self.tasks[id] = { id = id, action = action, phase = "checking", started = vim.uv.now() }
+  self.outcome[id] = nil
+  self.logs[id] = {}
+  self.progress = { id = id, phase = "checking", action = action }
+  self:changed()
+  return true
+end
+
+---Finish a task and remember how it ended, for the window.
+---@param id string
+---@param outcome table
+function Manager:conclude(id, outcome)
+  self.tasks[id] = nil
+  outcome.id = id
+  self.outcome[id] = outcome
+  self.progress = outcome
+  self:changed()
 end
 
 ---Every agent with its persistent state and launch source.
@@ -226,6 +340,14 @@ function Manager:list()
       available = description.available,
       resolve_error = description.error,
       current = cfg.agent == id,
+      task = self.tasks[id],
+      outcome = self.outcome[id],
+      log = self.logs[id],
+      latest = self.latest[id],
+      outdated = state.status == "installed"
+        and self.latest[id] ~= nil
+        and state.install ~= nil
+        and self.latest[id] ~= state.install.version,
     }
   end
   return rows
@@ -238,6 +360,14 @@ end
 ---@param details table
 ---@param cb fun(accepted: boolean)
 function Manager:ask(details, cb)
+  -- Like Mason, pressing install is the decision; a confirmation dialog only
+  -- appears when `manager.confirm = true`. Tests inject their own.
+  local cfg = self.config()
+  local wants_confirm = type(cfg.manager) == "table" and cfg.manager.confirm == true
+  if not self.confirm and not wants_confirm then
+    cb(true)
+    return
+  end
   if self.confirm then
     local ok, accepted = pcall(self.confirm, details, cb)
     if ok then
@@ -289,17 +419,14 @@ end
 ---Install or update one agent.
 ---@param id string
 ---@param opts {version?: string, action?: string}|nil
+---@return boolean started
 function Manager:install(id, opts)
   opts = opts or {}
-  if self:busy() then
-    self.notify("an agent operation is already running", vim.log.levels.WARN)
+  local action = opts.action or "install"
+  if not self:begin(id, action) then
     return false
   end
   local installer = self:installer()
-  local action = opts.action or "install"
-  self.task = { id = id, action = action }
-  self.progress = { id = id, phase = "checking", action = action }
-  self:changed()
   installer:install(id, {
     version = opts.version,
     action = action,
@@ -307,18 +434,29 @@ function Manager:install(id, opts)
       self:ask(details, answer)
     end,
   }, function(ok, value)
-    self.task = nil
     if ok then
-      self.progress = { id = id, phase = "done", action = action }
-      self.notify(string.format("%s %s installed", id, value.version), vim.log.levels.INFO)
+      if value.unchanged then
+        self:conclude(id, { phase = "unchanged", action = action, version = value.version })
+        self.notify(string.format("%s is already up to date (%s)", id, value.version), vim.log.levels.INFO)
+      else
+        self.latest[id] = self.latest[id] or value.version
+        self:conclude(id, { phase = "done", action = action, version = value.version })
+        self.notify(string.format("%s %s installed", id, value.version), vim.log.levels.INFO)
+      end
     elseif type(value) == "table" and value.cancelled then
-      self.progress = { id = id, phase = "cancelled", action = action }
+      self:conclude(id, { phase = "cancelled", action = action })
     else
       local message = type(value) == "table" and (value.message or vim.inspect(value)) or tostring(value)
-      self.progress = { id = id, phase = "failed", action = action, message = message }
+      if type(value) == "table" and type(value.log) == "string" and value.log ~= "" then
+        local log = self.logs[id] or {}
+        self.logs[id] = log
+        for _, line in ipairs(vim.split(value.log, "\n", { trimempty = true })) do
+          log[#log + 1] = line
+        end
+      end
+      self:conclude(id, { phase = "failed", action = action, message = message })
       self.notify(string.format("%s %s failed: %s", action, id, message), vim.log.levels.ERROR)
     end
-    self:changed()
   end)
   return true
 end
@@ -326,39 +464,122 @@ end
 ---Update one agent to the latest (or a given) version.
 ---@param id string
 ---@param opts {version?: string}|nil
+---@return boolean started
 function Manager:update(id, opts)
   opts = opts or {}
   opts.action = "update"
   return self:install(id, opts)
 end
 
+---Update every managed install that has a newer version.
+---
+---Without a prior check every installed agent is updated; the installer skips
+---those already at the latest version.
+---@return integer started
+function Manager:update_all()
+  local started = 0
+  for _, row in ipairs(self:list()) do
+    if row.status == "installed" and (row.latest == nil or row.outdated) and not self.tasks[row.id] then
+      if self:update(row.id) then
+        started = started + 1
+      end
+    end
+  end
+  if started == 0 then
+    self.notify("every managed agent is up to date", vim.log.levels.INFO)
+  end
+  return started
+end
+
+---Ask npm for the latest version of every managed install.
+---
+---Read-only: nothing is installed. Results land in `latest` and the window
+---marks outdated rows.
+---@param cb fun()|nil called once every query has answered
+function Manager:check_outdated(cb)
+  local store = self:store()
+  local pending = 0
+  local function done()
+    pending = pending - 1
+    if pending == 0 then
+      self:changed()
+      if cb then
+        cb()
+      end
+    end
+  end
+  local cfg = self.config()
+  local manager_cfg = cfg.manager or {}
+  for _, id in ipairs(Registry.ids()) do
+    local package = Registry.package_of(id)
+    if package and store:state(id).status == "installed" and not self.checking[id] then
+      pending = pending + 1
+      self.checking[id] = true
+      self:npm():resolve_version(package, "latest", {
+        cwd = store:root(),
+        timeout = math.min(manager_cfg.install_timeout or 300000, 60000),
+        max_log_bytes = 64 * 1024,
+      }, function(ok, version)
+        self.checking[id] = nil
+        if ok then
+          self.latest[id] = version
+        end
+        done()
+      end)
+    end
+  end
+  self.checked_at = vim.uv.now()
+  if pending == 0 and cb then
+    cb()
+  end
+end
+
+---Whether a latest-version check is running.
+---@return boolean
+function Manager:is_checking()
+  return next(self.checking) ~= nil
+end
+
+---Install every agent in `ids` that is not installed yet.
+---@param ids string[]
+---@return integer started
+function Manager:ensure_installed(ids)
+  local started = 0
+  local store = self:store()
+  for _, id in ipairs(ids or {}) do
+    if Registry.package_of(id) and store:state(id).status == "not_installed" and not self.tasks[id] then
+      if self:install(id) then
+        started = started + 1
+      end
+    end
+  end
+  return started
+end
+
 ---Remove the manager-owned copy of one agent.
 ---@param id string
+---@return boolean started
 function Manager:uninstall(id)
-  if self:busy() then
-    self.notify("an agent operation is already running", vim.log.levels.WARN)
+  if not self:begin(id, "uninstall") then
     return false
   end
   local installer = self:installer()
-  self.task = { id = id, action = "uninstall" }
-  self:changed()
   installer:uninstall(id, {
     confirm = function(details, answer)
       self:ask(details, answer)
     end,
   }, function(ok, value)
-    self.task = nil
     if ok then
-      self.progress = { id = id, phase = "removed", action = "uninstall" }
+      self.latest[id] = nil
+      self:conclude(id, { phase = "removed", action = "uninstall" })
       self.notify(id .. " uninstalled", vim.log.levels.INFO)
     elseif type(value) == "table" and value.cancelled then
-      self.progress = { id = id, phase = "cancelled", action = "uninstall" }
+      self:conclude(id, { phase = "cancelled", action = "uninstall" })
     else
       local message = type(value) == "table" and (value.message or vim.inspect(value)) or tostring(value)
-      self.progress = { id = id, phase = "failed", action = "uninstall", message = message }
+      self:conclude(id, { phase = "failed", action = "uninstall", message = message })
       self.notify("uninstall failed: " .. message, vim.log.levels.ERROR)
     end
-    self:changed()
   end)
   return true
 end

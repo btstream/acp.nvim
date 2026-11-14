@@ -32,7 +32,7 @@ acp.nvim 是一个 Neovim 原生的 Agent Client Protocol 客户端。
     config       汇总切换全部会话选项（含布尔开关与思考级别）
     agent        切换 Agent；带名称时直接切换
     agents       打开 Agent 管理界面：安装 / 更新 / 卸载 / 切换
-    install      安装托管 Agent：:Acp install <id> [version]
+    install      安装托管 Agent：:Acp install <id> [version]（不带参数打开管理界面）
     update       更新托管 Agent：:Acp update <id> [version]
     uninstall    移除托管副本：:Acp uninstall <id>
     reconnect    重连并恢复当前会话
@@ -278,6 +278,8 @@ picker、会话浏览器等自绘浮窗内部的按键不在 keymaps 管辖范�
         npm = "npm",
         install_timeout = 300000,
         max_log_bytes = 1024 * 1024,
+        confirm = false,     -- true：安装/卸载前确认
+        ensure_installed = {},  -- 启动后自动安装缺失的 Agent
       },
       mcp_servers = {},   -- { { type = "stdio", command = "..." }, ... } 见 |acp-mcp-servers|
       capabilities = {
@@ -412,14 +414,30 @@ ACP 的两个窗口默认锁定到自己的 buffer（'winfixbuf'），:edit、:b
 
 不需要 npm install -g：Acp.nvim 可以把 ACP adapter 装到 Neovim 数据目录。
 
-    :Acp agents              管理界面：状态、安装、更新、卸载、切换
-    :Acp install claude      安装（先显示包名、版本与目标目录，确认后开始）
+    :Acp agents              管理界面（类似 :Mason）
+    :Acp install claude      开始安装并打开管理界面显示进度
     :Acp install pi 0.4.0    安装指定精确版本
-    :Acp update claude       更新已安装副本
+    :Acp update [claude]     更新一个；不带参数时更新全部有新版本的
     :Acp uninstall pi        移除托管副本
 
-安装位置：stdpath("data")/acp/agents/<id>/releases/<版本>/。
-该目录与插件、项目、全局 npm 目录分开。安装完成不会自动切换 Agent、开会话或登录。
+管理界面按状态分组（Running / Installed / Available / Not managed），
+按键作用于光标所在的 Agent。安装在后台进行，可同时装多个，npm 输出实时
+显示在该行下方；打开时在后台检查新版本（只运行 npm view）。
+
+    i       安装（已安装时重新安装）
+    u       更新；已是最新版时什么都不做
+    U       更新全部有新版本的
+    X       卸载托管副本
+    C       检查新版本
+    <CR>    展开/收起详情
+    s       把聊天切换到这个 Agent
+    g?      帮助
+    q       关闭
+
+安装位置：stdpath("data")/acp/agents/<id>/releases/<版本>/。每个 Agent 只保留
+一个版本，更新成功后旧版本被删除（正在使用的除外）。安装完成不会自动切换
+Agent、开会话或登录。manager.ensure_installed = { "claude" } 可在启动后自动
+安装缺失的 Agent；manager.confirm = true 时安装/卸载前会再弹确认框。
 
 首版托管：
     claude   @agentclientprotocol/claude-agent-acp   Node.js 22+

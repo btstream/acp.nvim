@@ -133,7 +133,6 @@ return function(t)
       local spec, err = Resolve.resolve(cfg, "pi", cfg.launch_origin)
       t.falsy(spec)
       t.match("both", err)
-      vim.fn.delete(Resolve.manager_root(cfg), "rf")
     end)
 
     t.it("external never consults the manager", function()
@@ -229,6 +228,24 @@ return function(t)
       local spec = Auth.terminal_spec({ args = { "--login" } }, { command = "npx", args = { "-y", "pkg" } })
       t.eq("npx", spec.command)
       t.eq({ "-y", "pkg", "--login" }, spec.args)
+    end)
+  end)
+
+  t.describe("agent switch keeps provenance", function()
+    t.it("a re-setup from the merged config does not turn presets into overrides", function()
+      local store, root = store_with({ "pi" })
+      local controller = require("acp.controller")
+      controller.setup({ agent = "opencode", manager = { root = root } })
+      local first = Config.current
+      t.eq(false, first.launch_origin.pi ~= nil and first.launch_origin.pi.command)
+      -- What pick_agent does: copy the merged config and change the agent.
+      local copy = vim.deepcopy(first)
+      copy.agent = "pi"
+      controller.setup(copy, { discard_queued = true })
+      local spec = assert(Resolve.resolve(Config.current, "pi", Config.current.launch_origin, store))
+      t.eq("managed", spec.source)
+      controller.setup({ agent = "opencode" }, { discard_queued = true })
+      vim.fn.delete(root, "rf")
     end)
   end)
 end

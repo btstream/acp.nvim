@@ -128,13 +128,116 @@ return function(t)
       vim.fn.delete(root, "rf")
     end)
 
-    t.it("notifies and refuses a second concurrent operation", function()
+    t.it("refuses a second operation for the same agent but not for another", function()
       local root = temp_root()
       local svc, _, notifications = service(root, { version = "1.0.0" })
-      svc.task = { id = "claude", action = "install" }
-      t.eq(false, svc:install("pi"))
+      svc.tasks.claude = { id = "claude", action = "install", phase = "installing" }
+      t.eq(false, svc:install("claude"))
       t.match("already running", notifications[1])
-      svc.task = nil
+      t.eq(true, svc:install("pi"))
+      t.eq("installed", svc:store():state("pi").status)
+      svc.tasks.claude = nil
+      vim.fn.delete(root, "rf")
+    end)
+
+    t.it("installs without a dialog unless manager.confirm is set", function()
+      local root = temp_root()
+      local cfg = config_for(root)
+      local asked = false
+      local svc = AgentManager.new({
+        config = function()
+          return cfg
+        end,
+        presenter = {
+          select = function()
+            asked = true
+          end,
+        },
+        npm = npm_mod.new({
+          run = fake.new({ version = "1.0.0" }).run,
+          node = function()
+            return "node"
+          end,
+          npm = function()
+            return "npm"
+          end,
+        }),
+      })
+      svc:install("pi")
+      t.eq(false, asked)
+      t.eq("installed", svc:store():state("pi").status)
+      cfg.manager.confirm = true
+      svc:uninstall("pi")
+      t.eq(true, asked)
+      vim.fn.delete(root, "rf")
+    end)
+
+    t.it("streams npm output into the per-agent log", function()
+      local root = temp_root()
+      local svc = service(root, { version = "1.0.0" })
+      svc:install("pi")
+      local log = table.concat(svc.logs.pi or {}, "\n")
+      t.match("%$ npm view", log)
+      t.match("%$ npm install", log)
+      vim.fn.delete(root, "rf")
+    end)
+
+    t.it("treats an update to the pinned version as a no-op", function()
+      local root = temp_root()
+      local svc = service(root, { version = "1.0.0" })
+      svc:install("pi")
+      local before = svc:store():state("pi").install_id
+      svc:update("pi")
+      t.eq("unchanged", svc.outcome.pi.phase)
+      t.eq(before, svc:store():state("pi").install_id)
+      vim.fn.delete(root, "rf")
+    end)
+
+    t.it("keeps a single release after an update", function()
+      local root = temp_root()
+      local svc = service(root, { version = "1.0.0" })
+      svc:install("pi")
+      svc:install("pi")
+      t.eq(1, #svc:store():list_install_ids("pi"))
+      vim.fn.delete(root, "rf")
+    end)
+
+    t.it("marks an install outdated after a version check", function()
+      local root = temp_root()
+      local cfg = config_for(root)
+      local runner = fake.new({ version = "1.0.0" })
+      local svc = AgentManager.new({
+        config = function()
+          return cfg
+        end,
+        presenter = {},
+        npm = npm_mod.new({
+          run = function(...)
+            return runner.run(...)
+          end,
+          node = function()
+            return "node"
+          end,
+          npm = function()
+            return "npm"
+          end,
+        }),
+      })
+      svc:install("pi")
+      runner = fake.new({ version = "2.0.0" })
+      local done = false
+      svc:check_outdated(function()
+        done = true
+      end)
+      t.truthy(done)
+      local row
+      for _, candidate in ipairs(svc:list()) do
+        if candidate.id == "pi" then
+          row = candidate
+        end
+      end
+      t.eq(true, row.outdated)
+      t.eq("2.0.0", row.latest)
       vim.fn.delete(root, "rf")
     end)
 
@@ -145,7 +248,7 @@ return function(t)
       end)
       svc:install("claude")
       t.eq("not_installed", svc:store():state("claude").status)
-      t.eq("cancelled", svc.progress.phase)
+      t.eq("cancelled", svc.outcome.claude.phase)
       vim.fn.delete(root, "rf")
     end)
 
@@ -153,8 +256,8 @@ return function(t)
       local root = temp_root()
       local svc, _, notifications = service(root, { version = "1.0.0", fail_install = true })
       svc:install("claude")
-      t.eq("failed", svc.progress.phase)
-      t.truthy(svc.progress.message)
+      t.eq("failed", svc.outcome.claude.phase)
+      t.truthy(svc.outcome.claude.message)
       local joined = table.concat(notifications, "\n")
       t.match("failed", joined)
       vim.fn.delete(root, "rf")
@@ -239,44 +342,61 @@ return function(t)
       return out
     end
 
-    t.it("renders one row per agent with its state", function()
-      local lines = AgentManagerUI.render(
-        rows_for({
-          claude = { status = "installed", source = "managed", install = { version = "1.2.3" } },
-          pi = { status = "not_installed" },
-        }),
-        nil,
-        "claude"
-      )
-      local text = table.concat(lines, "\n")
-      t.match("claude", text)
-      t.match("installed  1%.2%.3", text)
-      t.match("pi", text)
+    local function text_of(rows, opts)
+      return table.concat(AgentManagerUI.render(rows, opts).lines, "\n")
+    end
+
+    t.it("groups agents by state like Mason", function()
+      local rows = rows_for({
+        claude = { status = "installed", source = "managed", install = { version = "1.2.3" } },
+      })
+      rows[2].installable = true
+      local text = text_of(rows)
+      t.match("Installed %(1%)", text)
+      t.match("✓ claude 1%.2%.3", text)
+      t.match("Available %(1%)", text)
+      t.match("○ pi", text)
     end)
 
-    t.it("distinguishes a managed install from an external one", function()
-      local lines = AgentManagerUI.render(
-        rows_for({
-          claude = { status = "installed", source = "managed", install = { version = "1.0.0" } },
-          pi = { status = "not_installed", source = "external" },
-        }),
-        nil,
-        "claude"
-      )
-      local text = table.concat(lines, "\n")
-      t.match("managed  installed", text)
-      t.match("external", text)
+    t.it("maps every agent line back to its id", function()
+      local rows = rows_for({ claude = { status = "installed", source = "managed", install = { version = "1" } } })
+      local rendered = AgentManagerUI.render(rows, { expanded = { claude = true } })
+      local seen = {}
+      for lnum, id in pairs(rendered.ids) do
+        seen[id] = true
+        t.match(id == "claude" and "" or "", rendered.lines[lnum])
+      end
+      t.truthy(seen.claude and seen.pi)
     end)
 
-    t.it("shows the progress line while a task runs", function()
-      local lines = AgentManagerUI.render(rows_for({}), { id = "pi", phase = "installing", version = "2.0.0" }, "pi")
-      t.match("installing 2%.0%.0", table.concat(lines, "\n"))
+    t.it("shows a running task with its live log", function()
+      local rows = rows_for({})
+      rows[2].task = { action = "install", phase = "installing", version = "2.0.0" }
+      rows[2].log = { "$ npm install", "added 3 packages" }
+      local text = text_of(rows)
+      t.match("Running %(1%)", text)
+      t.match("installing 2%.0%.0", text)
+      t.match("added 3 packages", text)
+    end)
+
+    t.it("marks an outdated install with the newer version", function()
+      local rows = rows_for({ claude = { status = "installed", source = "managed", install = { version = "1.0.0" } } })
+      rows[1].outdated = true
+      rows[1].latest = "1.1.0"
+      t.match("1%.0%.0 → 1%.1%.0", text_of(rows))
     end)
 
     t.it("reports a broken install instead of calling it installed", function()
-      local lines =
-        AgentManagerUI.render(rows_for({ claude = { status = "broken", source = "managed" } }), nil, "claude")
-      t.match("broken", table.concat(lines, "\n"))
+      local text = text_of(rows_for({ claude = { status = "broken", source = "managed" } }))
+      t.match("✗ claude", text)
+      t.match("broken", text)
+    end)
+
+    t.it("shows a failure under the row", function()
+      local rows = rows_for({})
+      rows[1].installable = true
+      rows[1].outcome = { phase = "failed", action = "install", message = "E404 not found" }
+      t.match("E404 not found", text_of(rows))
     end)
 
     t.it("never opens a window until asked", function()

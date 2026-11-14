@@ -7,8 +7,76 @@ local function api()
   return mod
 end
 
-local function define(name, fn, desc, range)
-  pcall(vim.api.nvim_create_user_command, name, fn, { desc = "acp.nvim: " .. desc, nargs = "*", range = range })
+local SUBCOMMANDS = {
+  "open",
+  "hide",
+  "toggle",
+  "new",
+  "stop",
+  "reconnect",
+  "login",
+  "logout",
+  "agent",
+  "agents",
+  "install",
+  "update",
+  "uninstall",
+  "config",
+  "disconnect",
+  "permission",
+  "sessions",
+  "delete",
+  "model",
+  "mode",
+  "file",
+  "files",
+  "image",
+  "inline",
+  "inline-stop",
+  "inline-reset",
+  "diagnostics",
+}
+
+---Complete subcommands, and agent ids for the commands that take one.
+local function complete(arglead, cmdline)
+  local words = vim.split(vim.trim(cmdline), "%s+")
+  local typing_first = #words == 1 or (#words == 2 and not cmdline:match("%s$"))
+  local candidates
+  if typing_first then
+    candidates = SUBCOMMANDS
+  else
+    local sub = words[2]
+    if sub == "install" or sub == "update" or sub == "uninstall" then
+      local ok, registry = pcall(require, "acp.manager.registry")
+      candidates = {}
+      if ok then
+        for _, id in ipairs(registry.ids()) do
+          if registry.package_of(id) then
+            candidates[#candidates + 1] = id
+          end
+        end
+      end
+    elseif sub == "agent" then
+      local ok, config = pcall(require, "acp.config")
+      local current = ok and (config.current or config.defaults) or {}
+      candidates = vim.tbl_keys(current.agents or {})
+      table.sort(candidates)
+    else
+      return {}
+    end
+  end
+  return vim.tbl_filter(function(item)
+    return vim.startswith(item, arglead)
+  end, candidates)
+end
+
+local function define(name, fn, desc, range, completer)
+  pcall(
+    vim.api.nvim_create_user_command,
+    name,
+    fn,
+    { desc = "acp.nvim: " .. desc, nargs = "*", range = range, complete = completer }
+  )
 end
 
 local function setup()
@@ -49,23 +117,23 @@ local function setup()
         acp.pick_agent(rest ~= "" and rest or nil)
       elseif sub == "agents" then
         acp.manage_agents()
-      elseif sub == "install" then
+      elseif sub == "install" or sub == "update" then
+        -- Like :MasonInstall, the window opens so the install is visible.
         local id, version = rest:match("^(%S+)%s*(%S*)$")
         if not id then
-          vim.notify("acp.nvim: usage: :Acp install <agent> [version]", vim.log.levels.WARN)
+          if sub == "update" then
+            acp.update_agent(nil)
+          end
+          acp.manage_agents()
           return
         end
-        acp.install_agent(id, version ~= "" and { version = version } or nil)
-      elseif sub == "update" then
-        local id, version = rest:match("^(%S+)%s*(%S*)$")
-        if not id then
-          vim.notify("acp.nvim: usage: :Acp update <agent> [version]", vim.log.levels.WARN)
-          return
+        local fn = sub == "install" and acp.install_agent or acp.update_agent
+        if fn(id, version ~= "" and { version = version } or nil) then
+          acp.manage_agents()
         end
-        acp.update_agent(id, version ~= "" and { version = version } or nil)
       elseif sub == "uninstall" then
         if rest == "" then
-          vim.notify("acp.nvim: usage: :Acp uninstall <agent>", vim.log.levels.WARN)
+          acp.manage_agents()
           return
         end
         acp.uninstall_agent(rest)
@@ -111,7 +179,8 @@ local function setup()
       end
     end,
     "open|hide|toggle|new|stop|reconnect|login|logout|agent|agents|install|update|uninstall|config|disconnect|permission|sessions|delete|model|mode|file|files|image|inline|inline-stop|inline-reset|diagnostics",
-    true
+    true,
+    complete
   )
 
   define("AcpCompletionRefresh", function()

@@ -164,9 +164,23 @@ function M:pick_agent(name)
   local items = {}
   for _, candidate in ipairs(names) do
     local agent_cfg = S.config.agents[candidate]
+    -- Show what would actually start: a managed install replaces the preset.
+    local ok, launch = pcall(require("acp.manager.resolve").describe, S.config, candidate, S.config.launch_origin)
+    local description
+    if ok and launch.available then
+      description = string.format(
+        "[%s] %s",
+        launch.source,
+        table.concat(vim.list_extend({ launch.command }, launch.args or {}), " ")
+      )
+    elseif ok then
+      description = "unavailable: " .. tostring(launch.error)
+    else
+      description = table.concat(vim.list_extend({ agent_cfg.command or "" }, agent_cfg.args or {}), " ")
+    end
     items[#items + 1] = {
       label = candidate .. (candidate == S.config.agent and " (current)" or ""),
-      description = table.concat(vim.list_extend({ agent_cfg.command or "" }, agent_cfg.args or {}), " "),
+      description = description,
       value = candidate,
     }
   end

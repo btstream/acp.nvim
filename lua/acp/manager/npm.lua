@@ -85,6 +85,14 @@ end
 function M:run_npm(argv, opts, cb)
   local args = { self.npm() }
   vim.list_extend(args, argv)
+  -- Echo the command into the live log, the way Mason shows what it runs.
+  if opts and type(opts.on_output) == "function" then
+    pcall(opts.on_output, "$ " .. table.concat(args, " "))
+    if opts.quiet then
+      opts = vim.tbl_extend("force", {}, opts)
+      opts.on_output = nil
+    end
+  end
   return self.run(args, opts, cb)
 end
 
@@ -105,7 +113,9 @@ function M:resolve_version(package, spec, opts, cb)
   end
   -- `npm view <pkg>@<spec> version --json` prints a JSON string (or an array
   -- when the range matches several releases, which an exact spec will not).
-  self:run_npm({ "view", package .. "@" .. spec, "version", "--json" }, opts, function(ok, result)
+  -- The JSON answer is parsed, not shown: only the command is echoed.
+  local view_opts = vim.tbl_extend("force", {}, opts or {}, { quiet = true })
+  self:run_npm({ "view", package .. "@" .. spec, "version", "--json" }, view_opts, function(ok, result)
     if not ok then
       cb(false, result)
       return
@@ -222,12 +232,14 @@ function M:install(opts, cb)
     "--no-audit",
     "--no-fund",
     "--omit=dev",
-    "--loglevel=error",
+    "--loglevel=notice",
+    "--progress=false",
   }, {
     cwd = opts.dir,
     timeout = opts.timeout,
     max_log_bytes = opts.max_log_bytes,
     env = opts.env,
+    on_output = opts.on_output,
   }, function(ok, result)
     if not ok then
       cb(false, result)

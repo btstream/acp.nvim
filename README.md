@@ -616,22 +616,41 @@ require("acp").setup({
 不需要 `npm install -g`：acp.nvim 可以把 ACP adapter 装到 Neovim 的数据目录里。
 
 ```vim
-:Acp agents           " 打开管理界面
-:Acp install claude
+:Acp agents           " 打开管理界面（类似 :Mason）
+:Acp install claude   " 开始安装并打开管理界面显示进度
 :Acp install pi
-:Acp update claude
+:Acp update           " 更新所有有新版本的托管 Agent
 :Acp uninstall pi
 ```
 
 安装位置是 `stdpath("data")/acp/agents/<agent>/releases/<版本>/`，与插件目录、项目目录
-和全局 npm 目录都分开。安装完成**不会**自动切换 Agent、打开会话或登录。
+和全局 npm 目录都分开。每个 Agent 只保留一个版本：更新成功后旧版本被删除（正在被某个
+会话使用的版本除外）。安装完成**不会**自动切换 Agent、打开会话或登录。
+
+管理界面与 `:Mason` 的用法一致：按状态分组（Running / Installed / Available /
+Not managed），光标停在哪个 Agent 上按键就作用于它。安装在后台进行，可以同时装多个，
+npm 输出实时显示在对应行下面；打开时会在后台用 `npm view` 检查新版本（不安装任何东西）。
+
+| 按键 | 动作 |
+|---|---|
+| `i` | 安装（已安装时重新安装，可用于修复） |
+| `u` | 更新；已是最新版时什么都不做 |
+| `U` | 更新所有有新版本的托管 Agent |
+| `X` | 卸载托管副本 |
+| `C` | 检查新版本 |
+| `<CR>` | 展开/收起详情（包名、目录、依赖、最近日志） |
+| `s` | 把聊天切换到这个 Agent |
+| `g?` | 帮助 |
+| `q` / `<Esc>` | 关闭 |
 
 | 命令 | 说明 |
 |---|---|
-| `:Acp agents` | 管理界面：状态、安装、更新、卸载、切换。只读磁盘，不联网 |
-| `:Acp install <id> [version]` | 安装；版本可写精确版本或省略（用 latest） |
-| `:Acp update <id> [version]` | 更新已安装的副本；未安装时提示用 install |
+| `:Acp agents` | 打开管理界面 |
+| `:Acp install <id> [version]` | 安装；版本可写精确版本或省略（用 latest）。不带参数时打开管理界面 |
+| `:Acp update [<id> [version]]` | 更新一个；不带参数时更新全部有新版本的 |
 | `:Acp uninstall <id>` | 移除托管副本；凭据和会话历史不受影响 |
+
+想在启动后自动安装缺失的 Agent，可以写 `manager.ensure_installed = { "claude", "pi" }`。
 
 首版只托管 Claude（`@agentclientprotocol/claude-agent-acp`）和 pi
 （`@geohar/pi-acp`，即 [georgeharker/pi-acp](https://github.com/georgeharker/pi-acp)）。
@@ -640,10 +659,10 @@ OpenCode 以独立 CLI 分发，仍需自行安装，管理器只报告它是否
 ### 安装前需要知道的
 
 - 需要 **Node.js 22+** 和 npm；管理器不安装它们。
-- 安装会运行 npm，第三方包因此可以执行安装脚本，**不是沙箱**。每次安装都会先显示
-  包名、精确版本、目标目录和来源，确认后才开始。
+- 安装会运行 npm，第三方包因此可以执行安装脚本，**不是沙箱**。和 Mason 一样，按 `i`
+  就是确认；想在每次安装/卸载前再弹一次确认，设 `manager.confirm = true`。
 - pi 的 adapter 还需要 **pi CLI v0.80.4+** 单独安装：只装 adapter 无法运行。
-- 更新失败或取消时旧版本保持可用；安装到一半的目录会被清理。
+- 更新失败时旧版本保持可用；安装到一半的目录会被清理。
 
 ### 三种启动来源
 
@@ -696,6 +715,8 @@ require("acp").setup({
     npm = "npm",
     install_timeout = 300000,
     max_log_bytes = 1024 * 1024,
+    confirm = false,         -- true：安装/卸载前弹确认框
+    ensure_installed = {},   -- 例如 { "claude", "pi" }：启动后自动安装缺失的
   },
 
   mcp_servers = {},

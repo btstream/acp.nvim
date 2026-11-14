@@ -330,7 +330,13 @@ end
 ---@return boolean started
 function M.update_agent(id, opts)
   local service = S.view.agent_manager_service
-  return service ~= nil and service:update(id, opts) or false
+  if service == nil then
+    return false
+  end
+  if id == nil then
+    return service:update_all() > 0
+  end
+  return service:update(id, opts) or false
 end
 
 ---Remove the manager-owned copy of one agent.

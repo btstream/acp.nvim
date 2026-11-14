@@ -47,6 +47,12 @@ M.defaults = {
     install_timeout = 300000,
     -- Bytes of npm output kept per install for the log view.
     max_log_bytes = 1024 * 1024,
+    -- Ask before installing/removing. Off by default: like Mason, pressing
+    -- `i` in `:Acp agents` (or running `:Acp install`) is the decision.
+    confirm = false,
+    -- Agents to install in the background after setup when missing, e.g.
+    -- { "claude", "pi" }. Empty: nothing is downloaded unless asked.
+    ensure_installed = {},
   },
 
   -- Client capabilities. Each switch exists so a capability can be turned off
@@ -921,6 +927,19 @@ function M.validate(cfg)
   end
   check_number(manager.install_timeout, 1000, 3600000, "manager.install_timeout")
   check_number(manager.max_log_bytes, 1024, 64 * 1024 * 1024, "manager.max_log_bytes")
+  if manager.confirm ~= nil and type(manager.confirm) ~= "boolean" then
+    fail("manager.confirm must be a boolean")
+  end
+  if manager.ensure_installed ~= nil then
+    if type(manager.ensure_installed) ~= "table" then
+      fail("manager.ensure_installed must be a list of agent ids")
+    end
+    for _, id in ipairs(manager.ensure_installed) do
+      if type(id) ~= "string" or id == "" then
+        fail("manager.ensure_installed must be a list of agent ids")
+      end
+    end
+  end
 
   -- Per-agent install source. A typo here silently changes which binary runs,
   -- so unknown values are rejected rather than defaulted.

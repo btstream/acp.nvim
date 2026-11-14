@@ -145,7 +145,14 @@ function Installer:install(id, opts, cb)
     end
   end
 
-  local run_opts = { cwd = self.store:root(), timeout = timeout, max_log_bytes = max_log }
+  local run_opts = {
+    cwd = self.store:root(),
+    timeout = timeout,
+    max_log_bytes = max_log,
+    on_output = function(line)
+      self:progress({ id = id, phase = "output", action = action, line = line })
+    end,
+  }
   self:progress({ id = id, phase = "checking", action = action })
 
   self.npm:resolve_version(entry.package, requested, run_opts, function(resolved, version_or_err)
@@ -155,6 +162,17 @@ function Installer:install(id, opts, cb)
       return
     end
     local version = version_or_err
+    -- An update to the version already pinned has nothing to do; reinstalling
+    -- would only churn the data directory. An explicit install still runs, so a
+    -- user can repair a release by installing it again.
+    if action == "update" then
+      local current = self.store:state(id)
+      if current.status == "installed" and current.install and current.install.version == version then
+        unlock()
+        finish(true, { id = id, version = version, unchanged = true })
+        return
+      end
+    end
     local details = {
       id = id,
       action = action,
@@ -219,6 +237,7 @@ function Installer:build_release(id, entry, version, action, run_opts, unlock, f
     version = version,
     timeout = run_opts.timeout,
     max_log_bytes = run_opts.max_log_bytes,
+    on_output = run_opts.on_output,
   }, function(installed, install_err)
     if not installed then
       -- A failed install leaves nothing to keep: remove only the directory this
@@ -291,6 +310,10 @@ function Installer:build_release(id, entry, version, action, run_opts, unlock, f
       return
     end
 
+    -- Like Mason, an agent has one installed version: superseded releases are
+    -- removed once the pointer moved, except a release a live conversation is
+    -- still running (its lease keeps it until a later install).
+    self:prune(id, new_id)
     unlock()
     self:progress({ id = id, phase = "committed", action = action, version = manifest.version })
     finish(true, { id = id, version = manifest.version, install_id = new_id, dir = dir })
@@ -396,6 +419,24 @@ function Installer:remove_release(id, install_id_value, unlock, finish)
   end
   self:progress({ id = id, phase = "removed", action = "uninstall" })
   finish(true, { id = id })
+end
+
+---Remove every release of `id` except `keep` and those with a live lease.
+---
+---Must be called with the agent lock held.
+---@param id string
+---@param keep string
+function Installer:prune(id, keep)
+  local root = self.store:root()
+  for _, candidate in ipairs(self.store:list_install_ids(id)) do
+    if candidate ~= keep then
+      local busy = self.locks.install_in_use and self.locks:install_in_use(id, candidate)
+      local dir = not busy and self.store:release_dir(id, candidate) or nil
+      if dir and root and Store.contains(root, dir) then
+        vim.fn.delete(dir, "rf")
+      end
+    end
+  end
 end
 
 ---Release ids that are present but not pinned, oldest first.

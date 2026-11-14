@@ -1,3 +1,9 @@
+-- Isolate the data directory: the agent manager defaults to
+-- stdpath("data")/acp/agents, and a test must never touch the user's real
+-- installs. stdpath() reads XDG_DATA_HOME on every call.
+vim.env.XDG_DATA_HOME = string.format("/tmp/opencode/acp-test-data-%d", vim.uv.os_getpid())
+vim.fn.mkdir(vim.env.XDG_DATA_HOME, "p")
+
 vim.opt.runtimepath:append(vim.fn.fnamemodify(vim.fn.getcwd(), ":p"))
 
 -- Optional test dependency: use a locally installed snacks.nvim when present so

@@ -156,7 +156,7 @@ register("opencode", {
 })
 
 register("claude", {
-  install_hint = "Install claude-agent-acp (`npm i -g @agentclientprotocol/claude-agent-acp`).",
+  install_hint = "Run :Acp install claude (managed copy), or put claude-agent-acp on PATH.",
   plan_mode = plan_mode,
   unsafe_edit_mode = unsafe_edit_mode,
   error_hint = function(err)
@@ -164,7 +164,7 @@ register("claude", {
       return nil
     end
     if err.code == -32601 then
-      return "This claude-agent-acp version does not implement that method; update the adapter."
+      return "This claude-agent-acp version does not implement that method; update it with :Acp update claude."
     end
     return nil
   end,
@@ -197,14 +197,14 @@ register("claude", {
 })
 
 register("pi", {
-  install_hint = "Install pi-acp (`npm i -g pi-acp`, or keep the npx command).",
+  install_hint = "Run :Acp install pi (managed @geohar/pi-acp), or keep the npx command. Needs the pi CLI.",
   plan_mode = plan_mode,
   unsafe_edit_mode = unsafe_edit_mode,
   -- pi-acp is third-party and has several forks, so a missing method is
   -- usually a version mismatch rather than a client bug.
   error_hint = function(err)
     if type(err) == "table" and err.code == -32601 then
-      return "This pi-acp version does not implement that method; update it (`npm i -g pi-acp@latest`)."
+      return "This pi-acp version does not implement that method; update it with :Acp update pi."
     end
     return nil
   end,
