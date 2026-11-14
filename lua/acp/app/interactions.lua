@@ -288,6 +288,9 @@ function Interactions:on_remote_cancel(rpc_id)
         end
       end
       interaction.respond = nil
+      -- The tool card clears its "awaiting" state from on_settle; a withdrawn
+      -- request must not leave it waiting forever.
+      pcall(self.on_settle, interaction, nil)
       self:_retire(interaction)
       self.on_changed()
       vim.schedule(function()

@@ -3,6 +3,12 @@ local Log = require("acp.log")
 
 local M = {}
 
+-- Local transport failure code. It never goes to the agent: the value is only
+-- handed to local callbacks (closed connection, failed write, prompt timeout).
+-- Kept outside the JSON-RPC reserved range -32768..-32000 so it cannot be
+-- confused with a server error.
+M.LOCAL_ERROR = -31000
+
 ---@class AcpRpc
 ---@field next_id integer
 ---@field pending table<integer, {method: string, cb: fun(ok: boolean, value: any), cancelled?: boolean}>

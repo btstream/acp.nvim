@@ -53,6 +53,12 @@ return function(t)
       t.truthy(rpcmod.LOCAL_ERROR ~= -32000)
     end)
 
+    t.it("keeps the local error code outside the JSON-RPC reserved range", function()
+      t.eq("number", type(rpcmod.LOCAL_ERROR))
+      t.eq(math.floor(rpcmod.LOCAL_ERROR), rpcmod.LOCAL_ERROR)
+      t.truthy(rpcmod.LOCAL_ERROR < -32768 or rpcmod.LOCAL_ERROR > -32000)
+    end)
+
     t.it("dispatches notifications", function()
       local seen
       local rpc = rpcmod.new({

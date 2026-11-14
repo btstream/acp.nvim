@@ -739,7 +739,9 @@ function M.apply(session, update)
       local block = session.blocks[i]
       if
         (kind == "plan" and block.kind == "plan")
-        or (block.kind == "compaction" and block.compaction_id == update.compactionId)
+        -- A plan update has no compactionId, so an older compaction card must
+        -- not swallow it: only non-plan updates look for a compaction block.
+        or (kind ~= "plan" and block.kind == "compaction" and block.compaction_id == update.compactionId)
       then
         session:touch(block)
         break

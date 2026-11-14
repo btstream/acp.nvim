@@ -277,6 +277,32 @@ return function(t)
       t.eq("sum", s.blocks[1].text)
     end)
 
+    t.it("re-renders an updated plan after a compaction card", function()
+      local s = state.new("s1", "/tmp")
+      s.profile = {
+        update_meta = function(update)
+          if update._meta and update._meta["opencode/compaction"] then
+            return { compaction = update._meta["opencode/compaction"] }
+          end
+        end,
+      }
+      s:begin_turn()
+      reducer.apply(s, { sessionUpdate = "plan", entries = { { content = "a", status = "pending" } } })
+      local plan = s.blocks[1]
+      -- A compaction marker without a compactionId (the session_info_update
+      -- path) is appended after the plan and used to steal its touch.
+      reducer.apply(s, {
+        sessionUpdate = "session_info_update",
+        _meta = { ["opencode/compaction"] = { status = "started", messageId = "m" } },
+      })
+      t.eq("compaction", s.blocks[2].kind)
+      local revision, version = plan._revision, s.version
+      reducer.apply(s, { sessionUpdate = "plan", entries = { { content = "a", status = "completed" } } })
+      t.eq(1, #s.blocks - 1, "the plan was not reused")
+      t.truthy(plan._revision > revision, "the plan was not touched")
+      t.eq(plan._index, s:changed_since(version), "the render starts below the plan")
+    end)
+
     t.it("marks streaming blocks as finished", function()
       local s = state.new("s1", "/tmp")
       s:begin_turn()

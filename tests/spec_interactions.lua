@@ -2,7 +2,7 @@ return function(t)
   local Interactions = require("acp.app.interactions")
 
   local function harness(policies)
-    local answered, shown, dismissed = {}, {}, {}
+    local answered, shown, dismissed, settled = {}, {}, {}, {}
     local interactions
     interactions = Interactions.new({
       policies = policies,
@@ -26,13 +26,16 @@ return function(t)
           end,
         },
       },
+      on_settle = function(interaction, response)
+        settled[#settled + 1] = { interaction.id, response }
+      end,
     })
     local function open(kind, request, rpc_id)
       return interactions:open(kind or "permission", request or { sessionId = "s" }, function(response)
         answered[#answered + 1] = response
       end, rpc_id)
     end
-    return interactions, open, answered, shown, dismissed
+    return interactions, open, answered, shown, dismissed, settled
   end
 
   t.describe("interactions", function()
@@ -77,6 +80,16 @@ return function(t)
       t.eq(0, #answered)
       t.eq("expired", interactions:get(interaction.id).state)
       t.eq({ interaction.id }, dismissed)
+    end)
+
+    t.it("notifies settlement when the agent withdraws a request", function()
+      local interactions, open, answered, _, _, settled = harness()
+      local interaction = open("permission", { sessionId = "s" }, 7)
+      t.truthy(interactions:on_remote_cancel(7))
+      t.eq(0, #answered)
+      t.eq(1, #settled)
+      t.eq(interaction.id, settled[1][1])
+      t.eq(nil, settled[1][2])
     end)
 
     t.it("shows one request at a time and the next after an answer", function()

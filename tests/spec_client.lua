@@ -198,6 +198,26 @@ return function(t)
       t.eq(require("acp.transport.jsonrpc").LOCAL_ERROR, done[2].code)
     end)
 
+    t.it("clears the settle entry when a request coroutine is cancelled", function()
+      local client = new_client({})
+      local rpc = require("acp.transport.jsonrpc").new({
+        send = function()
+          return true
+        end,
+      })
+      client.rpc = rpc
+      local co = async.run(function()
+        client:request("session/list", {}, 5000)
+      end)
+      wait_for(function()
+        return rpc:pending_count() == 1
+      end, 2000)
+      async.cancel(co)
+      vim.wait(20)
+      t.eq(0, rpc:pending_count())
+      t.eq(0, vim.tbl_count(client.settles), "a cancelled request leaked its settle")
+    end)
+
     t.it("cancels the turn before withdrawing a timed-out prompt", function()
       local sent = {}
       local client = new_client({})

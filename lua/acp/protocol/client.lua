@@ -253,6 +253,7 @@ function Client:request(method, params, timeout, extendable, prompt_session)
       if prompt_session and self.prompt_ids[prompt_session] == id then
         self.prompt_ids[prompt_session] = nil
       end
+      self.settles[id] = nil
       rpc:cancel(id)
     end
   end)
