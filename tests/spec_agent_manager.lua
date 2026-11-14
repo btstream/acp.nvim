@@ -330,6 +330,286 @@ return function(t)
       end
     end)
 
+    t.it("reclaims a live pid whose heartbeat predates this boot", function()
+      local now = 100000000
+      local live, reason = lock_mod.alive(
+        {
+          host = lock_mod.hostname(),
+          pid = 42,
+          heartbeat = now - 1000 * 1000 - 120000,
+        },
+        "/x",
+        {
+          now = function()
+            return now
+          end,
+          uptime = function()
+            return 1000
+          end,
+          kill = function()
+            return true
+          end,
+        }
+      )
+      t.falsy(live)
+      t.match("before this boot", reason)
+    end)
+
+    t.it("reclaims a live pid whose heartbeat stopped long ago", function()
+      local now = 100000000
+      local live, reason = lock_mod.alive(
+        {
+          host = lock_mod.hostname(),
+          pid = 42,
+          heartbeat = now - 15 * 60 * 1000,
+        },
+        "/x",
+        {
+          now = function()
+            return now
+          end,
+          uptime = function()
+            return 100000
+          end,
+          kill = function()
+            return true
+          end,
+        }
+      )
+      t.falsy(live)
+      t.match("heartbeat stopped", reason)
+    end)
+
+    t.it("keeps a live pid with a recent heartbeat", function()
+      local now = 100000000
+      local live, reason = lock_mod.alive(
+        {
+          host = lock_mod.hostname(),
+          pid = 42,
+          heartbeat = now - 60 * 1000,
+        },
+        "/x",
+        {
+          now = function()
+            return now
+          end,
+          uptime = function()
+            return 100000
+          end,
+          kill = function()
+            return true
+          end,
+        }
+      )
+      t.truthy(live)
+      t.match("is running", reason)
+    end)
+
+    t.it("reclaims an EPERM pid whose heartbeat predates this boot", function()
+      local now = 100000000
+      local live, reason = lock_mod.alive(
+        {
+          host = lock_mod.hostname(),
+          pid = 1,
+          heartbeat = now - 1000 * 1000 - 120000,
+        },
+        "/x",
+        {
+          now = function()
+            return now
+          end,
+          uptime = function()
+            return 1000
+          end,
+          kill = function()
+            return nil, "EPERM: operation not permitted"
+          end,
+        }
+      )
+      t.falsy(live)
+      t.match("before this boot", reason)
+    end)
+
+    t.it("acquires over a live-pid lock from before this boot", function()
+      local root = temp_root()
+      local now = 100000000
+      local locks = lock_mod.new({
+        root = function()
+          return root
+        end,
+        clock = function()
+          return now
+        end,
+        uptime = function()
+          return 1000
+        end,
+        kill = function()
+          return true
+        end,
+      })
+      local dir = root .. "/.locks/claude"
+      vim.fn.mkdir(dir, "p")
+      assert(lock_mod.write_json_atomic(dir .. "/owner.json", {
+        host = lock_mod.hostname(),
+        pid = 42,
+        heartbeat = now - 1000 * 1000 - 120000,
+      }))
+      local handle = locks:acquire("claude")
+      t.truthy(handle, "a pre-boot lock must be reclaimable")
+      locks:release(handle)
+      vim.fn.delete(root, "rf")
+    end)
+
+    t.it("does not count a pre-boot lease as in use", function()
+      local root = temp_root()
+      local now = 100000000
+      local locks = lock_mod.new({
+        root = function()
+          return root
+        end,
+        clock = function()
+          return now
+        end,
+        uptime = function()
+          return 1000
+        end,
+        kill = function()
+          return true
+        end,
+      })
+      local dir = root .. "/.leases/claude"
+      vim.fn.mkdir(dir, "p")
+      assert(lock_mod.write_json_atomic(dir .. "/lease-42.json", {
+        host = lock_mod.hostname(),
+        pid = 42,
+        installId = "rel-1",
+        heartbeat = now - 1000 * 1000 - 120000,
+      }))
+      local busy = locks:install_in_use("claude", "rel-1")
+      t.falsy(busy, "a pre-boot lease must not block the release")
+      locks:close()
+      vim.fn.delete(root, "rf")
+    end)
+
+    t.it("stops refreshing a lock reclaimed by another instance", function()
+      local root = temp_root()
+      local now = 100000000
+      local locks = lock_mod.new({
+        root = function()
+          return root
+        end,
+        clock = function()
+          return now
+        end,
+        heartbeat_ms = 20,
+      })
+      local handle = assert(locks:acquire("claude"))
+      local dir = root .. "/.locks/claude"
+      local owner = dir .. "/owner.json"
+      -- Another instance decided the lock was abandoned and rebuilt it.
+      assert(lock_mod.write_json_atomic(owner, {
+        host = lock_mod.hostname(),
+        pid = dead_pid(),
+        acquiredAt = "someone-else",
+        heartbeat = now,
+      }))
+      now = now + 5000
+      vim.wait(100)
+      local data = vim.json.decode(table.concat(vim.fn.readfile(owner), "\n"))
+      t.eq(100000000, data.heartbeat, "the new owner's file was overwritten")
+      t.truthy(handle.lost, "the handle must know it lost the lock")
+      t.eq(nil, locks.timers["lock:" .. dir], "the heartbeat timer must stop")
+      locks:release(handle)
+      t.truthy(vim.uv.fs_stat(dir), "releasing a lost lock must not delete the new owner's directory")
+      vim.fn.delete(root, "rf")
+    end)
+
+    t.it("does not recreate a lease deleted as stale", function()
+      local root = temp_root()
+      local now = 100000000
+      local locks = lock_mod.new({
+        root = function()
+          return root
+        end,
+        clock = function()
+          return now
+        end,
+        heartbeat_ms = 20,
+      })
+      local lease = assert(locks:lease("claude", "rel-1"))
+      local path = lease.path
+      os.remove(path)
+      now = now + 5000
+      vim.wait(100)
+      t.falsy(vim.uv.fs_stat(path), "the heartbeat recreated a deleted lease")
+      t.truthy(lease.lost, "the lease must know it was removed")
+      t.eq(nil, locks.timers[path], "the heartbeat timer must stop")
+      locks:close()
+      vim.fn.delete(root, "rf")
+    end)
+
+    t.it("refreshes a held lock heartbeat and stops on release", function()
+      local root = temp_root()
+      local now = 100000000
+      local locks = lock_mod.new({
+        root = function()
+          return root
+        end,
+        clock = function()
+          return now
+        end,
+        heartbeat_ms = 20,
+      })
+      local handle = assert(locks:acquire("claude"))
+      local owner = root .. "/.locks/claude/owner.json"
+      local first = vim.json.decode(table.concat(vim.fn.readfile(owner), "\n")).heartbeat
+      now = now + 5000
+      t.truthy(
+        vim.wait(1000, function()
+          local ok, value = pcall(function()
+            return vim.json.decode(table.concat(vim.fn.readfile(owner), "\n")).heartbeat
+          end)
+          return ok and value == now
+        end, 10),
+        "the lock heartbeat was not refreshed"
+      )
+      local before_release = now
+      locks:release(handle)
+      t.falsy(vim.uv.fs_stat(owner), "release must remove the lock")
+      now = before_release + 5000
+      vim.wait(80)
+      t.falsy(vim.uv.fs_stat(owner), "a released lock must not be rewritten")
+      vim.fn.delete(root, "rf")
+    end)
+
+    t.it("stops a lease heartbeat on close", function()
+      local root = temp_root()
+      local now = 100000000
+      local locks = lock_mod.new({
+        root = function()
+          return root
+        end,
+        clock = function()
+          return now
+        end,
+        heartbeat_ms = 20,
+      })
+      local lease = assert(locks:lease("claude", "rel-1"))
+      local path = lease.path
+      t.truthy(vim.wait(1000, function()
+        local ok, value = pcall(function()
+          return vim.json.decode(table.concat(vim.fn.readfile(path), "\n")).heartbeat
+        end)
+        return ok and value == now
+      end, 10))
+      locks:close()
+      t.falsy(vim.uv.fs_stat(path), "the lease file must be removed")
+      now = now + 5000
+      vim.wait(80)
+      t.falsy(vim.uv.fs_stat(path), "a closed lease must not be rewritten")
+      vim.fn.delete(root, "rf")
+    end)
+
     t.it("records a lease that blocks installation of that release", function()
       local root = temp_root()
       local locks = lock_mod.new({

@@ -19,10 +19,16 @@ local M = {}
 local Lock = {}
 Lock.__index = Lock
 
----Milliseconds between heartbeat writes while a lease is held.
+---Milliseconds between heartbeat writes while a lease or lock is held.
 local HEARTBEAT_MS = 15000
 ---A lock or lease older than this with no live pid is treated as abandoned.
 local STALE_MS = 120000
+---Wider threshold for a pid that is still alive. An event loop can block for a
+---while (large render, long synchronous callback); a single stall must not let
+---another instance steal the lock.
+local ALIVE_STALE_MS = 10 * 60 * 1000
+---Clock error allowance around the boot time.
+local BOOT_GRACE_MS = 60 * 1000
 
 ---@return string
 local function hostname()
@@ -83,13 +89,39 @@ local function write_json(path, value)
   return true
 end
 
+---Whether the record at `path` is still the one we wrote.
+---
+---A heartbeat must not overwrite a lock or lease another instance has already
+---reclaimed: the fields identifying the owner have to match exactly.
+---@param path string
+---@param expected table fields that identify this owner
+---@return boolean
+local function ours(path, expected)
+  local info = read_json(path)
+  if not info or info.host ~= hostname() or info.pid ~= pid() then
+    return false
+  end
+  if expected.acquiredAt and info.acquiredAt ~= expected.acquiredAt then
+    return false
+  end
+  if expected.installId and info.installId ~= expected.installId then
+    return false
+  end
+  return true
+end
+
 ---Whether `value` still looks alive.
 ---
 ---Returns `live`, `reason`. A lock whose pid is gone but whose file is recent is
 ---*not* stolen: a slow npm run can legitimately outlive a short grace period, and
 ---stealing it would start two installers in one directory.
+---
+---A live pid alone is not proof: after a crash and reboot (or just pid reuse) an
+---unrelated process can carry the recorded pid. Heartbeats must therefore still
+---be recent, and one written before this boot belongs to nobody.
 ---@param value table|nil
 ---@param path string
+---@param deps table|nil `{now, uptime, kill}`; a bare function is treated as `now`
 ---@return boolean live
 ---@return string|nil reason
 ---Wall-clock milliseconds.
@@ -103,7 +135,14 @@ function M.now()
   return sec * 1000 + math.floor(usec / 1000)
 end
 
-local function alive(value, path, now)
+local function alive(value, path, deps)
+  if type(deps) == "function" then
+    deps = { now = deps }
+  end
+  deps = deps or {}
+  local now = (deps.now or M.now)()
+  local uptime = (deps.uptime or vim.uv.uptime)()
+  local kill = deps.kill or vim.uv.kill
   if not value then
     -- Unreadable or half-written: treat as live-but-unknown so callers do not
     -- delete what they cannot reason about.
@@ -116,22 +155,41 @@ local function alive(value, path, now)
   if not owner then
     return true, "lock file has no pid"
   end
+  local heartbeat = tonumber(value.heartbeat) or 0
+  local boot = now - uptime * 1000
+  local function aged(reason)
+    if heartbeat <= 0 then
+      -- No heartbeat: keep the conservative answer, it may be mid-write.
+      return true, reason
+    end
+    if heartbeat > now then
+      -- The clock moved back; keep the conservative answer.
+      return true, reason
+    end
+    if heartbeat < boot - BOOT_GRACE_MS then
+      return false, "recorded before this boot"
+    end
+    local stopped = now - heartbeat
+    if stopped > ALIVE_STALE_MS then
+      return false, string.format("heartbeat stopped %ds ago", math.floor(stopped / 1000))
+    end
+    return true, reason
+  end
   -- `uv.kill(pid, 0)` returns true when the process exists, or nil plus an errno
   -- string such as "ESRCH: no such process". It does not raise, so pcall alone
   -- says nothing about liveness.
-  local ok, sent, err = pcall(vim.uv.kill, owner, 0)
+  local ok, sent, err = pcall(kill, owner, 0)
   if ok and sent then
-    return true, "pid " .. owner .. " is running"
+    return aged("pid " .. owner .. " is running")
   end
   local message = tostring(ok and err or sent)
   if not message:match("ESRCH") then
     -- EPERM and friends mean the process exists but is not ours.
-    return true, "pid " .. owner .. " exists but cannot be signalled"
+    return aged("pid " .. owner .. " exists but cannot be signalled")
   end
-  local heartbeat = tonumber(value.heartbeat) or 0
   -- A heartbeat in the future (clock moved back) cannot be aged: keep the
   -- conservative answer and do not steal it.
-  if heartbeat > 0 and ((now or M.now)() - heartbeat) > STALE_MS then
+  if heartbeat > 0 and heartbeat <= now and now - heartbeat > STALE_MS then
     return false, "abandoned"
   end
   -- The process is gone but the record is fresh: it may be the tail of a crash.
@@ -139,15 +197,52 @@ local function alive(value, path, now)
   return true, "pid " .. owner .. " is gone; lock " .. path .. " is recent"
 end
 
----@param opts {root: fun(): string|nil, clock?: fun(): integer}
+---@param opts {root: fun(): string|nil, clock?: fun(): integer, uptime?: fun(): number,
+---  kill?: fun(pid: integer, sig: integer), heartbeat_ms?: integer}
 ---@return table
 function M.new(opts)
   return setmetatable({
     get_root = opts.root,
     clock = opts.clock or M.now,
+    uptime = opts.uptime or vim.uv.uptime,
+    kill = opts.kill or vim.uv.kill,
+    heartbeat_ms = opts.heartbeat_ms or HEARTBEAT_MS,
     leases = {},
     timers = {},
   }, Lock)
+end
+
+---Start a periodic heartbeat writer. `refresh` must write the current record.
+---@param key string
+---@param refresh fun()
+function Lock:start_heartbeat(key, refresh)
+  local timer = vim.uv.new_timer()
+  if not timer then
+    return
+  end
+  timer:start(
+    self.heartbeat_ms,
+    self.heartbeat_ms,
+    vim.schedule_wrap(function()
+      refresh()
+    end)
+  )
+  self.timers[key] = timer
+end
+
+---@param key string
+function Lock:stop_heartbeat(key)
+  local timer = self.timers[key]
+  if not timer then
+    return
+  end
+  self.timers[key] = nil
+  pcall(function()
+    if not timer:is_closing() then
+      timer:stop()
+      timer:close()
+    end
+  end)
 end
 
 ---Directory for the exclusive per-agent lock.
@@ -192,7 +287,7 @@ function Lock:acquire(id, meta)
   local ok = vim.uv.fs_mkdir(dir, 448)
   if not ok then
     local info = read_json(dir .. "/owner.json")
-    local live, reason = alive(info, dir, self.clock)
+    local live, reason = alive(info, dir, { now = self.clock, uptime = self.uptime, kill = self.kill })
     if live then
       return nil, "another instance is using this agent: " .. tostring(reason)
     end
@@ -217,6 +312,22 @@ function Lock:acquire(id, meta)
     return nil, "unable to record the lock owner"
   end
   local handle = { dir = dir, id = id, owner = owner, released = false }
+  -- A lock held through a long install must keep its heartbeat fresh; otherwise
+  -- the new "live pid but stale heartbeat" rule would let another instance steal
+  -- it after ALIVE_STALE_MS.
+  self:start_heartbeat("lock:" .. dir, function()
+    if handle.released or handle.lost then
+      return
+    end
+    if not ours(dir .. "/owner.json", { acquiredAt = owner.acquiredAt }) then
+      handle.lost = true
+      self:stop_heartbeat("lock:" .. dir)
+      log.warn("lock %s was reclaimed; heartbeat stopped", dir)
+      return
+    end
+    owner.heartbeat = self.clock()
+    write_json(dir .. "/owner.json", owner)
+  end)
   return handle
 end
 
@@ -227,6 +338,7 @@ function Lock:release(handle)
     return
   end
   handle.released = true
+  self:stop_heartbeat("lock:" .. handle.dir)
   local info = read_json(handle.dir .. "/owner.json")
   -- Only the owner removes its own lock: a reclaimed lock belongs to someone else.
   if info and info.pid == pid() and info.host == hostname() then
@@ -261,21 +373,19 @@ function Lock:lease(id, install_id)
   local lease = { path = path, id = id, install_id = install_id, released = false }
   self.leases[path] = lease
   -- Keep the heartbeat fresh so a long turn is not mistaken for a crash.
-  local timer = vim.uv.new_timer()
-  if timer then
-    timer:start(
-      HEARTBEAT_MS,
-      HEARTBEAT_MS,
-      vim.schedule_wrap(function()
-        if lease.released then
-          return
-        end
-        value.heartbeat = self.clock()
-        write_json(path, value)
-      end)
-    )
-    self.timers[path] = timer
-  end
+  self:start_heartbeat(path, function()
+    if lease.released or lease.lost then
+      return
+    end
+    if not ours(path, { installId = lease.install_id }) then
+      lease.lost = true
+      self:stop_heartbeat(path)
+      log.warn("lease %s is gone; heartbeat stopped", path)
+      return
+    end
+    value.heartbeat = self.clock()
+    write_json(path, value)
+  end)
   return lease
 end
 
@@ -286,16 +396,7 @@ function Lock:unlease(lease)
     return
   end
   lease.released = true
-  local timer = self.timers[lease.path]
-  if timer then
-    self.timers[lease.path] = nil
-    pcall(function()
-      if not timer:is_closing() then
-        timer:stop()
-        timer:close()
-      end
-    end)
-  end
+  self:stop_heartbeat(lease.path)
   self.leases[lease.path] = nil
   local info = read_json(lease.path)
   if info and info.pid == pid() and info.host == hostname() then
@@ -328,7 +429,7 @@ function Lock:live_leases(id)
     if kind == "file" and name:match("^lease%-.*%.json$") then
       local path = dir .. "/" .. name
       local info = read_json(path)
-      local is_live, reason = alive(info, path, self.clock)
+      local is_live, reason = alive(info, path, { now = self.clock, uptime = self.uptime, kill = self.kill })
       if is_live then
         if reason and reason:match("cannot be signalled") then
           unknown[#unknown + 1] = name .. ": " .. reason
