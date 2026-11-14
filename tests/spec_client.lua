@@ -53,11 +53,58 @@ return function(t)
       })
       local id = client.rpc:request("session/prompt", {}, function() end)
       client.active_requests["session/prompt"] = id
+      client.prompt_ids["s1"] = id
       client:cancel("s1")
       t.eq("session/cancel", sent[2].method)
       t.eq("$/cancel_request", sent[3].method)
       t.eq(id, sent[3].params.id)
       t.eq(nil, client.active_requests["session/prompt"])
+    end)
+
+    t.it("withdraws only the prompt of the cancelled session", function()
+      local sent = {}
+      local client = new_client({})
+      local jsonrpc = require("acp.transport.jsonrpc")
+      client.rpc = jsonrpc.new({
+        send = function(payload)
+          sent[#sent + 1] = vim.json.decode(payload)
+          return true
+        end,
+      })
+      local results = {}
+      async.run(function()
+        results.a = { client:prompt("a", {}, 1) }
+      end)
+      wait_for(function()
+        return client.prompt_ids.a ~= nil
+      end, 2000)
+      async.run(function()
+        results.b = { client:prompt("b", {}, 2) }
+      end)
+      wait_for(function()
+        return client.prompt_ids.b ~= nil
+      end, 2000)
+      local id_a, id_b = client.prompt_ids.a, client.prompt_ids.b
+      t.truthy(id_a ~= id_b)
+
+      client:cancel("a")
+      vim.wait(30)
+      t.eq(nil, client.prompt_ids.a)
+      t.eq(id_b, client.prompt_ids.b, "cancelling A cleared B's prompt id")
+      t.eq(id_a, client.draining.a)
+      t.eq(nil, client.draining.b, "draining was set for the wrong session")
+      t.eq("$/cancel_request", sent[#sent].method)
+      t.eq(id_a, sent[#sent].params.id)
+      t.truthy(results.a, "A's prompt was not settled")
+      t.eq("cancelled", results.a[2].stopReason)
+      t.eq(nil, results.b, "cancelling A settled B's prompt")
+      t.truthy(client.rpc.pending[id_b], "B's rpc request was withdrawn")
+
+      -- Let B finish so its timer does not outlive the test.
+      client.rpc:handle({ jsonrpc = "2.0", id = id_b, result = { stopReason = "end_turn" } })
+      wait_for(function()
+        return results.b ~= nil
+      end, 2000)
     end)
 
     t.it("answers a cancelled turn's late permission request with cancelled", function()
@@ -83,6 +130,7 @@ return function(t)
       }
       local id = client.rpc:request("session/prompt", {}, function() end)
       client.active_requests["session/prompt"] = id
+      client.prompt_ids["s1"] = id
       client:cancel("s1")
 
       local request = {
@@ -148,6 +196,64 @@ return function(t)
       end, 2000)
       t.falsy(done[1])
       t.eq(require("acp.transport.jsonrpc").LOCAL_ERROR, done[2].code)
+    end)
+
+    t.it("cancels the turn before withdrawing a timed-out prompt", function()
+      local sent = {}
+      local client = new_client({})
+      client.limits = { prompt_timeout = 30 }
+      client.rpc = require("acp.transport.jsonrpc").new({
+        send = function(payload)
+          sent[#sent + 1] = vim.json.decode(payload)
+          return true
+        end,
+      })
+      local done
+      async.run(function()
+        done = { client:prompt("s1", {}, 1) }
+      end)
+      wait_for(function()
+        return done ~= nil
+      end, 2000)
+      t.falsy(done[1])
+      t.eq(require("acp.transport.jsonrpc").LOCAL_ERROR, done[2].code)
+      local methods = {}
+      for _, message in ipairs(sent) do
+        methods[#methods + 1] = message.method
+      end
+      t.eq({ "session/prompt", "session/cancel", "$/cancel_request" }, methods)
+      t.truthy(client.draining.s1, "a timed-out turn must drain its late requests")
+      t.eq(nil, client.prompt_ids.s1)
+    end)
+
+    t.it("extends the load timeout through the real event path", function()
+      local events_mod = require("acp.app.events")
+      local touched = {}
+      local S = {
+        conn = {
+          replaying = true,
+          client = {
+            touch_timeout = function(_, key)
+              touched[#touched + 1] = key
+            end,
+          },
+        },
+        sess = { runtime = { apply = function() end } },
+      }
+      local events = events_mod.new({
+        state = function()
+          return S
+        end,
+        refresh_chrome = function() end,
+        notify = function() end,
+        add_block = function() end,
+        prune = function() end,
+        on_exit = function()
+          return false
+        end,
+      })
+      events:dispatch("session_update", { sessionId = "s1", update = {} })
+      t.eq({ "session/load" }, touched)
     end)
 
     t.it("routes only registered agent requests through the registry", function()

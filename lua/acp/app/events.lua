@@ -63,7 +63,7 @@ function M:install_defaults()
     -- Replaying a long history can take longer than the generic timeout: every
     -- update that arrives proves the agent is still working.
     if S.conn.replaying and S.conn.client and S.conn.client.touch_timeout then
-      S.conn.client:touch_timeout("session_load")
+      S.conn.client:touch_timeout("session/load")
     end
     local session, changed, buffered = S.sess.runtime:apply(payload.sessionId, update)
     if not session then

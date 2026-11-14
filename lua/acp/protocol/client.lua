@@ -70,6 +70,11 @@ function M.new(opts)
     elicitations = {},
     elicitation_seq = 0,
     active_requests = {},
+    -- session id -> rpc id of that session's in-flight prompt. Prompts are
+    -- tracked per session because one client serves several sessions and a
+    -- single `active_requests["session/prompt"]` slot would let cancelling A
+    -- withdraw B's latest prompt.
+    prompt_ids = {},
     -- session id -> rpc id of a prompt cancelled locally whose agent-side
     -- turn has not ended yet. See `Client:cancel`.
     draining = {},
@@ -215,8 +220,9 @@ end
 ---@param params any
 ---@param timeout integer|nil
 ---@param extendable boolean|nil reset the timer via `touch_timeout(method)`
+---@param prompt_session string|nil owning session for a `session/prompt`
 ---@return boolean ok, any value
-function Client:request(method, params, timeout, extendable)
+function Client:request(method, params, timeout, extendable, prompt_session)
   local settled = false
   local yielded, immediate = false, nil
   local id
@@ -244,6 +250,9 @@ function Client:request(method, params, timeout, extendable)
       if self.active_requests[method] == id then
         self.active_requests[method] = nil
       end
+      if prompt_session and self.prompt_ids[prompt_session] == id then
+        self.prompt_ids[prompt_session] = nil
+      end
       rpc:cancel(id)
     end
   end)
@@ -261,6 +270,9 @@ function Client:request(method, params, timeout, extendable)
     if id and self.active_requests[method] == id then
       self.active_requests[method] = nil
     end
+    if prompt_session and id and self.prompt_ids[prompt_session] == id then
+      self.prompt_ids[prompt_session] = nil
+    end
     if id then
       self.settles[id] = nil
     end
@@ -277,6 +289,9 @@ function Client:request(method, params, timeout, extendable)
   if id then
     self.active_requests[method] = id
     self.settles[id] = settle
+    if prompt_session then
+      self.prompt_ids[prompt_session] = id
+    end
   end
   if timeout and timeout > 0 and not settled then
     local function arm()
@@ -287,8 +302,16 @@ function Client:request(method, params, timeout, extendable)
             return
           end
           Log.warn("request %s timed out after %dms", method, timeout)
-          rpc:cancel(id)
-          settle(false, { code = rpcmod.LOCAL_ERROR, message = "request timed out: " .. method })
+          local err = { code = rpcmod.LOCAL_ERROR, message = "request timed out: " .. method }
+          if prompt_session then
+            -- A prompt timeout must stop the turn the same way a user cancel
+            -- does. `$/cancel_request` alone only releases the waiter; agents
+            -- ignore it and keep running the abandoned turn.
+            self:_withdraw_prompt(prompt_session, false, err)
+          else
+            rpc:cancel(id)
+            settle(false, err)
+          end
         end)
       end)
     end
@@ -732,9 +755,48 @@ function Client:prompt(session_id, blocks, turn)
   local ok, result = self:request("session/prompt", {
     sessionId = session_id,
     prompt = blocks,
-  }, timeout > 0 and timeout or nil)
+  }, timeout > 0 and timeout or nil, nil, session_id)
   self:emit("prompt_finished", { session_id = session_id, ok = ok, result = result, turn = turn })
   return ok, result
+end
+
+---Withdraw the pending prompt of `session_id` and start draining its turn.
+---
+---Shared by a user cancel and a prompt timeout: both have to tell the agent
+---first (`session/cancel`), then release the local waiter, and both must keep
+---ignoring the withdrawn turn's late permission requests for a while.
+---@param session_id string
+---@param ok boolean result passed to the prompt waiter
+---@param value any
+function Client:_withdraw_prompt(session_id, ok, value)
+  local prompt_id = self.prompt_ids[session_id]
+  if not prompt_id or not self.rpc then
+    return
+  end
+  self.prompt_ids[session_id] = nil
+  self:cancel_permissions(session_id)
+  -- The turn must be told first, then the pending RPC is withdrawn. The order
+  -- matters: the agent needs session/cancel to stop work, and $/cancel_request
+  -- only releases the response waiter.
+  self.rpc:notify("session/cancel", { sessionId = session_id })
+  local settle = self.settles[prompt_id]
+  self.rpc:cancel(prompt_id)
+  if self.active_requests["session/prompt"] == prompt_id then
+    self.active_requests["session/prompt"] = nil
+  end
+  -- Until the agent answers the withdrawn prompt, its permission requests
+  -- belong to the cancelled turn. Bounded, so an agent that never answers
+  -- cannot silence permission requests for the rest of the session.
+  self.draining[session_id] = prompt_id
+  vim.defer_fn(function()
+    if self.draining[session_id] == prompt_id then
+      self.draining[session_id] = nil
+    end
+  end, DRAIN_MS)
+  -- Withdrawing the RPC also removes its response waiter. Settle it locally.
+  if settle then
+    settle(ok, value)
+  end
 end
 
 ---@param session_id string
@@ -742,30 +804,12 @@ function Client:cancel(session_id)
   if not self.rpc then
     return
   end
-  self:cancel_permissions(session_id)
-  -- The turn must be told first, then the pending RPC is withdrawn. The order
-  -- matters: the agent needs session/cancel to stop work, and $/cancel_request
-  -- only releases the response waiter.
-  self.rpc:notify("session/cancel", { sessionId = session_id })
-  local prompt_id = self.active_requests["session/prompt"]
-  if prompt_id then
-    local settle = self.settles[prompt_id]
-    self.rpc:cancel(prompt_id)
-    self.active_requests["session/prompt"] = nil
-    -- Until the agent answers the withdrawn prompt, its permission requests
-    -- belong to the cancelled turn. Bounded, so an agent that never answers
-    -- cannot silence permission requests for the rest of the session.
-    self.draining[session_id] = prompt_id
-    vim.defer_fn(function()
-      if self.draining[session_id] == prompt_id then
-        self.draining[session_id] = nil
-      end
-    end, DRAIN_MS)
-    -- Withdrawing the RPC also removes its response waiter. Settle it locally
-    -- with the same stop reason the agent would have reported.
-    if settle then
-      settle(true, { stopReason = "cancelled" })
-    end
+  if self.prompt_ids[session_id] then
+    -- Settle locally with the same stop reason the agent would have reported.
+    self:_withdraw_prompt(session_id, true, { stopReason = "cancelled" })
+  else
+    self:cancel_permissions(session_id)
+    self.rpc:notify("session/cancel", { sessionId = session_id })
   end
   self:emit("cancel_requested", { session_id = session_id })
 end

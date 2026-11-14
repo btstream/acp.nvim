@@ -93,11 +93,19 @@ function M:cancel()
   if session.status == "cancelling" then
     -- A second cancel request must not be a no-op: end the turn locally and
     -- release its task instead of waiting for an agent that may never reply.
-    self.deps.cancel_session(session)
-    session.prompt_task = nil
+    -- Finish the turn and withdraw the old prompt *before* cancelling the task:
+    -- the task finalizer dispatches the next queued message synchronously, so
+    -- the opposite order would let this cancel hit that brand-new prompt.
+    local task = session.prompt_task
     session:finish_turn("cancelled")
     if S.conn.client then
       S.conn.client:cancel(session.id)
+    end
+    self.deps.cancel_session(session)
+    -- The finalizer usually cleared it already; only drop it when the queued
+    -- dispatch did not install a new task in the meantime.
+    if session.prompt_task == task then
+      session.prompt_task = nil
     end
     self.deps.refresh_chrome()
     if S.view.chat then

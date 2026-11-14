@@ -415,6 +415,25 @@ return function(t)
       end)
     end)
 
+    t.it("delivers a queued message when cancelling twice", function()
+      fixture(function(s, client, sent, pending)
+        client.cancel = function() end
+        controller.submit("slow", {})
+        controller.submit("queued", {})
+        local a = s.session
+        controller.cancel()
+        controller.cancel()
+        vim.wait(30)
+        -- The queued message must be dispatched by the second cancel's release
+        -- and must survive: it is a new turn, not the one being withdrawn.
+        t.eq(2, #sent)
+        t.eq("queued", sent[2].prompt[1].text)
+        t.eq("running", a.status)
+        t.truthy(a.prompt_task, "the queued turn lost its task")
+        t.truthy(pending.a, "the queued prompt is not awaiting a response")
+      end)
+    end)
+
     t.it("routes a background prompt error to its originating session", function()
       fixture(function(s, _, _, pending)
         controller.submit("first A", {})
