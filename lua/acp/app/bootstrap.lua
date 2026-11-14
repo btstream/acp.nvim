@@ -84,6 +84,7 @@ function M.build(ctx, opts, action)
     notify = notify,
     connect = ctx.connect,
     open = ctx.open,
+    dispatch = ctx.dispatch_queued,
     setup = ctx.setup or function(next_opts, next_action)
       return M.build(ctx, next_opts, next_action)
     end,
@@ -117,6 +118,17 @@ function M.build(ctx, opts, action)
   if S.view.panel then
     S.view.panel:set_views(S.view.chat, S.view.input)
     S.view.panel:destroy()
+  end
+
+  -- Reconfiguring replaces the connection and its lock: release the managed
+  -- launch lease and stop the old heartbeat, or `:Acp uninstall` keeps
+  -- reporting the replaced release as in use by this pid for the rest of the
+  -- session.
+  if S.conn.service then
+    pcall(S.conn.service.terminate, S.conn.service)
+  end
+  if S.conn.locks then
+    pcall(S.conn.locks.close, S.conn.locks)
   end
 
   if S.conn.client then
@@ -339,6 +351,10 @@ function M.build(ctx, opts, action)
     end,
     auth = function()
       return S.view.auth
+    end,
+    auth_pending = function()
+      local pending = S.conn.pending_auth_retries
+      return pending ~= nil and #pending > 0
     end,
     retry = function(session_id, text, attachments)
       -- Never send from inside the failed turn: the client may be about to be

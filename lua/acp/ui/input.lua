@@ -186,7 +186,9 @@ function Input:switch_session(key, restored, owner)
   self.session_key = key
   self.draft_slot = slot
   self.draft_owner = owner and { id = owner.id or key, cwd = owner.cwd } or nil
-  local draft = restored or (slot and self.drafts[slot] or nil)
+  -- Prefer the live draft: the persisted copy is trimmed for size, so using it
+  -- while the full attachments are still in memory would send clipped text.
+  local draft = (slot and self.drafts[slot]) or restored
   self.attachments = draft and draft.attachments or {}
   local lines = draft and draft.text or { "" }
   if type(lines) == "string" then

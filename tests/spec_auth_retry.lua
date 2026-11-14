@@ -76,6 +76,257 @@ return function(t)
       controller.hide()
     end)
 
+    t.it("does not start a second login and keeps the queued message", function()
+      vim.fn.writefile({}, marker)
+      local S = setup()
+      vim.wait(10000, function()
+        return S.sess.current ~= nil
+      end, 20)
+      t.truthy(S.sess.current, "session was not created")
+      vim.fn.delete(marker)
+      local runs = {}
+      S.view.auth.open_terminal = function(command, opts)
+        runs[#runs + 1] = { command = command, opts = opts }
+        return 1
+      end
+      local session = S.sess.current
+
+      -- Keep the session busy so both messages are queued behind the turn.
+      controller.submit("slow", {})
+      vim.wait(4000, function()
+        return session.status == "running"
+      end, 20)
+      t.eq("running", session.status)
+      controller.submit("@auth", {})
+      controller.submit("second queued", {})
+      t.eq(2, #session.queue)
+
+      controller.cancel()
+      vim.wait(10000, function()
+        return #runs > 0
+      end, 20)
+      t.eq(1, #runs, "the auth failure did not start a login")
+      -- The message behind the failed one must stay parked instead of being
+      -- dispatched into the same unauthenticated connection.
+      vim.wait(1500)
+      t.eq(1, #runs, "a second login was started while the first was running")
+      t.eq(1, #session.queue, "the queued message was dispatched into the login")
+
+      vim.fn.writefile({}, marker)
+      runs[1].opts.on_exit(0)
+      local delivered = vim.wait(25000, function()
+        local live = S.sess.current
+        return live ~= nil and live.status == "idle" and #live.queue == 0 and count(live, "user") == 2
+      end, 20)
+      t.truthy(delivered, "the parked messages were never replayed")
+      t.eq(2, count(S.sess.current, "user"), "a parked message was lost or duplicated")
+      t.eq(1, #runs)
+      vim.fn.delete(marker)
+      controller.hide()
+    end)
+
+    t.it("ends an inline turn instead of replaying its envelope after login", function()
+      vim.fn.writefile({}, marker)
+      local S = setup()
+      vim.wait(10000, function()
+        return S.sess.current ~= nil
+      end, 20)
+      t.truthy(S.sess.current, "session was not created")
+      vim.fn.delete(marker)
+      local runs = {}
+      S.view.auth.open_terminal = function(command, opts)
+        runs[#runs + 1] = { command = command, opts = opts }
+        return 1
+      end
+      local notes = {}
+      local notify = vim.notify
+      vim.notify = function(message)
+        notes[#notes + 1] = tostring(message)
+      end
+      local session = S.sess.current
+      local result_ok, finished = nil, 0
+      local hooks = {
+        local_user = { display_text = "inline: edit" },
+        on_result = function(ok)
+          result_ok = ok
+        end,
+        on_finally = function()
+          finished = finished + 1
+        end,
+      }
+      local sent = S.sess.prompts:send(session, "@auth", nil, hooks)
+      vim.wait(8000, function()
+        return #runs > 0
+      end, 20)
+      vim.wait(500)
+      vim.notify = notify
+      t.truthy(sent)
+      t.eq(1, #runs)
+      t.eq(false, result_ok, "the inline turn was not ended")
+      t.eq(1, finished, "the inline invocation was not released")
+      t.falsy(S.conn.pending_auth_retries and S.conn.pending_auth_retries[1], "an inline retry was parked")
+      t.match("re%-run", table.concat(notes, "\n"))
+      t.eq(1, count(session, "user"))
+
+      vim.fn.writefile({}, marker)
+      runs[1].opts.on_exit(0)
+      vim.wait(10000, function()
+        return S.conn.phase == "ready"
+      end, 20)
+      vim.wait(500)
+      t.eq(1, count(session, "user"), "the inline envelope was replayed as a chat turn")
+      vim.fn.delete(marker)
+      controller.hide()
+    end)
+
+    t.it("dispatches the queue when a parked retry times out", function()
+      vim.fn.writefile({}, marker)
+      local S = setup()
+      vim.wait(10000, function()
+        return S.sess.current ~= nil
+      end, 20)
+      t.truthy(S.sess.current, "session was not created")
+      vim.fn.delete(marker)
+      local session = S.sess.current
+      local notes = {}
+      local notify = vim.notify
+      vim.notify = function(message)
+        notes[#notes + 1] = tostring(message)
+      end
+      t.truthy(S.sess.runtime:enqueue(session, "queued after timeout", {}))
+      S.conn.flow:park_for_retry(session.id, "lost retry", {})
+      S.conn.pending_auth_retries[1].deadline = 0
+      session.prompt_task = {} -- pretend another turn is still settling
+      t.eq(false, S.conn.flow:flush_auth_retry())
+      t.falsy(S.conn.pending_auth_retries[1])
+      local sent = vim.wait(10000, function()
+        return session.status == "idle" and #session.queue == 0 and count(session, "user") == 1
+      end, 20)
+      vim.notify = notify
+      t.truthy(sent, "the queued message stayed stuck after the parked retry timed out")
+      t.eq("queued after timeout", session.blocks[1] and session.blocks[1].text)
+      local joined = table.concat(notes, "\n")
+      t.match("queued message", joined)
+      t.match("resend", joined)
+      t.match("in time", joined)
+      vim.fn.delete(marker)
+      controller.hide()
+    end)
+
+    t.it("explains a connection reset and notifies once per session", function()
+      vim.fn.writefile({}, marker)
+      local S = setup()
+      vim.wait(10000, function()
+        return S.sess.current ~= nil
+      end, 20)
+      t.truthy(S.sess.current, "session was not created")
+      vim.fn.delete(marker)
+      local session = S.sess.current
+      t.truthy(S.sess.runtime:enqueue(session, "queued after reset", {}))
+      S.conn.flow:park_for_retry(session.id, "lost one", {})
+      S.conn.flow:park_for_retry(session.id, "lost two", {})
+      local notes = {}
+      local notify = vim.notify
+      vim.notify = function(message)
+        notes[#notes + 1] = tostring(message)
+      end
+      local ops = require("acp.app.runtime_ops").new({
+        state = function()
+          return S
+        end,
+        send = function() end,
+        generation = function()
+          return 1
+        end,
+        reset_operations = function() end,
+      })
+      ops:invalidate_operations()
+      vim.notify = notify
+      t.eq(nil, S.conn.pending_auth_retries)
+      t.eq(1, #notes, "each dropped message notified separately")
+      t.match("connection was reset", notes[1])
+      t.match("resend", notes[1])
+      t.match("queued message", notes[1])
+      t.eq(1, #session.queue, "the queue was not kept for a manual resend")
+      controller.setup({}, { discard_queued = true })
+    end)
+
+    t.it("resets the login attempt counter after a successful retry", function()
+      vim.fn.writefile({}, marker)
+      local S = setup()
+      vim.wait(10000, function()
+        return S.sess.current ~= nil
+      end, 20)
+      t.truthy(S.sess.current, "session was not created")
+      vim.fn.delete(marker)
+      local runs = {}
+      S.view.auth.open_terminal = function(command, opts)
+        runs[#runs + 1] = { command = command, opts = opts }
+        return 1
+      end
+      controller.submit("@auth", {})
+      vim.wait(6000, function()
+        return #runs > 0
+      end, 20)
+      t.eq(1, #runs)
+      vim.fn.writefile({}, marker)
+      runs[1].opts.on_exit(0)
+      local done = vim.wait(15000, function()
+        local text = ""
+        for _, block in ipairs(S.sess.current and S.sess.current.blocks or {}) do
+          if block.kind == "agent" then
+            text = text .. (block.text or "")
+          end
+        end
+        return text:find("RESULT", 1, true) ~= nil and S.view.auth.attempts == 0
+      end, 20)
+      t.truthy(done, "the retried turn did not complete")
+      t.eq(0, S.view.auth.attempts, "the consecutive-login counter was not reset")
+      vim.fn.delete(marker)
+      controller.hide()
+    end)
+
+    t.it("resets the counter after a login triggered outside a prompt", function()
+      vim.fn.writefile({}, marker)
+      local S = setup()
+      vim.wait(10000, function()
+        return S.sess.current ~= nil
+      end, 20)
+      t.truthy(S.sess.current, "session was not created")
+      local runs = {}
+      S.view.auth.open_terminal = function(command, opts)
+        runs[#runs + 1] = { command = command, opts = opts }
+        return 1
+      end
+      -- A login started by something other than a failed prompt: there is no
+      -- message to replay when it finishes.
+      S.view.auth:run({ id = "terminal-login", type = "terminal" }, nil)
+      t.eq(1, #runs)
+      runs[1].opts.on_exit(0)
+      t.eq(1, S.view.auth.attempts)
+      vim.wait(10000, function()
+        local live = S.sess.current
+        return S.conn.phase == "ready"
+          and live
+          and live.status == "idle"
+          and not live.needs_load
+          and not S.sess.runtime.replays[live.id]
+      end, 20)
+      controller.submit("plain", {})
+      local done = vim.wait(15000, function()
+        local live = S.sess.current
+        return live ~= nil and live.status == "idle" and S.view.auth.attempts == 0 and count(live, "user") >= 1
+      end, 20)
+      t.truthy(done, "a normal successful turn did not reset the counter " .. vim.inspect({
+        attempts = S.view.auth.attempts,
+        status = S.sess.current and S.sess.current.status,
+        user = S.sess.current and count(S.sess.current, "user"),
+        queue = S.sess.current and #S.sess.current.queue,
+      }))
+      vim.fn.delete(marker)
+      controller.hide()
+    end)
+
     t.it("does not start a login for a timeout or a crash", function()
       vim.fn.writefile({}, marker)
       local S = setup()

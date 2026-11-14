@@ -110,8 +110,19 @@ function M:invalidate_operations()
     S.sess.service.creating = false
   end
   -- A queued retry belongs to the connection that failed; dropping the timer
-  -- without its payload is worse than dropping both.
-  S.conn.pending_auth_retry, S.conn.auth_after_ready = nil, nil
+  -- without its payload is worse than dropping both. Tell the user about any
+  -- message that now needs a manual resend, so the queue does not look stuck.
+  local dropped = S.conn.pending_auth_retries
+  S.conn.pending_auth_retries, S.conn.auth_after_ready = nil, nil
+  if dropped and S.conn.flow then
+    local seen = {}
+    for _, pending in ipairs(dropped) do
+      if not seen[pending.session_id] then
+        seen[pending.session_id] = true
+        S.conn.flow:abandon_parked(pending.session_id, false, "reset")
+      end
+    end
+  end
 end
 
 ---Whether a decoded JSON value is a real, non-empty string.

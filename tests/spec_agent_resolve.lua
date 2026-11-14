@@ -175,6 +175,18 @@ return function(t)
       t.eq("/tmp/somewhere/agents", Resolve.manager_root(cfg))
     end)
 
+    t.it("expands a home-relative root", function()
+      local cfg = merged({ manager = { root = "~/acp-agents" } })
+      t.eq(vim.fs.normalize(vim.fn.expand("~/acp-agents")), Resolve.manager_root(cfg))
+    end)
+
+    t.it("makes a relative root absolute and drops a trailing slash", function()
+      local cfg = merged({ manager = { root = "relative/agents/" } })
+      local expected = vim.fs.normalize(vim.fn.fnamemodify("relative/agents", ":p"))
+      t.eq(expected, Resolve.manager_root(cfg))
+      t.eq("/", expected:sub(1, 1))
+    end)
+
     t.it("rejects a command line masquerading as an executable", function()
       t.raises(function()
         merged({ manager = { npm = "npm install --global" } })

@@ -12,6 +12,7 @@ Prompts.__index = Prompts
 ---@param opts {config: fun(): table, runtime: fun(): table,
 ---  client: fun(): table|nil, connection: fun(): string,
 ---  auth: fun(): table|nil,
+---  auth_pending: fun(): boolean,
 ---  retry: fun(session_id: string, text: string, attachments: table[]|nil): boolean,
 ---  run: fun(key: string, client: table|nil, session: table|nil,
 ---  fn: fun(task: table), on_error: fun(err: any, task: table)|nil,
@@ -30,6 +31,9 @@ function Prompts.new(opts)
     get_client = opts.client,
     connection = opts.connection,
     get_auth = opts.auth,
+    auth_pending = opts.auth_pending or function()
+      return false
+    end,
     retry = opts.retry,
     run = opts.run,
     selected = opts.selected,
@@ -165,6 +169,7 @@ function Prompts:send(session, text, attachments, hooks, retrying)
   self.on_turn_start(session)
   self.on_changed()
 
+  local auth_parked = false
   local operation = self.run("prompt:" .. session.id, client, session, function(task)
     session.prompt_task = task
     local function add_error(message)
@@ -181,23 +186,39 @@ function Prompts:send(session, text, attachments, hooks, retrying)
       local auth = self.get_auth and self.get_auth()
       local handled = auth
         and auth:require(result, {
-          retry = function()
+          pending = self.auth_pending,
+          -- An inline turn does not carry its hooks through the login: its
+          -- private copy is already gone, so replaying the envelope as a chat
+          -- prompt would point at a deleted file. End it and ask for a re-run.
+          retry = (not hooks) and function()
             -- A terminal login replaces the client, so this turn cannot
             -- continue: park the message and let the owner replay it.
             if self.retry then
               self.retry(session.id, text, attachments, true)
             end
-          end,
+          end or nil,
         })
       if handled then
+        auth_parked = true
         -- The login flow owns the message and the retry; the transcript must
         -- not keep an optimistic user block that would then appear twice.
         self:drop_turn(session, turn)
+        if hooks then
+          self.notify(
+            "the inline turn ended while login is required; re-run the inline edit after logging in",
+            vim.log.levels.WARN
+          )
+          if hooks.on_result then
+            hooks.on_result(false, result)
+          end
+        end
         self.prune()
         self.on_turn_end(session)
         self.on_changed()
         self.on_render(session)
-        self.dispatch_queued(session)
+        -- The queue stays parked: after a login, a flushed retry must go first
+        -- instead of draining the next message into the still unauthenticated
+        -- connection (which would open a second login and drop a message).
         return
       elseif lowered:match("already has an active") then
         -- The agent still has a turn running that this client does not know
@@ -226,6 +247,15 @@ function Prompts:send(session, text, attachments, hooks, retrying)
       end
       runtime:finish_turn(session, turn, "error")
     else
+      -- Any successful turn proves the credentials work, whether it was a
+      -- parked retry or a normal turn after a login triggered elsewhere (a
+      -- connection or session-creation failure has no message to replay). The
+      -- counter is what bounds the automatic login loop, so it must not stay
+      -- at the limit for the rest of the session.
+      local auth = self.get_auth and self.get_auth()
+      if auth then
+        auth:reset()
+      end
       runtime:finish_turn(session, turn, result and result.stopReason or "end_turn")
     end
     if hooks and hooks.on_result then
@@ -263,7 +293,10 @@ function Prompts:send(session, text, attachments, hooks, retrying)
     end
     -- Only this task owns turn settlement and queue advancement. Selection is
     -- irrelevant, and the old operation is gone before a queued turn starts.
-    self.dispatch_queued(session)
+    -- An auth-parked turn leaves the queue alone: its flushed retry goes first.
+    if not auth_parked then
+      self.dispatch_queued(session)
+    end
   end)
   return operation.status == "running" or operation.status == "succeeded"
 end

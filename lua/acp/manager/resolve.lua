@@ -55,10 +55,14 @@ end
 ---@return string
 function M.manager_root(config)
   local configured = type(config.manager) == "table" and config.manager.root or nil
-  if type(configured) == "string" and configured ~= "" then
-    return configured
+  local root = configured
+  if type(configured) ~= "string" or configured == "" then
+    root = (vim.fn.stdpath("data") or vim.fn.expand("~/.local/share/nvim")) .. "/acp/agents"
   end
-  return (vim.fn.stdpath("data") or vim.fn.expand("~/.local/share/nvim")) .. "/acp/agents"
+  -- Locks, leases and the npm cwd are used as raw filesystem paths, not only
+  -- through the store (which normalises on its own). Expand `~` and make a
+  -- relative root absolute here so every user of the root agrees.
+  return vim.fs.normalize(vim.fn.fnamemodify(vim.fn.expand(root), ":p"))
 end
 
 ---@param config table
