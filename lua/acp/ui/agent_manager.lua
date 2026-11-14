@@ -585,6 +585,10 @@ function M:open()
     buffer = self.buf,
     callback = function()
       vim.schedule(function()
+        local manager = self.deps.manager
+        if manager and (manager.asking or 0) > 0 then
+          return
+        end
         self:close()
       end)
     end,

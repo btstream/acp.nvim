@@ -243,6 +243,116 @@ return function(t)
       t.eq("@geohar/pi-acp", state.install.package)
       env.cleanup()
     end)
+
+    t.it("keeps an uppercase prerelease intact in the receipt and pointer", function()
+      local env = setup({ version = "1.0.0-RC.1" })
+      local result = run(function(cb)
+        env.installer:install("claude", { confirm = allow }, cb)
+      end)
+      t.eq(true, result.ok, vim.inspect(result.value))
+      t.match("^v1%.0%.0%-rc%.1%-", result.value.install_id)
+      t.eq("1.0.0-RC.1", env.store:state("claude").install.version)
+      env.cleanup()
+    end)
+  end)
+
+  t.describe("managed connection lease", function()
+    local function connection_harness()
+      local Connection = require("acp.app.connection")
+      local Resolve = require("acp.manager.resolve")
+      local client_mod = require("acp.protocol.client")
+      local original_resolve, original_new = Resolve.resolve, client_mod.new
+      local launch = { source = "managed", agent_id = "claude", install_id = "rel-1", command = "node", args = {} }
+      Resolve.resolve = function()
+        return launch
+      end
+      local leased, unleased, start_cb
+      local locks = {
+        lease = function(_, id, install_id)
+          leased = { id, install_id }
+          return { path = "/tmp/lease", install_id = install_id }
+        end,
+        unlease = function()
+          unleased = (unleased or 0) + 1
+        end,
+        install_in_use = function()
+          return false
+        end,
+      }
+      local client = {
+        launch = launch,
+        is_ready = function()
+          return false
+        end,
+        start = function(_, cb)
+          start_cb = cb
+        end,
+        shutdown = function() end,
+      }
+      client_mod.new = function()
+        return client
+      end
+      local S = { conn = { phase = "disconnected", client = nil }, sess = {} }
+      local conn = Connection.new({
+        config = function()
+          return { agent = "claude", agents = { claude = {} }, mcp_servers = {} }
+        end,
+        resolve_cwd = function()
+          return "/tmp"
+        end,
+        state = function()
+          return S
+        end,
+        generation = function()
+          return 1
+        end,
+        reset_operations = function() end,
+        on_event = function() end,
+        notify = function() end,
+        on_changed = function() end,
+        on_ready = function() end,
+        on_start_failed = function() end,
+        on_stopped = function() end,
+        runtime_lost = function() end,
+        reset_permissions = function() end,
+        stop_animation = function() end,
+        interactions = function()
+          return nil
+        end,
+        on_render = function() end,
+        store = function()
+          return {}
+        end,
+        locks = locks,
+      })
+      return conn,
+        S,
+        function()
+          return leased, unleased, start_cb
+        end,
+        function()
+          Resolve.resolve, client_mod.new = original_resolve, original_new
+        end
+    end
+
+    t.it("takes the lease before starting the agent and drops it on failure", function()
+      local conn, S, seen, restore = connection_harness()
+      local ok, err = pcall(function()
+        conn:connect()
+        local leased, _, start_cb = seen()
+        t.truthy(leased, "no lease was taken before the process started")
+        t.eq({ "claude", "rel-1" }, leased)
+        t.truthy(start_cb)
+        start_cb(false, { message = "boom" })
+        vim.wait(50)
+        t.eq("disconnected", S.conn.phase)
+        t.eq(1, seen() and select(2, seen()))
+      end)
+      restore()
+      if not ok then
+        error(err)
+      end
+    end)
   end)
 
   t.describe("manager uninstall", function()
@@ -294,6 +404,28 @@ return function(t)
       env.cleanup()
     end)
 
+    t.it("rechecks the lease after the user confirmed", function()
+      local env = setup({ version = "1.0.0" })
+      local installed = run(function(cb)
+        env.installer:install("claude", { confirm = allow }, cb)
+      end)
+      local lease
+      local result = run(function(cb)
+        env.installer:uninstall("claude", {
+          confirm = function(_, answer)
+            -- Another instance starts the release while the picker is open.
+            lease = env.locks:lease("claude", installed.value.install_id)
+            answer(true)
+          end,
+        }, cb)
+      end)
+      t.eq(false, result.ok)
+      t.match("cannot remove", result.value.message)
+      t.eq("installed", env.store:state("claude").status)
+      env.locks:unlease(lease)
+      env.cleanup()
+    end)
+
     t.it("reports agents with no manager-owned install", function()
       local env = setup({})
       local result = run(function(cb)
@@ -301,6 +433,31 @@ return function(t)
       end)
       t.eq(false, result.ok)
       t.match("no manager%-owned install", result.value)
+      env.cleanup()
+    end)
+
+    t.it("fails clearly on a corrupt pointer before asking for confirmation", function()
+      local env = setup({ version = "1.0.0" })
+      local installed = run(function(cb)
+        env.installer:install("claude", { confirm = allow }, cb)
+      end)
+      local pointer = env.store:agent_dir("claude") .. "/current.json"
+      local fh = assert(io.open(pointer, "wb"))
+      fh:write("{not json")
+      fh:close()
+      local asked = false
+      local result = run(function(cb)
+        env.installer:uninstall("claude", {
+          confirm = function(_, answer)
+            asked = true
+            answer(true)
+          end,
+        }, cb)
+      end)
+      t.eq(false, result.ok)
+      t.falsy(asked, "the user was asked before the pointer was validated")
+      t.match("current%.json", result.value.message)
+      t.truthy(vim.uv.fs_stat(installed.value.dir), "the releases must stay")
       env.cleanup()
     end)
   end)

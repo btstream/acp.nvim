@@ -55,7 +55,10 @@ end
 local function install_id(version)
   local stamp = string.format("%d", vim.uv.hrtime() % 1e12)
   local suffix = tostring(math.random(1000, 9999))
-  return string.format("v%s-%s-%s", version:gsub("[^%w%.%-]", "_"), stamp, suffix)
+  -- Store ids are lowercase-only; semver prereleases may contain uppercase.
+  -- Lowercasing here keeps the path safe while the receipt and pointer retain
+  -- the version exactly as npm reported it.
+  return string.format("v%s-%s-%s", version:lower():gsub("[^%w%.%-]", "_"), stamp, suffix)
 end
 
 ---Validate a request before touching the filesystem or the network.
@@ -331,6 +334,12 @@ function Installer:uninstall(id, opts, cb)
     cb(false, id .. " has no manager-owned install")
     return
   end
+  if state.status == "broken" and not state.install_id then
+    -- There is no release to point at: asking first would only end in a second
+    -- error. Explain what is wrong while the pointer is still on disk.
+    cb(false, { message = id .. ": current.json is unreadable (" .. tostring(state.error) .. "); repair or delete it" })
+    return
+  end
   self.running[id] = "uninstall"
   local function finish(ok, value)
     self.running[id] = nil
@@ -375,6 +384,14 @@ function Installer:uninstall(id, opts, cb)
     if not accepted then
       unlock()
       finish(false, { cancelled = true })
+      return
+    end
+    -- The first check happened before the picker; another instance may have
+    -- started the release while the user was deciding.
+    local now_busy, now_reason = self.locks:install_in_use(id, install_id_value)
+    if now_busy then
+      unlock()
+      finish(false, { message = "cannot remove " .. id .. ": " .. tostring(now_reason) })
       return
     end
     self:remove_release(id, install_id_value, unlock, finish)

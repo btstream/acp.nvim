@@ -94,6 +94,7 @@ function Connection:connect()
     self.reset_operations()
     self.runtime_lost()
     S.conn.client = nil
+    self:release_lease()
     previous:shutdown(true)
   end
   S.conn.phase = "starting"
@@ -112,6 +113,10 @@ function Connection:connect()
       self.on_start_failed({ message = launch_err })
       return
     end
+    -- Pin the release before the process exists: initialize can take seconds,
+    -- and a prune in another instance would otherwise delete the files while
+    -- they are being loaded. A failed start releases it again below.
+    self:hold_lease(launch)
     client = client_mod.new({
       agent = vim.tbl_extend("force", {}, cfg.agents[cfg.agent], {
         command = launch.command,
@@ -161,6 +166,9 @@ function Connection:connect()
           self.on_changed()
           self.on_ready()
         else
+          -- The lease was taken before the spawn; a failed start has no turn to
+          -- protect and must not block uninstall/update.
+          self:release_lease()
           self.state().conn.phase = "disconnected"
           self.on_changed()
           self.on_start_failed(err)

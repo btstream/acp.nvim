@@ -241,6 +241,46 @@ return function(t)
       vim.fn.delete(root, "rf")
     end)
 
+    t.it("update_all updates an explicitly installed older version", function()
+      local root = temp_root()
+      local svc = service(root, { version = "2.0.0", installed_version = "1.0.0" })
+      local base_opts = { version = "2.0.0" }
+      local base = fake.new(base_opts)
+      local runner = {
+        run = function(argv, opts, cb)
+          if table.concat(argv, " "):find("@1.0.0", 1, true) then
+            cb(true, { code = 0, stdout = vim.json.encode("1.0.0"), stderr = "", tail = "" })
+            return
+          end
+          if argv[2] == "install" then
+            local fh = io.open(opts.cwd .. "/package.json", "rb")
+            if fh then
+              local value = vim.json.decode(fh:read("*a"))
+              fh:close()
+              for _, version in pairs(value.dependencies or {}) do
+                base_opts.installed_version = version
+              end
+            end
+          end
+          base.run(argv, opts, cb)
+        end,
+      }
+      svc.injected.npm = npm_mod.new({
+        run = runner.run,
+        node = function()
+          return "node"
+        end,
+        npm = function()
+          return "npm"
+        end,
+      })
+      svc:install("pi", { version = "1.0.0" })
+      t.eq("installed", svc:store():state("pi").status)
+      t.eq(1, svc:update_all(), "the explicit older install was treated as latest")
+      t.eq("2.0.0", svc:store():state("pi").install.version)
+      vim.fn.delete(root, "rf")
+    end)
+
     t.it("reports a cancelled install without an error", function()
       local root = temp_root()
       local svc = service(root, { version = "1.0.0" }, function(_, answer)
@@ -397,6 +437,36 @@ return function(t)
       rows[1].installable = true
       rows[1].outcome = { phase = "failed", action = "install", message = "E404 not found" }
       t.match("E404 not found", text_of(rows))
+    end)
+
+    t.it("stays open while a confirmation picker is asking", function()
+      local manager = {
+        asking = 0,
+        list = function()
+          return rows_for({})
+        end,
+      }
+      local ui = AgentManagerUI.new({
+        manager = manager,
+        config = function()
+          return { manager = {} }
+        end,
+        on_use = function() end,
+      })
+      ui:open()
+      t.truthy(ui:is_open())
+      manager.asking = 1
+      local other = vim.api.nvim_open_win(vim.api.nvim_create_buf(false, true), true, { split = "right" })
+      vim.api.nvim_set_current_win(ui.win)
+      vim.api.nvim_set_current_win(other)
+      vim.wait(50)
+      t.truthy(ui:is_open(), "the window closed while the confirmation was asking")
+      manager.asking = 0
+      vim.api.nvim_set_current_win(ui.win)
+      vim.api.nvim_set_current_win(other)
+      vim.wait(50)
+      t.falsy(ui:is_open(), "the window must close once the confirmation is gone")
+      pcall(vim.api.nvim_win_close, other, true)
     end)
 
     t.it("never opens a window until asked", function()

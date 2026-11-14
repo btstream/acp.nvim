@@ -404,14 +404,27 @@ function Manager:ask(details, cb)
     { label = details.action == "uninstall" and "Remove it" or "Continue", value = true },
     { label = "Cancel", value = false },
   }
+  -- The window uses this to keep itself open while a picker is on screen: the
+  -- picker makes the agents float lose focus, which normally closes it.
+  self.asking = (self.asking or 0) + 1
+  local finished = false
+  local function answer(value)
+    if finished then
+      return
+    end
+    finished = true
+    self.asking = math.max(0, (self.asking or 1) - 1)
+    cb(value)
+    self:changed()
+  end
   self.presenter.select({
     title = table.concat(lines, "\n"),
     items = items,
     on_choice = function(value)
-      cb(value == true)
+      answer(value == true)
     end,
     on_cancel = function()
-      cb(false)
+      answer(false)
     end,
   })
 end
@@ -439,7 +452,6 @@ function Manager:install(id, opts)
         self:conclude(id, { phase = "unchanged", action = action, version = value.version })
         self.notify(string.format("%s is already up to date (%s)", id, value.version), vim.log.levels.INFO)
       else
-        self.latest[id] = self.latest[id] or value.version
         self:conclude(id, { phase = "done", action = action, version = value.version })
         self.notify(string.format("%s %s installed", id, value.version), vim.log.levels.INFO)
       end
