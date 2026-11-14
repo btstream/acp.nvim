@@ -114,14 +114,25 @@ def client_declares(*path):
     return node is not False
 
 
-def request_client(method, params, timeout=10, before_wait=None):
-    """Send an agent -> client request and wait for its response message."""
+def request_client(method, params, timeout=10, before_wait=None, turn=None):
+    """Send an agent -> client request and wait for its response message.
+
+    With `turn`, the request is only sent while that prompt is still active,
+    and the check and the send happen under the lock `$/cancel_request` takes:
+    a turn that has already answered `cancelled` never asks anything after it.
+    Returns (None, None) when the turn was over.
+    """
     with permissions_lock:
+        if turn is not None and turn not in active_prompts:
+            return None, None
         req_id = next_request_id[0]
         next_request_id[0] += 1
         slot = PendingPermission(None)
         client_requests[req_id] = slot
-    send({"jsonrpc": "2.0", "id": req_id, "method": method, "params": params})
+        if turn is not None:
+            send({"jsonrpc": "2.0", "id": req_id, "method": method, "params": params})
+    if turn is None:
+        send({"jsonrpc": "2.0", "id": req_id, "method": method, "params": params})
     if before_wait:
         before_wait(req_id)
     slot.event.wait(timeout=timeout)
@@ -159,6 +170,23 @@ def notify(method, params):
 
 def update(update_obj):
     notify("session/update", {"sessionId": SESSION_ID, "update": update_obj})
+
+
+def prompt_over(msg_id):
+    """End a turn that was cancelled; True when the caller must stop.
+
+    `$/cancel_request` answers the prompt itself and drops it from
+    `active_prompts`, and the next prompt clears `cancel_event`, so the shared
+    event alone cannot tell a worker thread that *its* turn is over.
+    """
+    with permissions_lock:
+        gone = msg_id not in active_prompts
+    if gone:
+        return True
+    if cancel_event.is_set():
+        finish(msg_id, "cancelled")
+        return True
+    return False
 
 
 def finish(msg_id, stop_reason="end_turn"):
@@ -617,18 +645,25 @@ def run_prompt(msg_id, text):
             path = match.group(1)
             choices = []
             for kind, target in [("read", path), ("edit", path), ("edit", path + ".other")]:
-                pending = PendingPermission(msg_id)
-                with permissions_lock:
-                    permissions[9001] = pending
-                send({"jsonrpc": "2.0", "id": 9001, "method": "session/request_permission", "params": {
+                # A cancelled turn must stop asking: ACP agents end the turn
+                # with `cancelled` after session/cancel. Continuing here sent
+                # permission requests into the next turn and to the user.
+                if prompt_over(msg_id):
+                    return
+                # A fresh JSON-RPC id per request: a cancelled turn's request
+                # can still be in flight when the next turn asks, and a shared
+                # id made their answers land on the wrong turn.
+                req_id, response = request_client("session/request_permission", {
                     "sessionId": SESSION_ID,
                     "toolCall": {"toolCallId": "inline_permission", "kind": kind, "locations": [{"path": target}]},
                     "options": [{"kind": "allow_once", "optionId": "allow"}, {"kind": "reject_once", "optionId": "reject"}],
-                }})
-                pending.event.wait(timeout=5)
-                choices.append(pending.option)
-                with permissions_lock:
-                    permissions.pop(9001, None)
+                }, timeout=5, turn=msg_id)
+                if req_id is None:
+                    return
+                outcome = ((response_body(response) or {}).get("outcome") or {})
+                choices.append(outcome.get("optionId") if outcome.get("outcome") == "selected" else None)
+            if prompt_over(msg_id):
+                return
             if choices != ["allow", "allow", "reject"]:
                 error(msg_id, -32099, "inline permission policy failed: " + repr(choices))
                 with permissions_lock:
@@ -996,6 +1031,10 @@ def handle(msg):
             cancel_event.set()
             with permissions_lock:
                 active_prompts.pop(target, None)
+                pending = permissions.get(9001)
+            # Wake a worker waiting on a permission answer for this turn.
+            if pending and pending.msg_id == target and not pending.event.is_set():
+                pending.event.set()
             result(target, {"stopReason": "cancelled"})
     elif method == "session/set_config_option":
         result(msg_id, {"configOptions": [

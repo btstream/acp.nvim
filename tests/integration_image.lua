@@ -3,7 +3,8 @@
 -- ACP_IMAGE_CAPABILITY=1 nvim --headless -i NONE -u tests/minimal_init.lua -l tests/integration_image.lua
 --
 -- The mock agent only advertises promptCapabilities.image when that variable is
--- set, so this also proves the client refuses the attachment otherwise.
+-- set; without it this proves the image degrades to a resource_link instead.
+-- Run it both ways.
 local root = vim.fn.fnamemodify(vim.fn.getcwd(), ":p")
 
 local function wait(cond, timeout, label)
@@ -194,14 +195,31 @@ if capable then
     cfg.context.images.path_mode = "link"
   end)
 else
-  check("sending refuses an embedded image when the agent did not advertise it", function()
-    -- A clipboard attachment is always embedded, so it must be refused.
-    local att = context.image_bytes(png, "image/png", controller.state().config)
+  check("an embedded image degrades to a resource link when the agent did not advertise it", function()
+    -- Since stage 8 the send is not refused: an `image` block the agent never
+    -- promised to handle becomes a resource_link, decided before reading bytes.
+    local cfg = controller.state().config
+    local att = context.image_bytes(png, "image/png", cfg)
     assert(att and att.inline == true, "clipboard attachment was not embedded")
-    local before = #vim.api.nvim_buf_get_lines(st.chat.buf, 0, -1, false)
-    local sent = controller.send_now("look here", { att }, st.session)
-    assert(not sent, "prompt with an embedded image was accepted by a non-capable agent")
-    assert(#vim.api.nvim_buf_get_lines(st.chat.buf, 0, -1, false) == before, "a failed send changed the transcript")
+    local blocks = context.to_prompt("look here", { att }, cfg, {
+      supports = function(name)
+        return require("acp.protocol.capabilities").prompt(st.client, name)
+      end,
+    })
+    local kinds = {}
+    for _, block in ipairs(blocks) do
+      kinds[#kinds + 1] = block.type
+    end
+    assert(not vim.tbl_contains(kinds, "image"), "an image block reached a non-capable agent: " .. vim.inspect(kinds))
+    assert(vim.tbl_contains(kinds, "resource_link"), "the image was dropped instead of linked: " .. vim.inspect(kinds))
+    assert(controller.send_now("look here", { att }, st.session), "the degraded send was refused")
+    wait(function()
+      return st.session and st.session.status == "running"
+    end, 8000, "turn start")
+    controller.cancel()
+    wait(function()
+      return st.session and st.session.status == "idle"
+    end, 8000, "turn cancel")
   end)
 
   check("a link-mode image is still allowed", function()

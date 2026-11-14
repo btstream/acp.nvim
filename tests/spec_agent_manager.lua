@@ -3,6 +3,18 @@
 return function(t)
   local store_mod = require("acp.manager.store")
   local lock_mod = require("acp.manager.lock")
+
+  ---A pid with no process behind it (pid_max can be 4M, so a fixed number
+  ---may belong to a live process).
+  local function dead_pid()
+    for pid = 999999, 999999 + 10000 do
+      local _, err = vim.uv.kill(pid, 0)
+      if type(err) == "string" and err:match("ESRCH") then
+        return pid
+      end
+    end
+    error("no free pid found")
+  end
   local registry = require("acp.manager.registry")
 
   local counter = 0
@@ -251,12 +263,35 @@ return function(t)
       vim.fn.mkdir(dir, "p")
       assert(lock_mod.write_json_atomic(dir .. "/owner.json", {
         host = lock_mod.hostname(),
-        pid = 999999,
+        pid = dead_pid(),
         -- Ten minutes old: past STALE_MS, so the holder is not coming back.
-        heartbeat = vim.uv.now() - 10 * 60 * 1000,
+        heartbeat = lock_mod.now() - 10 * 60 * 1000,
       }))
       local handle = locks:acquire("claude")
       t.truthy(handle, "an abandoned lock must be reclaimable")
+      locks:release(handle)
+      vim.fn.delete(root, "rf")
+    end)
+
+    t.it("ages heartbeats by wall clock, so a lock from before a reboot is reclaimable", function()
+      -- vim.uv.now() restarts at boot; a heartbeat written by it before a reboot
+      -- is larger than any value after it and never looked stale.
+      local root = temp_root()
+      local locks = lock_mod.new({
+        root = function()
+          return root
+        end,
+      })
+      local dir = root .. "/.locks/claude"
+      vim.fn.mkdir(dir, "p")
+      assert(lock_mod.write_json_atomic(dir .. "/owner.json", {
+        host = lock_mod.hostname(),
+        pid = dead_pid(),
+        heartbeat = lock_mod.now() - 24 * 60 * 60 * 1000,
+      }))
+      t.truthy(lock_mod.now() > vim.uv.now(), "wall clock, not time since boot")
+      local handle = locks:acquire("claude")
+      t.truthy(handle)
       locks:release(handle)
       vim.fn.delete(root, "rf")
     end)
@@ -266,7 +301,7 @@ return function(t)
       -- could start a second installer in the same directory.
       local live, reason = lock_mod.alive({
         host = lock_mod.hostname(),
-        pid = 999999,
+        pid = dead_pid(),
         heartbeat = 0,
       }, "/x")
       t.truthy(live)
@@ -324,12 +359,13 @@ return function(t)
       })
       local dir = root .. "/.leases/claude"
       vim.fn.mkdir(dir, "p")
-      local path = dir .. "/lease-999999.json"
+      local pid = dead_pid()
+      local path = dir .. "/lease-" .. pid .. ".json"
       assert(lock_mod.write_json_atomic(path, {
         host = lock_mod.hostname(),
-        pid = 999999,
+        pid = pid,
         installId = "rel-old",
-        heartbeat = vim.uv.now() - 10 * 60 * 1000,
+        heartbeat = lock_mod.now() - 10 * 60 * 1000,
       }))
       local live = locks:live_leases("claude")
       t.eq(0, #live)

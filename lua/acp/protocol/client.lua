@@ -11,6 +11,8 @@ local PROTOCOL_VERSION = 1
 local CLIENT_INFO = { name = "acp.nvim", title = "acp.nvim", version = "0.1.0" }
 
 local REQUEST_TIMEOUT = 30000
+-- How long a cancelled turn may keep asking before its requests count as new.
+local DRAIN_MS = 5000
 
 ---Resolve the effective request timeout from the client's transport limits.
 ---Per-method overrides come first, then the generic request timeout.
@@ -68,6 +70,9 @@ function M.new(opts)
     elicitations = {},
     elicitation_seq = 0,
     active_requests = {},
+    -- session id -> rpc id of a prompt cancelled locally whose agent-side
+    -- turn has not ended yet. See `Client:cancel`.
+    draining = {},
     settles = {},
     timeout_extensions = {},
     generation = 0,
@@ -444,6 +449,14 @@ function Client:install_handlers()
         self.interactions:on_remote_cancel(rpc_id)
       end
     end
+    -- The response to a prompt we withdrew: the agent has now ended that turn.
+    self.rpc.on_late_response = function(rpc_id)
+      for session_id, prompt_id in pairs(self.draining) do
+        if prompt_id == rpc_id then
+          self.draining[session_id] = nil
+        end
+      end
+    end
   end
   self:on_agent_notification("session/update", function(params)
     self:emit("session_update", params)
@@ -487,6 +500,15 @@ function Client:handle_permission(params, respond, respond_error, rpc_id)
   local session_id = params.sessionId
   local tool_call = params.toolCall or {}
   local options = params.options or {}
+  -- A request from a turn the user cancelled. The client settles a cancelled
+  -- prompt locally, so the next turn may already be running; without this the
+  -- old turn's request would be shown to the user, or answered by the policy
+  -- of a turn that never asked (ACP: answer it with `cancelled`).
+  if session_id ~= nil and self.draining[session_id] ~= nil then
+    Log.debug("cancelling a permission request from a cancelled turn")
+    respond({ outcome = { outcome = "cancelled" } })
+    return
+  end
   self.permission_seq = self.permission_seq + 1
   local key = "perm:" .. self.permission_seq
 
@@ -730,6 +752,15 @@ function Client:cancel(session_id)
     local settle = self.settles[prompt_id]
     self.rpc:cancel(prompt_id)
     self.active_requests["session/prompt"] = nil
+    -- Until the agent answers the withdrawn prompt, its permission requests
+    -- belong to the cancelled turn. Bounded, so an agent that never answers
+    -- cannot silence permission requests for the rest of the session.
+    self.draining[session_id] = prompt_id
+    vim.defer_fn(function()
+      if self.draining[session_id] == prompt_id then
+        self.draining[session_id] = nil
+      end
+    end, DRAIN_MS)
     -- Withdrawing the RPC also removes its response waiter. Settle it locally
     -- with the same stop reason the agent would have reported.
     if settle then

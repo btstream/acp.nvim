@@ -60,6 +60,50 @@ return function(t)
       t.eq(nil, client.active_requests["session/prompt"])
     end)
 
+    t.it("answers a cancelled turn's late permission request with cancelled", function()
+      -- The prompt is settled locally on cancel, so the next turn can start
+      -- before the agent finishes the old one. A permission request in that
+      -- gap belongs to the cancelled turn and must not reach the user or the
+      -- next turn's policy.
+      local sent = {}
+      local client = new_client({})
+      client.rpc = require("acp.transport.jsonrpc").new({
+        send = function(payload)
+          sent[#sent + 1] = vim.json.decode(payload)
+          return true
+        end,
+      })
+      client:install_handlers()
+      local opened = 0
+      client.interactions = {
+        open = function()
+          opened = opened + 1
+        end,
+        cancel_session = function() end,
+      }
+      local id = client.rpc:request("session/prompt", {}, function() end)
+      client.active_requests["session/prompt"] = id
+      client:cancel("s1")
+
+      local request = {
+        jsonrpc = "2.0",
+        id = 77,
+        method = "session/request_permission",
+        params = { sessionId = "s1", toolCall = { kind = "read" }, options = {} },
+      }
+      client.rpc:handle(request)
+      t.eq(0, opened, "a cancelled turn's request was shown")
+      t.eq(77, sent[#sent].id)
+      t.eq("cancelled", sent[#sent].result.outcome.outcome)
+
+      -- Once the agent answers the withdrawn prompt, its turn is over and new
+      -- requests are asked normally again.
+      client.rpc:handle({ jsonrpc = "2.0", id = id, result = { stopReason = "cancelled" } })
+      request.id = 78
+      client.rpc:handle(request)
+      t.eq(1, opened)
+    end)
+
     t.it("extends an extendable timeout while updates keep arriving", function()
       local client = new_client({})
       local rpc = require("acp.transport.jsonrpc").new({

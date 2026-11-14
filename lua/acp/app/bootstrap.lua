@@ -538,7 +538,7 @@ function M.build(ctx, opts, action)
     config = cfg,
     notify = notify,
     refresh_chrome = ctx.refresh_chrome,
-    focus = M.focus,
+    focus = ctx.focus,
   })
   S.conn.events = Events.new({
     state = function()

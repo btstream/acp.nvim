@@ -235,7 +235,11 @@ function Rpc:handle(msg, raw)
   -- Response
   if msg.id ~= nil then
     if self.cancelled[msg.id] then
-      -- We asked to cancel this request; its response carries no useful value.
+      -- We asked to cancel this request; its response carries no useful value,
+      -- but it does tell the client the agent has finished with it.
+      if self.on_late_response then
+        pcall(self.on_late_response, msg.id)
+      end
       return
     end
     local entry = self.pending[msg.id]

@@ -1,6 +1,6 @@
 """Real completion frontends in an attached UI (optional dependency: pynvim).
 
-python3 tests/integration_completion.py blink /path/to/blink.cmp
+python3 tests/integration_completion.py blink /path/to/blink.cmp [/path/to/blink.lib]
 python3 tests/integration_completion.py cmp /path/to/nvim-cmp
 python3 tests/integration_completion.py native
 """
@@ -18,7 +18,8 @@ logging.disable(logging.CRITICAL)
 ROOT = str(Path(__file__).resolve().parent.parent)
 ENGINE = sys.argv[1]
 assert ENGINE in ("blink", "cmp", "native")
-DEP = str(Path(sys.argv[2]).resolve()) if len(sys.argv) > 2 else ""
+# Every extra argument is a runtimepath entry: blink.cmp v2 also needs blink.lib.
+DEPS = [str(Path(arg).resolve()) for arg in sys.argv[2:]]
 nvim = pynvim.attach("child", argv=["nvim", "--embed", "-u", "NONE", "-i", "NONE", "--noplugin"])
 
 
@@ -141,9 +142,9 @@ try:
         nvim.ui_attach(100, 30, rgb=True, ext_linegrid=True)
         nvim.exec_lua(
             """
-            local root, dep, engine, project = ...
+            local root, deps, engine, project = ...
             vim.opt.runtimepath:append(root)
-            if dep ~= '' then vim.opt.runtimepath:append(dep) end
+            for _, dep in ipairs(deps) do vim.opt.runtimepath:append(dep) end
             _G.test_engine = engine
             if engine == 'blink' then
               require('blink.cmp').setup({
@@ -188,7 +189,7 @@ try:
             vim.cmd('startinsert')
             """,
             ROOT,
-            DEP,
+            DEPS,
             ENGINE,
             str(project),
         )

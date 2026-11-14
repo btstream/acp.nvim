@@ -92,7 +92,18 @@ end
 ---@param path string
 ---@return boolean live
 ---@return string|nil reason
-local function alive(value, path)
+---Wall-clock milliseconds.
+---
+---Heartbeats are compared across processes and across reboots, so they cannot
+---use `vim.uv.now()`: that is a monotonic clock that restarts at boot, which
+---made a lock written before a reboot look fresh forever afterwards.
+---@return integer
+function M.now()
+  local sec, usec = vim.uv.gettimeofday()
+  return sec * 1000 + math.floor(usec / 1000)
+end
+
+local function alive(value, path, now)
   if not value then
     -- Unreadable or half-written: treat as live-but-unknown so callers do not
     -- delete what they cannot reason about.
@@ -118,7 +129,9 @@ local function alive(value, path)
     return true, "pid " .. owner .. " exists but cannot be signalled"
   end
   local heartbeat = tonumber(value.heartbeat) or 0
-  if heartbeat > 0 and (vim.uv.now() - heartbeat) > STALE_MS then
+  -- A heartbeat in the future (clock moved back) cannot be aged: keep the
+  -- conservative answer and do not steal it.
+  if heartbeat > 0 and ((now or M.now)() - heartbeat) > STALE_MS then
     return false, "abandoned"
   end
   -- The process is gone but the record is fresh: it may be the tail of a crash.
@@ -131,9 +144,7 @@ end
 function M.new(opts)
   return setmetatable({
     get_root = opts.root,
-    clock = opts.clock or function()
-      return vim.uv.now()
-    end,
+    clock = opts.clock or M.now,
     leases = {},
     timers = {},
   }, Lock)
@@ -181,7 +192,7 @@ function Lock:acquire(id, meta)
   local ok = vim.uv.fs_mkdir(dir, 448)
   if not ok then
     local info = read_json(dir .. "/owner.json")
-    local live, reason = alive(info, dir)
+    local live, reason = alive(info, dir, self.clock)
     if live then
       return nil, "another instance is using this agent: " .. tostring(reason)
     end
@@ -317,7 +328,7 @@ function Lock:live_leases(id)
     if kind == "file" and name:match("^lease%-.*%.json$") then
       local path = dir .. "/" .. name
       local info = read_json(path)
-      local is_live, reason = alive(info, path)
+      local is_live, reason = alive(info, path, self.clock)
       if is_live then
         if reason and reason:match("cannot be signalled") then
           unknown[#unknown + 1] = name .. ": " .. reason

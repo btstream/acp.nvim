@@ -509,7 +509,7 @@ ACP `image` 块，因此没有引入依赖。
   异步读取用独立 extmark 跟随编辑，以 input/config/草稿代次拦截过期结果；不强制 startinsert。
 - 缓存清理保护草稿（含持久化）、队列与会话块引用；写入时即使用 0600，校验已有摘要文件，
   检查 rename 返回值。WebP 文件嗅探改读完整 12 字节头。图像测试隔离缓存，避免清理用户图片。
-- `app/prompts`：按 `promptCapabilities.image` 拒绝内嵌图像并提示切换模型；链接形式仍可发送。
+- `app/prompts`：agent 未声明 `promptCapabilities.image` 时，内嵌图像在读取字节前降级为 `resource_link`（stage 8 起不再拒绝发送）。
 - 日志把 `data`/`blob` 的 base64 载荷替换为 `<base64 N bytes>`；配置校验交叉检查
   `context.images.max_bytes` 与 `transport.max_line_bytes`。
 
