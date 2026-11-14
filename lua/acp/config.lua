@@ -434,7 +434,8 @@ M.defaults = {
         -- renderer, which needs far less width.
         min_split_width = 90,
         -- Unchanged lines kept around each change: shown around each card in
-        -- the fallback, and left unfolded around each hunk in the columns.
+        -- the fallback, and left unfolded around each hunk in the columns when
+        -- `fold` is on.
         -- `syntax` colours the card rows with the file's own syntax.
         context = 3,
         syntax = true,
@@ -442,9 +443,10 @@ M.defaults = {
         max_rows = 4000,
         -- Jump to the next pending hunk after accepting/rejecting one.
         advance = false,
-        -- Side-by-side window options: fold unchanged context, and keep the
-        -- columns scrolling and moving together.
-        fold = true,
+        -- Side-by-side window options: fold unchanged context further than
+        -- `context` rows, and keep the columns scrolling and moving together.
+        -- Off by default: the review opens fully unfolded.
+        fold = false,
         sync_scroll = true,
         -- Relative line numbers, counted in real lines (filler rows are
         -- skipped). Off by default: absolute numbers can be compared across
@@ -452,8 +454,10 @@ M.defaults = {
         relative_number = false,
         -- Show the accept/reject keys after the hunk under the cursor.
         hints = true,
-        -- Width of the fold column. 0 hides it and gains three columns of code.
-        foldcolumn = 1,
+        -- Deprecated and ignored: the review gutter no longer draws a fold
+        -- column (`foldcolumn=0` always), since folds are off by default.
+        -- Kept so existing configurations still validate.
+        foldcolumn = 0,
         -- Float geometry. Only used when target = "float".
         placement = "center",
         width = 140,

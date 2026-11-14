@@ -826,7 +826,6 @@ function M.open(opts)
       fold = review.fold,
       sync_scroll = review.sync_scroll,
       relative_number = review.relative_number,
-      foldcolumn = review.foldcolumn,
     })
     if not ok then
       for _, buf in ipairs(buffers) do
@@ -857,7 +856,6 @@ function M.open(opts)
         fold = review.fold,
         sync_scroll = review.sync_scroll,
         relative_number = review.relative_number,
-        foldcolumn = review.foldcolumn,
         pane = pane,
       }
     end

@@ -389,13 +389,17 @@ diff 默认在新 tabpage 里打开并排的真实窗口：
 `3-column` 为「原文 │ 结果 │ 提案」，`2-column` 去掉只读的原文，只留「结果 │ 提案」。
 各栏**不使用** Vim 的 diff 模式（它会把同一 tab 里所有 diff 窗口互相比较，无法表达
 「原文↔结果」「结果↔提案」两组对比）：插件按同一份对齐表给每栏插入 filler 行，三栏行数
-完全相同，`scrollbind`/`cursorbind`/折叠由 Neovim 原生同步，语法高亮按文件自身语言启动。
+完全相同，`scrollbind`/`cursorbind` 由 Neovim 原生同步，语法高亮按文件自身语言启动。
+默认**不折叠**任何行：分栏的窗口选项显式设成不折叠（`foldmethod=manual`、`foldlevel=99`），
+因此既不会折叠无关上下文，也不会继承用户全局的 `foldmethod`/`foldlevel`；
+显式设置 `fold = true` 才折叠离变更超过 `context` 行的未修改行。
 结果列初始等于原文；源 buffer 在审查期间不变，全部决定后一次应用接受的块。
 宽度不足 `min_split_width`，或 `target = "float"` 时，回退为复用工具卡片渲染的
 card 视图（同样的 diff 背景与语法高亮）。
 
 - 光标停在某个变更块上，`ga`/`gr` 接受/拒绝该块；Visual 选区可一次处理被覆盖的所有块。
-  三栏的显示行一一对应，所以在**任意一栏**都可以选择和决定。
+  三栏的显示行一一对应，所以在**任意一栏**都可以选择和决定。默认（`advance = true`）处理完
+  一个块后自动跳到下一个待处理的块。
 - `]c` / `[c`（或 `]h` / `[h`）按审查顺序循环跳到下一个/上一个块，已决定的块仍可访问；
   光标留在当前栏。`u` 把当前块的决定清回 pending。
 - `g2` / `g3` 全部接受 / 全部拒绝，`g1` 全部接受并永久改用直接写回，
@@ -435,15 +439,17 @@ inline = {
       target = "buffer",         -- buffer（新 tab 真实窗口）| float（浮窗）
       layout = "3-column",       -- 3-column | 2-column
       min_split_width = 90,      -- 更窄时回退 card 渲染
-      context = 3,               -- 上下文行数：card 回退保留的行，分栏中不折叠的行
+      context = 3,               -- 上下文行数：card 回退保留的行，fold = true 时不折叠的行
       syntax = true,             -- card 回退使用文件自身语法
-      advance = false,           -- 决定后跳到下一个 pending 块
+      advance = true,            -- 决定后自动跳到下一个 pending 块
       max_rows = 4000,           -- card 回退的行数上限
-      fold = true,               -- 折叠离变更超过 context 行的未修改行
+      fold = false,              -- 折叠离变更超过 context 行的未修改行（默认关闭）
       sync_scroll = true,        -- scrollbind/cursorbind
       relative_number = false,   -- 相对行号（按真实行计算，跳过 filler）
       hints = true,              -- 在当前块后显示 ga/gr 提示
-      foldcolumn = 1,            -- 折叠列宽度，0 隐藏
+      -- 已废弃并被忽略：审查行号栏不再画折叠列（始终 foldcolumn=0），
+      -- 保留该键只为让旧配置继续通过校验。
+      foldcolumn = 0,
     },
   },
 },
@@ -470,6 +476,7 @@ inline = {
 - 行号列由 `statuscolumn` 绘制：最左一格是块的状态条（`▎`，已接受/已拒绝块的首行为 `✓`/`✗`），
   颜色为 `AcpReviewStatePending/Current/Accepted/Rejected`，三栏同一行同色；后面是**真实行号**
   （原文/提案保留各自文件的行号，结果列按当前结果计数），filler 行没有行号。
+  行号列里没有折叠列（`foldcolumn` 恒为 0，`foldcolumn` 配置项已废弃并被忽略）。
 - 光标所在块在结果列行尾显示 `ga accept · gr reject · ]c next`（`AcpReviewHint`，`hints = false` 关闭）。
 - `winbar` 每栏一个彩色徽章（`A` 原文 / `→` 结果 / `B` 提案），只有结果列显示
   `hunk i/n · ✓/✗/pending` 计数。

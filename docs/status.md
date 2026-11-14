@@ -544,7 +544,10 @@ native/edgy/reconnect、性能 smoke、tail/spinner 附加 UI 回归通过。
   `ui.code_hl` 的语言解析，覆盖无自带 ftplugin 的语言），失败静默回退 legacy `syntax`。
   新 tabpage 的真实窗口，**不用** Vim diff 模式：`3-column`（原文│结果│提案）或
   `2-column`（结果│提案）三栏按 `review/align` 插入 filler 行，行数恒等，
-  `scrollbind`/`cursorbind`/`foldexpr` 折叠原生同步；`statuscolumn` 绘制状态条与真实行号；
+  `scrollbind`/`cursorbind` 原生同步；默认 `fold = false` 不折叠（窗格显式
+  `foldmethod=manual`、`foldlevel=99`，不继承全局折叠选项），显式 `fold = true` 才用 `foldexpr`
+  折叠离 hunk 超过 `context` 行的上下文；`statuscolumn` 只绘制状态条与真实行号（不再输出 `%C`），
+  `foldcolumn` 已废弃并被忽略、窗格恒为 `foldcolumn=0`；
   不修改 `diffopt`；打开失败时回滚窗口、buffer、autocmd 与选项。
 - `inline/review/align`：纯函数对齐模型。块内行配对来自 `result.hunk_pairs`（linematch，块内无相似行时
   从上到下），行类型（modify/delete/add）、filler 与字符级范围（`result.char_ranges`，超过一半变化的行

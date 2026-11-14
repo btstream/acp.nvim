@@ -808,6 +808,31 @@ return function(t)
       return panes
     end
 
+    ---Raw `statuscolumn()` output for one display row of a pane, before Vim
+    ---expands the format string: this is where a fold column would still show up
+    ---as `%C`.
+    local function gutter_cell(win, row)
+      local layout = require("acp.inline.review.layout")
+      local saved_winid, saved_lnum = vim.g.statusline_winid, vim.v.lnum
+      vim.g.statusline_winid = win
+      vim.v.lnum = row
+      local ok, out = pcall(layout.statuscolumn)
+      vim.g.statusline_winid = saved_winid
+      vim.v.lnum = saved_lnum
+      assert(ok, out)
+      return out
+    end
+
+    ---Every display row of every pane, numbered 1..#lines.
+    local function each_pane_row(fn)
+      for _, win in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
+        local buf = vim.api.nvim_win_get_buf(win)
+        for row = 1, vim.api.nvim_buf_line_count(buf) do
+          fn(win, buf, row)
+        end
+      end
+    end
+
     ---Row decorations of a review buffer: `row -> group` (filler rows by their
     ---line highlight, changed rows by their row surface).
     local function row_groups(buf)
@@ -1164,8 +1189,10 @@ return function(t)
       for _, win in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
         t.eq("no", vim.wo[win].signcolumn)
         t.falsy(vim.wo[win].relativenumber)
-        t.eq("1", vim.wo[win].foldcolumn)
-        t.eq("expr", vim.wo[win].foldmethod)
+        -- `foldcolumn` is deprecated: the review never draws one, whatever the
+        -- (now ignored) config value says.
+        t.eq("0", vim.wo[win].foldcolumn)
+        t.eq("manual", vim.wo[win].foldmethod)
         t.truthy(vim.wo[win].statuscolumn:find("acp.inline.review.layout", 1, true))
         local fcs = vim.api.nvim_get_option_value("fillchars", { win = win, scope = "local" })
         t.truthy(fcs:find("vert:│", 1, true), fcs)
@@ -1179,6 +1206,181 @@ return function(t)
       t.falsy(vim.api.nvim_get_option_value("statuscolumn", { scope = "global" }):find("acp", 1, true))
       session_mod.close_all()
       vim.api.nvim_buf_delete(buf, { force = true })
+    end)
+
+    t.it("opens every pane unfolded by default", function()
+      local old = {}
+      for i = 1, 40 do
+        old[i] = "line " .. i
+      end
+      local new = vim.deepcopy(old)
+      new[20] = "CHANGED"
+      local _, buf = win_with(old)
+      local c = cfg()
+      c.inline.window.review.min_split_width = 20
+      assert(session_mod.open({ bufnr = buf, lines = new, config = c }))
+      local folded = {}
+      each_pane_row(function(win, _, row)
+        local closed = vim.api.nvim_win_call(win, function()
+          return vim.fn.foldclosed(row)
+        end)
+        if closed ~= -1 then
+          folded[#folded + 1] = win .. ":" .. row .. "->" .. closed
+        end
+      end)
+      t.eq({}, folded, "the default review must not fold anything")
+      for _, win in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
+        -- The window options must not inherit a folding setup either: both are
+        -- set explicitly to a no-op.
+        t.eq("manual", vim.wo[win].foldmethod)
+        t.eq(99, vim.wo[win].foldlevel)
+        t.eq("0", vim.wo[win].foldcolumn)
+      end
+      session_mod.close_all()
+      vim.api.nvim_buf_delete(buf, { force = true })
+    end)
+
+    t.it("ignores the user's global folding options", function()
+      local saved_method, saved_level = vim.o.foldmethod, vim.o.foldlevel
+      t.cleanup(function()
+        vim.o.foldmethod = saved_method
+        vim.o.foldlevel = saved_level
+      end)
+      vim.o.foldmethod = "indent"
+      vim.o.foldlevel = 0
+      local old = {}
+      for i = 1, 30 do
+        old[i] = (i % 2 == 0 and "  " or "") .. "line " .. i
+      end
+      local new = vim.deepcopy(old)
+      new[15] = "CHANGED"
+      local _, buf = win_with(old)
+      local c = cfg()
+      c.inline.window.review.min_split_width = 20
+      assert(session_mod.open({ bufnr = buf, lines = new, config = c }))
+      local folded = {}
+      each_pane_row(function(win, _, row)
+        local closed = vim.api.nvim_win_call(win, function()
+          return vim.fn.foldclosed(row)
+        end)
+        if closed ~= -1 then
+          folded[#folded + 1] = win .. ":" .. row
+        end
+      end)
+      t.eq({}, folded, "the review panes inherited the global folding")
+      session_mod.close_all()
+      vim.api.nvim_buf_delete(buf, { force = true })
+    end)
+
+    t.it("folds unchanged context when fold is explicitly on", function()
+      local old = {}
+      for i = 1, 40 do
+        old[i] = "line " .. i
+      end
+      local new = vim.deepcopy(old)
+      new[20] = "CHANGED"
+      local _, buf = win_with(old)
+      local c = cfg()
+      c.inline.window.review.min_split_width = 20
+      c.inline.window.review.fold = true
+      assert(session_mod.open({ bufnr = buf, lines = new, config = c }))
+      local win = vim.api.nvim_get_current_win()
+      t.eq("expr", vim.wo[win].foldmethod)
+      t.eq(0, vim.wo[win].foldlevel)
+      -- Far context folds; the hunk and its `context` neighbours stay open.
+      t.truthy(vim.fn.foldclosed(1) ~= -1, "far context did not fold")
+      t.eq(-1, vim.fn.foldclosed(20))
+      session_mod.close_all()
+      vim.api.nvim_buf_delete(buf, { force = true })
+    end)
+
+    t.it("draws no fold column, only the state bar and the line number", function()
+      local ok, err, buf = open()
+      t.truthy(ok, err)
+      for _, win in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
+        local buf_now = vim.api.nvim_win_get_buf(win)
+        for row = 1, vim.api.nvim_buf_line_count(buf_now) do
+          local raw = gutter_cell(win, row)
+          t.falsy(raw:find("%C", 1, true), "statuscolumn still draws the fold column: " .. raw)
+        end
+      end
+      -- A hunk row keeps its bar, and the real line numbers are still there.
+      local win = vim.api.nvim_get_current_win()
+      local lnum_row = nil
+      local layout = require("acp.inline.review.layout")
+      local gutter = layout.gutter(vim.api.nvim_win_get_buf(win))
+      for row = 1, vim.api.nvim_buf_line_count(vim.api.nvim_win_get_buf(win)) do
+        if gutter.lnums[row] then
+          lnum_row = row
+          break
+        end
+      end
+      t.truthy(lnum_row, "the result pane shows no line numbers")
+      local text = vim.api.nvim_eval_statusline(vim.wo[win].statuscolumn, {
+        winid = win,
+        use_statuscol_lnum = lnum_row,
+      }).str
+      t.truthy(text:find("1", 1, true), text)
+      -- The hunk row is row 1 in the fixture; its bar is the leftmost cell.
+      local bar_row = 1
+      local bar = layout.gutter(vim.api.nvim_win_get_buf(win)).bars[bar_row]
+      t.truthy(bar, "no state bar on the hunk row")
+      local bar_text = vim.api.nvim_eval_statusline(vim.wo[win].statuscolumn, {
+        winid = win,
+        use_statuscol_lnum = bar_row,
+      }).str
+      t.truthy(bar_text:find(bar.glyph, 1, true), bar_text)
+      t.truthy(bar_text:find("1", 1, true), bar_text)
+      session_mod.close_all()
+      vim.api.nvim_buf_delete(buf, { force = true })
+    end)
+
+    t.it("keeps filler rows to the bar alone", function()
+      local _, buf = win_with({ "a", "b", "c" })
+      local c = cfg()
+      c.inline.window.review.min_split_width = 20
+      assert(session_mod.open({ bufnr = buf, lines = { "a", "b", "NEW", "c" }, config = c }))
+      local panes = sorted_panes()
+      local layout = require("acp.inline.review.layout")
+      local gutter = layout.gutter(panes[1].buf)
+      local filler_row
+      for row = 1, vim.api.nvim_buf_line_count(panes[1].buf) do
+        if not gutter.lnums[row] then
+          filler_row = row
+          break
+        end
+      end
+      t.truthy(filler_row, "no filler row in the original column")
+      local raw = gutter_cell(panes[1].win, filler_row)
+      t.falsy(raw:find("%C", 1, true), raw)
+      local text = vim.api.nvim_eval_statusline(vim.wo[panes[1].win].statuscolumn, {
+        winid = panes[1].win,
+        use_statuscol_lnum = filler_row,
+      }).str
+      -- Only the state bar: no digits, since the filler row has no real line.
+      t.falsy(text:find("%d"), "a filler row drew a line number: " .. text)
+      session_mod.close_all()
+      vim.api.nvim_buf_delete(buf, { force = true })
+    end)
+
+    t.it("keeps foldcolumn at zero even when it is configured", function()
+      -- The key is deprecated: existing configs still validate, but the review
+      -- never draws a fold column.
+      local ok, err, buf = open({ foldcolumn = 3, fold = true })
+      t.truthy(ok, err)
+      for _, win in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
+        t.eq("0", vim.wo[win].foldcolumn)
+      end
+      local win = vim.api.nvim_get_current_win()
+      t.falsy(gutter_cell(win, 1):find("%C", 1, true))
+      session_mod.close_all()
+      vim.api.nvim_buf_delete(buf, { force = true })
+    end)
+
+    t.it("defaults to no folding and an ignored foldcolumn", function()
+      local defaults = Config.defaults.inline.window.review
+      t.eq(false, defaults.fold)
+      t.eq(0, defaults.foldcolumn)
     end)
 
     t.it("paints only the rows each pane actually changes", function()

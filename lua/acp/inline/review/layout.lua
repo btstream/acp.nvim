@@ -153,7 +153,8 @@ local function number_text(data, win, row)
 end
 
 ---`statuscolumn` for a review pane: a one-cell state bar, then the real line
----number. Filler rows show only the bar.
+---number. Filler rows show only the bar. There is no fold column: panes always
+---keep `foldcolumn=0`, so the gutter never spends width on `%C`.
 ---@return string
 function M.statuscolumn()
   local win = vim.g.statusline_winid
@@ -165,14 +166,13 @@ function M.statuscolumn()
   local row = vim.v.lnum
   local bar = data.bars[row]
   local cell = bar and ("%#" .. bar.group .. "#" .. bar.glyph .. "%*") or " "
-  local fold = vim.wo[win].foldcolumn ~= "0" and "%C" or ""
   if vim.v.virtnum ~= 0 then
-    return fold .. cell .. string.rep(" ", data.width + 1)
+    return cell .. string.rep(" ", data.width + 1)
   end
   local text = number_text(data, win, row)
   local cursor_row = vim.api.nvim_win_get_cursor(win)[1]
   local group = cursor_row == row and "AcpReviewGutterCur" or "AcpReviewGutter"
-  return fold .. cell .. "%#" .. group .. "#" .. string.rep(" ", data.width - #text) .. text .. " %*"
+  return cell .. "%#" .. group .. "#" .. string.rep(" ", data.width - #text) .. text .. " %*"
 end
 
 ---`foldexpr`: context further than `inline.window.review.context` from every
@@ -253,7 +253,7 @@ end
 
 ---Apply the review window options.
 ---@param win integer
----@param opts {fold?: boolean, sync_scroll?: boolean, pane?: string, relative_number?: boolean, foldcolumn?: integer}
+---@param opts {fold?: boolean, sync_scroll?: boolean, pane?: string, relative_number?: boolean}
 local function window_options(win, opts)
   for name, value in pairs(WINDOW_OPTS) do
     if name == "scrollbind" or name == "cursorbind" then
@@ -267,14 +267,13 @@ local function window_options(win, opts)
   end
   -- Relative numbers are computed by `statuscolumn` from real line numbers,
   -- so the window option itself stays off.
-  if opts.fold ~= false and opts.foldcolumn ~= nil then
-    pcall(vim.api.nvim_set_option_value, "foldcolumn", tostring(opts.foldcolumn), { win = win, scope = "local" })
-  end
   pcall(vim.api.nvim_set_option_value, "statuscolumn", STATUSCOLUMN, { win = win, scope = "local" })
   -- `fillchars` is global-local: assigning through the window scope keeps the
   -- user's global value untouched.
   pcall(vim.api.nvim_set_option_value, "fillchars", WINDOW_OPTS.fillchars, { win = win, scope = "local" })
   pcall(vim.api.nvim_set_option_value, "winhighlight", pane_winhl(), { win = win, scope = "local" })
+  -- `manual` with a high `foldlevel` never inherits the user's folding setup, so
+  -- a pane opens unfolded even when the global options would fold it.
   pcall(vim.api.nvim_set_option_value, "foldlevel", opts.fold ~= false and 0 or 99, { win = win, scope = "local" })
   -- Pin the window to the buffer the review built for it. Without this, `:edit`,
   -- `:enew`, `:bnext` and plugin "open here" helpers would replace the result
@@ -300,7 +299,6 @@ end
 ---  fold?: boolean,
 ---  sync_scroll?: boolean,
 ---  relative_number?: boolean,
----  foldcolumn?: integer,
 ---  labels?: {badge: string, path: string, version: string}[]
 ---}
 ---@return table
@@ -343,7 +341,6 @@ local function open_layout(opts, state)
       fold = opts.fold,
       sync_scroll = opts.sync_scroll,
       relative_number = opts.relative_number,
-      foldcolumn = opts.foldcolumn,
       pane = pane,
     })
   end

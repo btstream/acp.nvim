@@ -895,7 +895,10 @@ inline.scope = "context" 时才把可编辑范围限制在光标周围的上下�
 diff 默认在新 tabpage 中打开并排的真实窗口：3-column 为「原文 │ 结果 │ 提案」，
 2-column 为「结果 │ 提案」。各栏不使用 Vim 的 diff 模式（它会让所有 diff 窗口互相比较，
 无法表达「原文↔结果」「结果↔提案」两组对比）：插件按同一份对齐表给每栏插入 filler 行，
-三栏行数相同，scrollbind/cursorbind/折叠由 Neovim 原生同步。审查不修改 diffopt。
+三栏行数相同，scrollbind/cursorbind 由 Neovim 原生同步。审查不修改 diffopt。
+默认不折叠任何行：分栏窗口显式设成不折叠（foldmethod=manual、foldlevel=99），既不折叠
+无关上下文，也不继承用户全局的 foldmethod/foldlevel；fold = true 才折叠离变更超过
+context 行的未修改行。
 结果列初始等于原文、是 nomodifiable，只展示决定结果。宽度不足 min_split_width 或
 target = "float" 时回退为工具卡片渲染（同样的 diff 背景与语法高亮）。
 
@@ -912,6 +915,7 @@ target = "float" 时回退为工具卡片渲染（同样的 diff 背景与语法
 statuscolumn 最左一格是状态条（▎，已决定块的首行为 ✓/✗），颜色为
 AcpReviewStatePending/Current/Accepted/Rejected，三栏同一行同色；后面是真实行号
 （原文/提案保留各自文件的行号，结果列按当前结果计数），filler 行没有行号。
+行号栏不画折叠列：foldcolumn 恒为 0，foldcolumn 配置项已废弃并被忽略。
 光标所在块在结果列行尾显示 ga/gr 提示（AcpReviewHint，hints = false 关闭）。
 winbar 每栏一个彩色徽章（A 原文 / → 结果 / B 提案），只有结果列显示计数。
 光标行用 AcpReviewCursorLine（复制 CursorLine 底色、去掉下划线）。
@@ -935,6 +939,7 @@ statuscolumn、折叠或审查 winhighlight。若外部仍换掉窗格 buffer，
 恢复选项。审查窗口设置 winfixbuf，:edit/:enew/:bnext 会被拒绝（E1513），关闭窗口仍允许。
 每栏按文件语言显式启动 Tree-sitter；缺少 parser 时静默回退到 legacy syntax。
 光标停在变更块上时 ga 接受、gr 拒绝；Visual 选区可一次处理覆盖的所有块。
+默认（advance = true）处理完一个块后自动跳到下一个待处理的块。
 ]c/[c（或 ]h/[h）按审查顺序循环跳到下/上一个块，已决定的块仍可访问；
 三栏显示行一一对应，任意一栏都可以选择、决定和跳转，光标留在当前栏。u 清除当前块的决定。g2/g3 全部，g1 对本 buffer 永久接受，
 q/<Esc> 拒绝剩余并关闭。
@@ -975,14 +980,14 @@ write 直接写回，但仍可一次撤销。filetype 可单独覆盖：
           layout = "3-column",  -- 3-column | 2-column
           context = 3,
           syntax = true,
-          advance = false,
+          advance = true,
           max_rows = 4000,
           min_split_width = 90,
-          fold = true,
+          fold = false,
           sync_scroll = true,
           relative_number = false,
           hints = true,
-          foldcolumn = 1,
+          foldcolumn = 0, -- 已废弃并被忽略：行号栏始终不画折叠列
         },
       },
     }

@@ -253,9 +253,12 @@ filler 标记，缺行的一侧用空行占位，三栏行数恒等；块高度�
 超过一半变化的行不做字符级标记），对齐与着色来自同一份数据。
 
 `inline/review/layout` 在新 tabpage 里建真实窗口，**不使用** Vim diff 模式（它会把所有 diff
-窗口互相比较，无法表达两组两两对比）。三栏行数相同，`scrollbind`/`cursorbind`/折叠原生同步；
-`statuscolumn` 从 `set_gutter` 的映射表绘制状态条与真实行号，`foldexpr` 折叠离 hunk 超过
-`context` 行的上下文。窗口用 `rightbelow vsplit` 创建，列顺序与 `'splitright'` 无关；
+窗口互相比较，无法表达两组两两对比）。三栏行数相同，`scrollbind`/`cursorbind` 原生同步。
+默认不折叠（`fold = false`）：窗格显式设成 `foldmethod=manual`、`foldlevel=99`，既不折叠上下文，
+也不继承用户全局的 `foldmethod`/`foldlevel`；只有显式 `fold = true` 时才用 `foldexpr` 折叠离 hunk
+超过 `context` 行的上下文。`statuscolumn` 从 `set_gutter` 的映射表只绘制状态条与真实行号，
+不再输出折叠列 `%C`；`foldcolumn` 配置项已废弃并被忽略，窗格恒为 `foldcolumn=0`。窗口用
+`rightbelow vsplit` 创建，列顺序与 `'splitright'` 无关；
 `fillchars` 只写窗口局部，打开后恢复所有选项的继承值。结果列是 `nomodifiable`，`write`
 按差异逐段写入以保持光标与滚动稳定。审查不修改 `diffopt`。
 
