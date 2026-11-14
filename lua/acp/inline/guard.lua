@@ -73,15 +73,15 @@ function M.changed(snapshot)
   end
   if snapshot.hash ~= nil or now.hash ~= nil then
     if snapshot.hash ~= now.hash then
-      return true, "the file on disk changed while the agent was working"
+      return true, "the file content on disk changed during the inline edit"
     end
     return false, nil
   end
   if snapshot.size ~= now.size then
-    return true, "the file on disk changed size while the agent was working"
+    return true, "the file size on disk changed during the inline edit"
   end
   if snapshot.mtime ~= now.mtime then
-    return true, "the file on disk was rewritten while the agent was working"
+    return true, "the file on disk was rewritten during the inline edit"
   end
   return false, nil
 end

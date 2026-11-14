@@ -74,6 +74,64 @@ return function(t)
     end)
   end)
 
+  t.describe("inline source lock", function()
+    local lock = require("acp.inline.lock")
+
+    local function named_buf(name)
+      local path = dir .. "/" .. name
+      vim.fn.writefile({ "original" }, path)
+      local buf = vim.fn.bufadd(path)
+      vim.fn.bufload(buf)
+      return buf, path
+    end
+
+    t.it("blocks edits and disk writes until unlocked", function()
+      local buf, path = named_buf("locked.txt")
+      t.truthy(lock.lock(buf))
+      t.falsy(vim.api.nvim_get_option_value("modifiable", { buf = buf }))
+      t.falsy(pcall(vim.api.nvim_buf_set_lines, buf, 0, -1, false, { "edited" }))
+
+      local notes = {}
+      local notify = vim.notify
+      vim.notify = function(message)
+        notes[#notes + 1] = tostring(message)
+      end
+      vim.api.nvim_buf_call(buf, function()
+        pcall(vim.cmd, "write")
+      end)
+      vim.notify = notify
+      t.eq({ "original" }, vim.fn.readfile(path))
+      t.match("locked until it finishes", table.concat(notes, "\n"))
+
+      lock.unlock(buf)
+      t.truthy(vim.api.nvim_get_option_value("modifiable", { buf = buf }))
+      vim.api.nvim_buf_set_lines(buf, 0, -1, false, { "edited" })
+      vim.api.nvim_buf_call(buf, function()
+        vim.cmd("write")
+      end)
+      t.eq({ "edited" }, vim.fn.readfile(path))
+      vim.api.nvim_buf_delete(buf, { force = true })
+    end)
+
+    t.it("restores a buffer that was already nomodifiable", function()
+      local buf = named_buf("readonly.txt")
+      vim.api.nvim_set_option_value("modifiable", false, { buf = buf })
+      t.truthy(lock.lock(buf))
+      lock.unlock(buf)
+      t.falsy(vim.api.nvim_get_option_value("modifiable", { buf = buf }))
+      lock.unlock(buf) -- repeat is safe
+      vim.api.nvim_buf_delete(buf, { force = true })
+    end)
+
+    t.it("tolerates a buffer wiped while locked", function()
+      local buf = named_buf("wiped.txt")
+      t.truthy(lock.lock(buf))
+      vim.api.nvim_buf_delete(buf, { force = true })
+      t.falsy(lock.locked(buf))
+      t.truthy(pcall(lock.unlock, buf))
+    end)
+  end)
+
   t.describe("inline mode guard", function()
     local inline = require("acp.inline")
 
