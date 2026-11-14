@@ -440,8 +440,10 @@ M.defaults = {
         syntax = true,
         -- Ceiling on rendered card rows.
         max_rows = 4000,
-        -- Jump to the next pending hunk after accepting/rejecting one.
-        advance = false,
+        -- Jump to the next pending hunk after accepting/rejecting one. On by
+        -- default, so deciding a hunk moves the cursor to the next one that
+        -- still needs a decision (wrapping around); set false to stay put.
+        advance = true,
         -- Side-by-side window options: fold unchanged context, and keep the
         -- columns scrolling and moving together.
         fold = true,

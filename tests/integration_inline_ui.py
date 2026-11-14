@@ -279,8 +279,13 @@ try:
         edited[3], edited[10], edited[20] = 'changed 3', 'changed 10', 'changed 20'
         table.insert(edited, 4, 'inserted')
         vim.api.nvim_buf_set_lines(source, 0, -1, false, old)
-        local config = require('acp.controller').state().config
+        -- This case is about the order of `]c`/`]h`/`[h` across decided hunks,
+        -- not about advancing: pin the old stay-put behaviour so the key
+        -- sequence and its expectations below stay meaningful. A copy keeps the
+        -- shared config on its default (`advance = true`) for later cases.
+        local config = vim.deepcopy(require('acp.controller').state().config)
         config.inline.window.review.layout = '3-column'
+        config.inline.window.review.advance = false
         assert(require('acp.inline.diff_session').open({bufnr=source, lines=edited, config=config}))
         review_result_win = vim.api.nvim_get_current_win()
     """)
@@ -299,6 +304,7 @@ try:
     nvim.input("]c")
     wait("vim.api.nvim_get_current_win() == %d and vim.api.nvim_win_get_cursor(0)[1] == 3" % side_win)
     print("ok: hunk order survives accepted insertions and side-pane navigation stays in its column")
+
     filler = nvim.exec_lua("""
         local ns = vim.api.nvim_get_namespaces()['acp.inline.review']
         local out = {}
@@ -317,6 +323,27 @@ try:
         assert pane["name"] == "AcpReviewFiller", pane
         assert pane["fg"] == 0x5C6370, pane
     print("ok: filler rows use the fixed subdued grey, not the normal white foreground")
+    nvim.exec_lua("require('acp.inline.diff_session').close_all()")
+
+    # Advancing is on by default: deciding a hunk moves the cursor to the next
+    # pending one instead of staying put.
+    nvim.exec_lua("""
+        local old = {}
+        for i = 1, 24 do old[i] = 'old line ' .. i end
+        local edited = vim.deepcopy(old)
+        edited[3], edited[10], edited[20] = 'changed 3', 'changed 10', 'changed 20'
+        vim.api.nvim_buf_set_lines(source, 0, -1, false, old)
+        vim.api.nvim_set_current_win(source_win)
+        local config = require('acp.controller').state().config
+        assert(config.inline.window.review.advance == true, 'advance must default to true')
+        config.inline.window.review.layout = '3-column'
+        assert(require('acp.inline.diff_session').open({bufnr=source, lines=edited, config=config}))
+    """)
+    nvim.input("]c")
+    wait("vim.api.nvim_win_get_cursor(0)[1] == 3")
+    nvim.input("ga")
+    wait("vim.api.nvim_win_get_cursor(0)[1] == 10")
+    print("ok: accepting a hunk advances to the next pending one by default")
     nvim.exec_lua("require('acp.inline.diff_session').close_all()")
 finally:
     try:
