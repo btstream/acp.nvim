@@ -353,7 +353,10 @@ Neovim；OSC 5522 需要终端专用协商并改变普通粘贴处理，本插�
   用 `inline.allow_kinds` 显式列出。
 - 结果按选区范围过滤，精确字符/块选区不扩大为整行；越界改动提示丢弃数量。
 - 等待或审查期间源内容、文件名或换行约定变化时，拒绝应用冲突结果。
-- 回合结束后会比对源文件在磁盘上的 mtime、大小与内容 hash。Agent 直接改了原文件（而不是副本）
+- 回合进行期间源 buffer 被锁定：既不能编辑，`:w`/`:update`/自动保存也不会写盘，并提示
+  `inline edit in progress`。取消（`:Acp inline-stop`）或回合结束才解锁；应用结果和审查前
+  必定先解锁。
+- 回合结束后会比对源文件在磁盘上的 mtime、大小与内容 hash。Agent 或其它程序在回合中改了原文件
   时中止应用，并让你选择「从磁盘重新加载 / 保留 buffer / 查看差异」。
 - 当前模式若会自动批准编辑（Claude 的 acceptEdits、bypassPermissions、auto），
   `inline.guard_mode` 默认会提示一次：`"ask"` 提示后继续，`"switch"` 临时切到最安全的模式并在

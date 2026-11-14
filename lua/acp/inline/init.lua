@@ -4,6 +4,7 @@
 local selection = require("acp.inline.selection")
 local copy = require("acp.inline.copy")
 local guard = require("acp.inline.guard")
+local lock = require("acp.inline.lock")
 local result = require("acp.inline.result")
 local apply = require("acp.inline.apply")
 local review = require("acp.inline.review")
@@ -62,6 +63,9 @@ local function live(inv)
     and s.sess.runtime:owns(inv.session)
 end
 local function release(inv)
+  -- Unlock first: the caller may apply or review the buffer right after this,
+  -- and cancellation/reconfiguration paths reach here without M.finish.
+  lock.unlock(inv.selection.bufnr)
   copy.remove(inv.copy)
   if inv.group then
     pcall(vim.api.nvim_del_augroup_by_id, inv.group)
@@ -222,18 +226,18 @@ end
 function M.offer_direct_write_recovery(inv)
   local bufnr = inv.selection.bufnr
   if not vim.api.nvim_buf_is_valid(bufnr) then
-    notify("the agent modified the source file directly; the buffer is gone", vim.log.levels.WARN)
+    notify("the file changed on disk during the inline edit; the buffer is gone", vim.log.levels.WARN)
     return
   end
   local path = inv.selection.path
   local verified = result.verify(inv.selection)
   presenter.select({
-    title = "The agent wrote the file directly. Keep which version?",
+    title = "The file changed on disk during the inline edit. Keep which version?",
     items = {
-      { label = "Reload from disk", description = "take the agent's write, discard the buffer", value = "reload" },
+      { label = "Reload from disk", description = "take the version on disk, discard the buffer", value = "reload" },
       {
         label = "Keep the buffer",
-        description = verified and "leave your edits as they are; disk stays as the agent wrote it"
+        description = verified and "leave your edits as they are; disk stays as it was written"
           or "the buffer changed too",
         value = "keep",
       },
@@ -383,9 +387,12 @@ function M.finish(inv, ok, response)
   -- change. Applying the reviewed hunks on top would double it or conflict
   -- with the new disk content, so stop and let the user choose.
   local changed, why = guard.changed(inv.disk)
+  -- Unlock before applying or offering recovery: both need a writable buffer,
+  -- and on_finally (which would unlock in release) runs only after M.finish.
+  lock.unlock(inv.selection.bufnr)
   if changed then
     notify(
-      "the agent modified the source file directly (" .. (why or "disk changed") .. "); inline result not applied",
+      "the file changed on disk during the inline edit (by the agent or another program); inline result not applied",
       vim.log.levels.WARN
     )
     M.offer_direct_write_recovery(inv)
@@ -486,6 +493,9 @@ function M.submit(inv, prompt)
   end
   inv.phase = "running"
   inv.turn = inv.session.turn + 1
+  -- The result is verified against the buffer and disk snapshots, so neither
+  -- may change until this turn settles.
+  lock.lock(inv.selection.bufnr)
   drafts[inv.selection.bufnr] = nil
   ui.close("submit")
   -- The hook lives inside the existing scoped prompt task. It is never an

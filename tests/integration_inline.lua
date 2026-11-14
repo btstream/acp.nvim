@@ -5,8 +5,19 @@ local tmp = vim.fn.tempname()
 vim.fn.mkdir(tmp, "p")
 
 local function wait(cond, timeout, label)
-  if not vim.wait(timeout or 8000, cond, 20) then
-    error("timed out: " .. (label or "condition"), 2)
+  -- `vim.wait` returns early when input or a tabpage switch interrupts it, so
+  -- retry until the real deadline instead of treating one interruption as a
+  -- timeout.
+  local deadline = vim.uv.now() + (timeout or 10000)
+  while true do
+    if cond() then
+      return
+    end
+    local left = deadline - vim.uv.now()
+    if left <= 0 then
+      error("timed out: " .. (label or "condition"), 2)
+    end
+    vim.wait(math.min(left, 100), cond, 10)
   end
 end
 
@@ -63,6 +74,7 @@ end
 
 local function start(review, text)
   vim.api.nvim_set_current_win(source_win)
+  pcall(vim.cmd, "stopinsert")
   require("acp.inline").open({
     review = review,
     mode = "V",
@@ -93,6 +105,14 @@ end
 
 local function lines()
   return vim.api.nvim_buf_get_lines(source_buf, 0, -1, false)
+end
+
+---A write must reach disk again once the buffer is unlocked.
+local function assert_writable()
+  vim.api.nvim_buf_call(source_buf, function()
+    vim.cmd("silent write")
+  end)
+  assert(vim.deep_equal(vim.fn.readfile(file), lines()), "the buffer did not write after unlocking")
 end
 
 check("direct mode rewrites only the selected line", function()
@@ -140,7 +160,7 @@ end)
 
 check("diff mode applies only after accepting the hunk", function()
   require("acp.inline.review").reset(vim.api.nvim_get_current_buf())
-  start("diff")
+  start("diff", "EXPLICIT")
   wait(function()
     return require("acp.inline.diff_session").active(source_buf)
   end, 10000, "inline diff")
@@ -158,7 +178,7 @@ end)
 
 check("rejecting the hunk restores the original", function()
   require("acp.inline.review").reset(vim.api.nvim_get_current_buf())
-  start("diff")
+  start("diff", "EXPLICIT")
   wait(function()
     return require("acp.inline.diff_session").active(source_buf)
   end, 10000, "inline diff")
@@ -185,14 +205,36 @@ check("always-accept makes the next change direct", function()
   vim.cmd("silent undo")
 end)
 
-check("late results preserve edits made while waiting", function()
-  start("write", "INLINE_DELAY")
+check("a running inline turn locks edits and writes until it finishes", function()
+  -- An unsaved edit before the turn must survive it, and a `:w` during the
+  -- turn must neither reach disk nor count as an external change.
   vim.api.nvim_buf_set_lines(source_buf, 0, 1, false, { "user edit" })
+  start("write", "INLINE_DELAY")
+  local before = vim.fn.readfile(file)
+  assert(not vim.bo[source_buf].modifiable, "the source stayed editable during the turn")
+  assert(not pcall(vim.api.nvim_buf_set_lines, source_buf, 1, 2, false, { "mid-turn edit" }))
+  local notes = {}
+  local notify = vim.notify
+  vim.notify = function(message)
+    notes[#notes + 1] = tostring(message)
+  end
+  vim.api.nvim_buf_call(source_buf, function()
+    pcall(vim.cmd, "silent write")
+  end)
+  vim.notify = notify
+  assert(vim.deep_equal(before, vim.fn.readfile(file)), "the write changed the disk mid-turn")
+  assert(table.concat(notes, "\n"):find("locked until it finishes", 1, true), "no lock notification")
   wait(function()
-    return not require("acp.inline").is_active()
+    return not require("acp.inline").is_active() and st.session.status == "idle"
   end, 10000, "late result")
-  assert(lines()[1] == "user edit" and lines()[2] == "local INLINE_OLD = 2")
-  vim.api.nvim_buf_set_lines(source_buf, 0, 1, false, { "local a = 1" })
+  assert(lines()[1] == "user edit", "an unsaved edit was lost: " .. vim.inspect(lines()))
+  assert(lines()[2] == "local INLINE_NEW = 2", "the inline result was not applied")
+  assert(vim.bo[source_buf].modifiable, "the source stayed locked after the turn")
+  vim.api.nvim_set_current_win(source_win)
+  vim.api.nvim_buf_set_lines(source_buf, 0, -1, false, vim.fn.readfile(file))
+  vim.bo[source_buf].modified = false
+  assert(vim.deep_equal(vim.fn.readfile(file), lines()), vim.inspect(lines()))
+  assert_writable()
 end)
 
 check("cancelled inline settles before the next turn", function()
@@ -203,11 +245,22 @@ check("cancelled inline settles before the next turn", function()
   end, 10000, "cancel settlement")
   assert(lines()[2] == "local INLINE_OLD = 2", "cancelled result applied")
   assert(st.session.status == "idle", "cancel left session busy")
+  assert(vim.bo[source_buf].modifiable, "cancel left the source locked")
+  assert_writable()
+end)
+
+check("a failed inline turn unlocks the source", function()
+  start("write", "INLINE_DELETE replace the marker")
+  wait(function()
+    return not require("acp.inline").is_active() and st.session.status == "idle"
+  end, 10000, "failed turn settlement")
+  assert(vim.bo[source_buf].modifiable, "the failure path left the source locked")
+  assert_writable()
 end)
 
 check("explicit diff overrides always accept", function()
   require("acp.inline.review").always_accept(source_buf)
-  start("diff")
+  start("diff", "EXPLICIT")
   wait(function()
     return require("acp.inline.diff_session").active(source_buf)
   end, 10000, "one-off diff")
@@ -284,6 +337,8 @@ check("disconnect invalidates an in-flight inline result", function()
   assert(not require("acp.inline").is_active(), "disconnect retained inline ownership")
   vim.wait(300)
   assert(lines()[2] == "local INLINE_OLD = 2", "late disconnected result applied")
+  assert(vim.bo[source_buf].modifiable, "disconnect left the source locked")
+  assert_writable()
   assert(#vim.fn.glob(tmp .. "/.acp-inline-*", false, true) == 0, "disconnect leaked copy")
 end)
 
